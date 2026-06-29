@@ -23,8 +23,12 @@ type ExportRow = {
   outcome: string | null
 }
 
-const sizeBands = [
-  { value: '', label: 'All sizes' },
+type MultiSelectOption = {
+  value: string
+  label: string
+}
+
+const sizeBandOptions: MultiSelectOption[] = [
   { value: 'micro', label: 'Micro: 1–10' },
   { value: 'small', label: 'Small: 11–50' },
   { value: 'medium', label: 'Medium: 51–250' },
@@ -36,9 +40,9 @@ const sizeBands = [
 export default function CampaignsPage() {
   const [rows, setRows] = useState<ExportRow[]>([])
   const [campaignName, setCampaignName] = useState('')
-  const [sizeBand, setSizeBand] = useState('')
-  const [industry, setIndustry] = useState('')
-  const [location, setLocation] = useState('')
+  const [selectedSizeBands, setSelectedSizeBands] = useState<string[]>([])
+  const [selectedIndustries, setSelectedIndustries] = useState<string[]>([])
+  const [selectedLocations, setSelectedLocations] = useState<string[]>([])
   const [due90Only, setDue90Only] = useState(false)
   const [loading, setLoading] = useState(true)
   const [message, setMessage] = useState('')
@@ -50,37 +54,60 @@ export default function CampaignsPage() {
     loadRows()
   }, [])
 
-  const industries = useMemo(() => {
+  const industryOptions = useMemo(() => {
     return Array.from(
       new Set(
         rows
           .map((row) => row.industry)
           .filter((value): value is string => Boolean(value))
       )
-    ).sort()
+    )
+      .sort()
+      .map((value) => ({ value, label: value }))
   }, [rows])
 
-  const locations = useMemo(() => {
+  const locationOptions = useMemo(() => {
     return Array.from(
       new Set(
         rows
           .map((row) => row.location)
           .filter((value): value is string => Boolean(value))
       )
-    ).sort()
+    )
+      .sort()
+      .map((value) => ({ value, label: value }))
   }, [rows])
 
   const filteredRows = useMemo(() => {
     return rows.filter((row) => {
-      const matchesSize = !sizeBand || row.size_band === sizeBand
-      const matchesIndustry = !industry || row.industry === industry
-      const matchesLocation = !location || row.location === location
+      const rowSizeBand = row.size_band || 'unknown'
+      const rowIndustry = row.industry || ''
+      const rowLocation = row.location || ''
+
+      const matchesSize =
+        selectedSizeBands.length === 0 ||
+        selectedSizeBands.includes(rowSizeBand)
+
+      const matchesIndustry =
+        selectedIndustries.length === 0 ||
+        selectedIndustries.includes(rowIndustry)
+
+      const matchesLocation =
+        selectedLocations.length === 0 ||
+        selectedLocations.includes(rowLocation)
+
       const matchesDue90 =
         !due90Only || Number(row.days_since_last_contact ?? 0) >= 90
 
       return matchesSize && matchesIndustry && matchesLocation && matchesDue90
     })
-  }, [rows, sizeBand, industry, location, due90Only])
+  }, [
+    rows,
+    selectedSizeBands,
+    selectedIndustries,
+    selectedLocations,
+    due90Only,
+  ])
 
   const due90Count = useMemo(() => {
     return rows.filter((row) => Number(row.days_since_last_contact ?? 0) >= 90)
@@ -107,9 +134,9 @@ export default function CampaignsPage() {
   }
 
   function resetFilters() {
-    setSizeBand('')
-    setIndustry('')
-    setLocation('')
+    setSelectedSizeBands([])
+    setSelectedIndustries([])
+    setSelectedLocations([])
     setDue90Only(false)
     setMessage('')
     setErrorMessage('')
@@ -203,7 +230,6 @@ export default function CampaignsPage() {
             <NavLink href="/cleanup">Cleanup</NavLink>
             <NavLink href="/companies">Companies</NavLink>
             <NavLink href="/contacts">Contacts</NavLink>
-            <NavLink href="/duplicates">Duplicates</NavLink>
             <LogoutButton />
           </nav>
         </div>
@@ -225,9 +251,8 @@ export default function CampaignsPage() {
             </h1>
 
             <p className="mt-5 text-base leading-7 text-stone-600">
-              Name your campaign, filter contacts by business size, industry,
-              location and 90-day follow-up status, then download the campaign
-              as a clean CSV for mail merge.
+              Name your campaign, select one or more business sizes, industries
+              and locations, then download a clean CSV for mail merge.
             </p>
           </div>
         </div>
@@ -254,8 +279,8 @@ export default function CampaignsPage() {
               </h2>
 
               <p className="mt-1 text-sm text-stone-500">
-                Give this export a clear name so the downloaded file is easy to
-                identify later.
+                Leave a dropdown empty to include everything in that category,
+                or tick multiple options to narrow the campaign.
               </p>
             </div>
 
@@ -291,61 +316,29 @@ export default function CampaignsPage() {
               />
             </label>
 
-            <label className="block">
-              <span className="text-xs font-black uppercase tracking-wide text-stone-500">
-                Company size
-              </span>
+            <MultiSelectDropdown
+              label="Company size"
+              emptyLabel="All sizes"
+              options={sizeBandOptions}
+              selectedValues={selectedSizeBands}
+              onChange={setSelectedSizeBands}
+            />
 
-              <select
-                value={sizeBand}
-                onChange={(event) => setSizeBand(event.target.value)}
-                className="mt-1 w-full rounded-xl border border-stone-300 bg-white px-3 py-2 text-sm outline-none transition focus:border-red-500 focus:ring-4 focus:ring-red-50"
-              >
-                {sizeBands.map((option) => (
-                  <option key={option.value} value={option.value}>
-                    {option.label}
-                  </option>
-                ))}
-              </select>
-            </label>
+            <MultiSelectDropdown
+              label="Industry"
+              emptyLabel="All industries"
+              options={industryOptions}
+              selectedValues={selectedIndustries}
+              onChange={setSelectedIndustries}
+            />
 
-            <label className="block">
-              <span className="text-xs font-black uppercase tracking-wide text-stone-500">
-                Industry
-              </span>
-
-              <select
-                value={industry}
-                onChange={(event) => setIndustry(event.target.value)}
-                className="mt-1 w-full rounded-xl border border-stone-300 bg-white px-3 py-2 text-sm outline-none transition focus:border-red-500 focus:ring-4 focus:ring-red-50"
-              >
-                <option value="">All industries</option>
-                {industries.map((item) => (
-                  <option key={item} value={item}>
-                    {item}
-                  </option>
-                ))}
-              </select>
-            </label>
-
-            <label className="block">
-              <span className="text-xs font-black uppercase tracking-wide text-stone-500">
-                Location
-              </span>
-
-              <select
-                value={location}
-                onChange={(event) => setLocation(event.target.value)}
-                className="mt-1 w-full rounded-xl border border-stone-300 bg-white px-3 py-2 text-sm outline-none transition focus:border-red-500 focus:ring-4 focus:ring-red-50"
-              >
-                <option value="">All locations</option>
-                {locations.map((item) => (
-                  <option key={item} value={item}>
-                    {item}
-                  </option>
-                ))}
-              </select>
-            </label>
+            <MultiSelectDropdown
+              label="Location"
+              emptyLabel="All locations"
+              options={locationOptions}
+              selectedValues={selectedLocations}
+              onChange={setSelectedLocations}
+            />
 
             <label className="flex items-end gap-3 rounded-xl border border-stone-300 bg-white px-4 py-3 text-sm font-bold">
               <input
@@ -410,6 +403,7 @@ export default function CampaignsPage() {
                   <th className="px-4 py-3">Email</th>
                   <th className="px-4 py-3">Size</th>
                   <th className="px-4 py-3">Industry</th>
+                  <th className="px-4 py-3">Location</th>
                   <th className="px-4 py-3">Days since contact</th>
                 </tr>
               </thead>
@@ -417,19 +411,22 @@ export default function CampaignsPage() {
               <tbody>
                 {loading ? (
                   <tr>
-                    <td className="px-4 py-5 text-stone-500" colSpan={6}>
+                    <td className="px-4 py-5 text-stone-500" colSpan={7}>
                       Loading contacts...
                     </td>
                   </tr>
                 ) : filteredRows.length === 0 ? (
                   <tr>
-                    <td className="px-4 py-5 text-stone-500" colSpan={6}>
+                    <td className="px-4 py-5 text-stone-500" colSpan={7}>
                       No contacts match this campaign.
                     </td>
                   </tr>
                 ) : (
                   filteredRows.slice(0, 100).map((row) => (
-                    <tr key={row.contact_id} className="border-t border-stone-100">
+                    <tr
+                      key={row.contact_id}
+                      className="border-t border-stone-100"
+                    >
                       <td className="px-4 py-3 font-semibold text-stone-900">
                         {row.first_name} {row.last_name}
                       </td>
@@ -445,6 +442,8 @@ export default function CampaignsPage() {
                       </td>
 
                       <td className="px-4 py-3">{row.industry || '-'}</td>
+
+                      <td className="px-4 py-3">{row.location || '-'}</td>
 
                       <td
                         className={`px-4 py-3 ${
@@ -471,6 +470,90 @@ export default function CampaignsPage() {
         </div>
       </section>
     </main>
+  )
+}
+
+function MultiSelectDropdown({
+  label,
+  emptyLabel,
+  options,
+  selectedValues,
+  onChange,
+}: {
+  label: string
+  emptyLabel: string
+  options: MultiSelectOption[]
+  selectedValues: string[]
+  onChange: (values: string[]) => void
+}) {
+  function toggleValue(value: string) {
+    if (selectedValues.includes(value)) {
+      onChange(selectedValues.filter((item) => item !== value))
+      return
+    }
+
+    onChange([...selectedValues, value])
+  }
+
+  function clearValues() {
+    onChange([])
+  }
+
+  const selectedLabel =
+    selectedValues.length === 0
+      ? emptyLabel
+      : selectedValues.length === 1
+        ? options.find((option) => option.value === selectedValues[0])?.label ||
+          selectedValues[0]
+        : `${selectedValues.length} selected`
+
+  return (
+    <div className="relative block">
+      <span className="text-xs font-black uppercase tracking-wide text-stone-500">
+        {label}
+      </span>
+
+      <details className="group mt-1">
+        <summary className="flex cursor-pointer list-none items-center justify-between rounded-xl border border-stone-300 bg-white px-3 py-2 text-sm font-semibold text-stone-800 outline-none transition hover:bg-stone-50 group-open:border-red-500 group-open:ring-4 group-open:ring-red-50">
+          <span className="truncate">{selectedLabel}</span>
+          <span className="ml-2 text-xs text-stone-400">▼</span>
+        </summary>
+
+        <div className="absolute z-20 mt-2 max-h-72 w-full overflow-y-auto rounded-xl border border-stone-200 bg-white p-2 shadow-xl">
+          {selectedValues.length > 0 && (
+            <button
+              type="button"
+              onClick={clearValues}
+              className="mb-2 w-full rounded-lg bg-stone-100 px-3 py-2 text-left text-xs font-bold text-stone-600 transition hover:bg-stone-200"
+            >
+              Clear selection
+            </button>
+          )}
+
+          {options.length === 0 ? (
+            <p className="px-3 py-2 text-sm text-stone-500">
+              No options available.
+            </p>
+          ) : (
+            <div className="space-y-1">
+              {options.map((option) => (
+                <label
+                  key={option.value}
+                  className="flex cursor-pointer items-center gap-2 rounded-lg px-3 py-2 text-sm font-semibold text-stone-700 transition hover:bg-stone-50"
+                >
+                  <input
+                    type="checkbox"
+                    checked={selectedValues.includes(option.value)}
+                    onChange={() => toggleValue(option.value)}
+                  />
+                  {option.label}
+                </label>
+              ))}
+            </div>
+          )}
+        </div>
+      </details>
+    </div>
   )
 }
 
