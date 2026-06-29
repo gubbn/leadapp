@@ -1,30 +1,47 @@
+import type { ReactNode } from 'react'
 import Link from 'next/link'
-import { supabase } from '@/lib/supabaseClient'
+import { createSupabaseServerClient } from '@/lib/supabaseServer'
+import LogoutButton from './components/LogoutButton'
 
 export const dynamic = 'force-dynamic'
 
 export default async function MarketingDashboardPage() {
-  const [contactsResult, companiesResult, due90Result, cleanupResult] =
-    await Promise.all([
-      supabase.from('contacts').select('id', { count: 'exact', head: true }),
-      supabase.from('companies').select('id', { count: 'exact', head: true }),
-      supabase.from('contacts_due_90_days').select('contact_id', {
-        count: 'exact',
-        head: true,
-      }),
-      supabase
-        .from('lead_import_rows')
-        .select('id', { count: 'exact', head: true })
-        .or(
-          'needs_contact_name_cleanup.eq.true,needs_email_cleanup.eq.true,needs_size_cleanup.eq.true,needs_dnc_review.eq.true'
-        )
-        .eq('approved_to_crm', false),
-    ])
+  const supabase = await createSupabaseServerClient()
+  const [
+    contactsResult,
+    companiesResult,
+    due90Result,
+    cleanupResult,
+    duplicateResult,
+  ] = await Promise.all([
+    supabase.from('contacts').select('id', { count: 'exact', head: true }),
+
+    supabase.from('companies').select('id', { count: 'exact', head: true }),
+
+    supabase.from('contacts_due_90_days').select('contact_id', {
+      count: 'exact',
+      head: true,
+    }),
+
+    supabase
+      .from('lead_import_rows')
+      .select('id', { count: 'exact', head: true })
+      .or(
+        'needs_contact_name_cleanup.eq.true,needs_email_cleanup.eq.true,needs_size_cleanup.eq.true,needs_dnc_review.eq.true'
+      )
+      .eq('approved_to_crm', false),
+
+    supabase.from('company_duplicate_groups').select('match_key', {
+      count: 'exact',
+      head: true,
+    }),
+  ])
 
   const totalContacts = contactsResult.count ?? 0
   const totalCompanies = companiesResult.count ?? 0
   const due90 = due90Result.count ?? 0
   const cleanup = cleanupResult.count ?? 0
+  const duplicates = duplicateResult.count ?? 0
 
   return (
     <main className="min-h-screen bg-stone-100 text-stone-900">
@@ -34,6 +51,7 @@ export default async function MarketingDashboardPage() {
             <p className="text-xl font-black tracking-tight text-red-600">
               Fixing IT
             </p>
+
             <p className="text-xs font-medium uppercase tracking-[0.2em] text-stone-400">
               Marketing Dashboard
             </p>
@@ -42,8 +60,11 @@ export default async function MarketingDashboardPage() {
           <nav className="hidden items-center gap-2 text-sm font-semibold text-stone-600 md:flex">
             <NavLink href="/import">Import</NavLink>
             <NavLink href="/cleanup">Cleanup</NavLink>
-            <NavLink href="/campaigns">Campaigns</NavLink>
+            <NavLink href="/companies">Companies</NavLink>
             <NavLink href="/contacts">Contacts</NavLink>
+            <NavLink href="/campaigns">Campaigns</NavLink>
+            <NavLink href="/duplicates">Duplicates</NavLink>
+            <LogoutButton />
           </nav>
         </div>
       </header>
@@ -60,9 +81,9 @@ export default async function MarketingDashboardPage() {
             </h1>
 
             <p className="mt-5 max-w-2xl text-base leading-7 text-stone-600">
-              Import your spreadsheet, flag messy data, split companies into
-              campaign groups and export clean mail merge lists when you are
-              ready to send.
+              Import your spreadsheet, flag messy data, spot duplicate
+              businesses, split companies into campaign groups and export clean
+              mail merge lists when you are ready to send.
             </p>
 
             <div className="mt-7 flex flex-wrap gap-3">
@@ -78,6 +99,13 @@ export default async function MarketingDashboardPage() {
                 className="rounded-xl border border-stone-300 bg-white px-5 py-3 text-sm font-bold text-stone-800 shadow-sm transition hover:bg-stone-50"
               >
                 Build campaign
+              </Link>
+
+              <Link
+                href="/duplicates"
+                className="rounded-xl border border-stone-300 bg-white px-5 py-3 text-sm font-bold text-stone-800 shadow-sm transition hover:bg-stone-50"
+              >
+                Check duplicates
               </Link>
             </div>
           </div>
@@ -100,6 +128,12 @@ export default async function MarketingDashboardPage() {
                 urgent={cleanup > 0}
               />
 
+              <FocusItem
+                label="Possible duplicate businesses"
+                value={duplicates}
+                urgent={duplicates > 0}
+              />
+
               <FocusItem label="Clean export contacts" value={totalContacts} />
             </div>
           </div>
@@ -107,7 +141,7 @@ export default async function MarketingDashboardPage() {
       </section>
 
       <section className="mx-auto max-w-7xl px-4 py-8">
-        <div className="grid gap-4 md:grid-cols-4">
+        <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-5">
           <DashboardCard
             label="Companies"
             value={totalCompanies}
@@ -137,9 +171,17 @@ export default async function MarketingDashboardPage() {
             helper="Rows needing attention"
             urgent={cleanup > 0}
           />
+
+          <DashboardCard
+            label="Duplicates"
+            value={duplicates}
+            href="/duplicates"
+            helper="Possible duplicate companies"
+            urgent={duplicates > 0}
+          />
         </div>
 
-        <div className="mt-8 grid gap-4 lg:grid-cols-3">
+        <div className="mt-8 grid gap-4 lg:grid-cols-4">
           <ActionCard
             step="01"
             title="Import spreadsheet"
@@ -158,6 +200,14 @@ export default async function MarketingDashboardPage() {
 
           <ActionCard
             step="03"
+            title="Check duplicates"
+            description="Find companies that may already exist because of similar names or matching domains."
+            href="/duplicates"
+            buttonLabel="Review duplicates"
+          />
+
+          <ActionCard
+            step="04"
             title="Export campaign list"
             description="Filter by business size, location, industry and 90-day follow-up status."
             href="/campaigns"
@@ -169,7 +219,7 @@ export default async function MarketingDashboardPage() {
   )
 }
 
-function NavLink({ href, children }: { href: string; children: React.ReactNode }) {
+function NavLink({ href, children }: { href: string; children: ReactNode }) {
   return (
     <Link
       href={href}
