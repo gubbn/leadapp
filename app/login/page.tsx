@@ -57,11 +57,7 @@ function LoginContent() {
           </p>
         </div>
 
-        <div className="mt-8">
-          <p className="inline-flex rounded-full bg-red-100 px-3 py-1 text-xs font-bold uppercase tracking-wide text-red-700">
-            Secure access
-          </p>
-
+        
           <h1 className="mt-4 text-3xl font-black tracking-tight text-stone-950">
             Sign in to your dashboard.
           </h1>
