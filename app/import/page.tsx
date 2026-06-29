@@ -15,6 +15,7 @@ import {
   parseDnc,
   splitSingleName,
 } from '@/lib/marketingImportHelpers'
+import LogoutButton from '@/app/components/LogoutButton'
 
 type ImportPreviewRow = {
   lead_company_name: string
@@ -145,6 +146,7 @@ export default function ImportPage() {
             <NavLink href="/">Dashboard</NavLink>
             <NavLink href="/cleanup">Cleanup</NavLink>
             <NavLink href="/campaigns">Campaigns</NavLink>
+            <LogoutButton />
           </nav>
         </div>
       </header>

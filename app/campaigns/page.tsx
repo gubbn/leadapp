@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import { supabase } from '@/lib/supabaseClient'
 import { csvEscape } from '@/lib/marketingImportHelpers'
+import LogoutButton from '@/app/components/LogoutButton'
 
 type ExportRow = {
   contact_id: string
@@ -181,6 +182,7 @@ export default function CampaignsPage() {
             <NavLink href="/">Dashboard</NavLink>
             <NavLink href="/import">Import</NavLink>
             <NavLink href="/cleanup">Cleanup</NavLink>
+            <LogoutButton />
           </nav>
         </div>
       </header>

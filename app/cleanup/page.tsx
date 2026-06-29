@@ -8,6 +8,7 @@ import {
   isValidEmail,
   splitSingleName,
 } from '@/lib/marketingImportHelpers'
+import LogoutButton from '@/app/components/LogoutButton'
 
 type CleanupRow = {
   id: string
@@ -222,6 +223,7 @@ export default function CleanupPage() {
             <NavLink href="/">Dashboard</NavLink>
             <NavLink href="/import">Import</NavLink>
             <NavLink href="/campaigns">Campaigns</NavLink>
+            <LogoutButton />
           </nav>
         </div>
       </header>

@@ -4,6 +4,7 @@ import type { ReactNode } from 'react'
 import { useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import { supabase } from '@/lib/supabaseClient'
+import LogoutButton from '@/app/components/LogoutButton'
 
 type DuplicateCompany = {
   id: string
@@ -91,6 +92,7 @@ export default function DuplicatesPage() {
             <NavLink href="/companies">Companies</NavLink>
             <NavLink href="/contacts">Contacts</NavLink>
             <NavLink href="/campaigns">Campaigns</NavLink>
+            <LogoutButton />
           </nav>
         </div>
       </header>

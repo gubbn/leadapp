@@ -5,6 +5,7 @@ import { useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import { supabase } from '@/lib/supabaseClient'
 import { classifySizeBand } from '@/lib/marketingImportHelpers'
+import LogoutButton from '@/app/components/LogoutButton'
 
 type Company = {
   id: string
@@ -177,6 +178,7 @@ export default function CompaniesPage() {
             <NavLink href="/cleanup">Cleanup</NavLink>
             <NavLink href="/contacts">Contacts</NavLink>
             <NavLink href="/campaigns">Campaigns</NavLink>
+            <LogoutButton />
           </nav>
         </div>
       </header>
