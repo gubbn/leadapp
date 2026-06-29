@@ -67,8 +67,8 @@ function LoginContent() {
           </h1>
 
           <p className="mt-3 text-sm leading-6 text-stone-600">
-            Use the email address and password created for you in Supabase.
-            Public sign-up is not available.
+            Use the email address and password provided by Fixing IT.
+            Public sign-up is not available. All rights reserved to Fixing IT Limited.
           </p>
         </div>
 
