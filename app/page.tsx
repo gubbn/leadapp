@@ -27,8 +27,8 @@ export default async function MarketingDashboardPage() {
       .from('lead_import_rows')
       .select('id', { count: 'exact', head: true })
       .or(
-        'needs_contact_name_cleanup.eq.true,needs_email_cleanup.eq.true,needs_size_cleanup.eq.true,needs_dnc_review.eq.true'
-      )
+  'needs_contact_name_cleanup.eq.true,needs_email_cleanup.eq.true,needs_dnc_review.eq.true'
+)
       .eq('approved_to_crm', false),
 
     supabase.from('company_duplicate_groups').select('match_key', {

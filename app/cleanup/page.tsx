@@ -1,5 +1,6 @@
 'use client'
 
+import type { ReactNode } from 'react'
 import { useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import { supabase } from '@/lib/supabaseClient'
@@ -34,9 +35,16 @@ type CleanupRow = {
   needs_dnc_review: boolean | null
   approved_to_crm: boolean | null
   imported_at: string | null
+  is_existing_duplicate?: boolean
+  duplicate_reason?: string | null
 }
 
-type FilterMode = 'all' | 'needs-cleanup' | 'ready'
+type DuplicateImportRow = {
+  import_row_id: string
+  duplicate_reason: string | null
+}
+
+type FilterMode = 'all' | 'needs-cleanup' | 'ready' | 'duplicates'
 
 export default function CleanupPage() {
   const [rows, setRows] = useState<CleanupRow[]>([])
@@ -45,6 +53,8 @@ export default function CleanupPage() {
   const [errorMessage, setErrorMessage] = useState('')
   const [filterMode, setFilterMode] = useState<FilterMode>('all')
   const [savingId, setSavingId] = useState<string | null>(null)
+  const [bulkApproving, setBulkApproving] = useState(false)
+  const [removingDuplicates, setRemovingDuplicates] = useState(false)
 
   useEffect(() => {
     loadRows()
@@ -55,36 +65,79 @@ export default function CleanupPage() {
       const hasIssues = rowHasIssues(row)
 
       if (filterMode === 'needs-cleanup') return hasIssues
-      if (filterMode === 'ready') return !hasIssues
+      if (filterMode === 'ready') return !hasIssues && !row.is_existing_duplicate
+      if (filterMode === 'duplicates') return row.is_existing_duplicate
 
       return true
     })
   }, [rows, filterMode])
 
+  const duplicateRows = useMemo(
+    () => rows.filter((row) => row.is_existing_duplicate),
+    [rows]
+  )
+
   const issueCount = useMemo(() => rows.filter(rowHasIssues).length, [rows])
-  const readyCount = rows.length - issueCount
+
+  const readyCount = useMemo(() => {
+    return rows.filter((row) => !rowHasIssues(row) && !row.is_existing_duplicate)
+      .length
+  }, [rows])
 
   async function loadRows() {
     setLoading(true)
     setMessage('')
     setErrorMessage('')
 
-    const { data, error } = await supabase
-      .from('lead_import_rows')
-      .select('*')
-      .eq('approved_to_crm', false)
-      .order('imported_at', { ascending: false })
+    const [rowsResult, duplicatesResult] = await Promise.all([
+      supabase
+        .from('lead_import_rows')
+        .select('*')
+        .eq('approved_to_crm', false)
+        .order('imported_at', { ascending: false }),
 
-    if (error) {
-      setErrorMessage(error.message)
-    } else {
-      setRows(data ?? [])
+      supabase.from('import_rows_existing_crm_duplicates').select('*'),
+    ])
+
+    if (rowsResult.error) {
+      setErrorMessage(rowsResult.error.message)
+      setLoading(false)
+      return
     }
 
+    if (duplicatesResult.error) {
+      setErrorMessage(duplicatesResult.error.message)
+      setLoading(false)
+      return
+    }
+
+    const duplicateMap = new Map<string, DuplicateImportRow>()
+
+    ;((duplicatesResult.data ?? []) as DuplicateImportRow[]).forEach(
+      (duplicate) => {
+        duplicateMap.set(duplicate.import_row_id, duplicate)
+      }
+    )
+
+    const cleanedRows = ((rowsResult.data ?? []) as CleanupRow[]).map((row) => {
+      const duplicate = duplicateMap.get(row.id)
+
+      return {
+        ...row,
+        is_existing_duplicate: Boolean(duplicate),
+        duplicate_reason: duplicate?.duplicate_reason ?? null,
+      }
+    })
+
+    setRows(cleanedRows)
     setLoading(false)
   }
 
-  function updateLocalRow(id: string, field: keyof CleanupRow, value: string | boolean) {
+  function updateLocalRow(
+    id: string,
+    field: keyof CleanupRow,
+    value: string | boolean
+  ) {
     setRows((current) =>
       current.map((row) => {
         if (row.id !== id) return row
@@ -113,43 +166,54 @@ export default function CleanupPage() {
     )
   }
 
-  async function saveRow(row: CleanupRow) {
-    setSavingId(row.id)
-    setMessage('')
-    setErrorMessage('')
-
+  function getCleanedRow(row: CleanupRow) {
     const sizeBand = classifySizeBand(row.business_size_raw ?? '')
-
     const needsNameCleanup = !row.first_name?.trim() || !row.last_name?.trim()
     const needsEmailCleanup = !isValidEmail(row.email_address ?? '')
-    const needsSizeCleanup = sizeBand === 'unknown'
 
     const notes: string[] = []
 
     if (needsNameCleanup) notes.push('Name needs checking')
     if (needsEmailCleanup) notes.push('Missing or invalid email')
-    if (needsSizeCleanup) notes.push('Unknown business size')
+
+    return {
+      ...row,
+      size_band: sizeBand,
+      needs_contact_name_cleanup: needsNameCleanup,
+      needs_email_cleanup: needsEmailCleanup,
+      needs_size_cleanup: false,
+      needs_dnc_review: false,
+      import_notes: notes.join(', '),
+    }
+  }
+
+  async function saveRow(row: CleanupRow, reloadAfterSave = true) {
+    setSavingId(row.id)
+    setMessage('')
+    setErrorMessage('')
+
+    const cleanedRow = getCleanedRow(row)
 
     const { error } = await supabase
       .from('lead_import_rows')
       .update({
-        first_name: row.first_name,
-        last_name: row.last_name,
-        role: row.role,
-        email_address: row.email_address,
-        telephone: row.telephone,
-        industry: row.industry,
-        domain: row.domain,
-        location: row.location,
-        business_size_raw: row.business_size_raw,
-        size_band: sizeBand,
-        dnc: row.dnc ?? false,
-        outcome: row.outcome,
-        needs_contact_name_cleanup: needsNameCleanup,
-        needs_email_cleanup: needsEmailCleanup,
-        needs_size_cleanup: needsSizeCleanup,
+        first_name: cleanedRow.first_name,
+        last_name: cleanedRow.last_name,
+        role: cleanedRow.role,
+        email_address: cleanedRow.email_address,
+        telephone: cleanedRow.telephone,
+        industry: cleanedRow.industry,
+        domain: cleanedRow.domain,
+        location: cleanedRow.location,
+        business_size_raw: cleanedRow.business_size_raw,
+        size_band: cleanedRow.size_band,
+        dnc: cleanedRow.dnc ?? false,
+        outcome: cleanedRow.outcome,
+        needs_contact_name_cleanup: cleanedRow.needs_contact_name_cleanup,
+        needs_email_cleanup: cleanedRow.needs_email_cleanup,
+        needs_size_cleanup: false,
         needs_dnc_review: false,
-        import_notes: notes.join(', '),
+        import_notes: cleanedRow.import_notes,
         updated_at: new Date().toISOString(),
       })
       .eq('id', row.id)
@@ -157,15 +221,27 @@ export default function CleanupPage() {
     if (error) {
       setErrorMessage(error.message)
       setSavingId(null)
-      return
+      return false
     }
 
     setMessage('Row saved.')
     setSavingId(null)
-    await loadRows()
+
+    if (reloadAfterSave) {
+      await loadRows()
+    }
+
+    return true
   }
 
   async function approveRow(row: CleanupRow) {
+    if (row.is_existing_duplicate) {
+      setErrorMessage(
+        'This row already exists in the CRM. Remove the duplicate import row instead.'
+      )
+      return false
+    }
+
     setSavingId(row.id)
     setMessage('')
     setErrorMessage('')
@@ -177,33 +253,146 @@ export default function CleanupPage() {
     if (error) {
       setErrorMessage(error.message)
       setSavingId(null)
-      return
+      return false
     }
 
     setMessage('Row approved into CRM.')
     setSavingId(null)
     await loadRows()
+
+    return true
   }
 
   async function saveAndApprove(row: CleanupRow) {
-    await saveRow(row)
-
-    const sizeBand = classifySizeBand(row.business_size_raw ?? '')
-    const cleanedRow = {
-      ...row,
-      size_band: sizeBand,
-      needs_contact_name_cleanup: !row.first_name?.trim() || !row.last_name?.trim(),
-      needs_email_cleanup: !isValidEmail(row.email_address ?? ''),
-      needs_size_cleanup: sizeBand === 'unknown',
-      needs_dnc_review: false,
+    if (row.is_existing_duplicate) {
+      setErrorMessage(
+        'This row already exists in the CRM. Remove the duplicate import row instead.'
+      )
+      return
     }
+
+    const cleanedRow = getCleanedRow(row)
 
     if (rowHasIssues(cleanedRow)) {
       setErrorMessage('This row still needs cleanup before approval.')
       return
     }
 
+    const saved = await saveRow(cleanedRow, false)
+
+    if (!saved) return
+
     await approveRow(cleanedRow)
+  }
+
+  async function approveAllReadyRows() {
+    const readyRows = rows.filter(
+      (row) => !rowHasIssues(row) && !row.is_existing_duplicate
+    )
+
+    if (readyRows.length === 0) {
+      setErrorMessage('There are no ready non-duplicate rows to approve.')
+      return
+    }
+
+    setBulkApproving(true)
+    setMessage('')
+    setErrorMessage('')
+
+    let approvedCount = 0
+    const errors: string[] = []
+
+    for (const row of readyRows) {
+      const { error } = await supabase.rpc('approve_import_row', {
+        p_row_id: row.id,
+      })
+
+      if (error) {
+        errors.push(`${row.lead_company_name || row.id}: ${error.message}`)
+      } else {
+        approvedCount += 1
+      }
+    }
+
+    setBulkApproving(false)
+
+    if (approvedCount > 0) {
+      setMessage(
+        `Approved ${approvedCount} ready record${
+          approvedCount === 1 ? '' : 's'
+        } into CRM.`
+      )
+    }
+
+    if (errors.length > 0) {
+      setErrorMessage(
+        `Some rows could not be approved: ${errors.slice(0, 3).join(' | ')}`
+      )
+    }
+
+    await loadRows()
+  }
+
+  async function removeDuplicateRow(row: CleanupRow) {
+    setSavingId(row.id)
+    setMessage('')
+    setErrorMessage('')
+
+    const { error } = await supabase
+      .from('lead_import_rows')
+      .delete()
+      .eq('id', row.id)
+
+    if (error) {
+      setErrorMessage(error.message)
+      setSavingId(null)
+      return
+    }
+
+    setMessage('Duplicate import row removed.')
+    setSavingId(null)
+    await loadRows()
+  }
+
+  async function removeAllDuplicateRows() {
+    if (duplicateRows.length === 0) {
+      setErrorMessage('There are no duplicate import rows to remove.')
+      return
+    }
+
+    const confirmed = window.confirm(
+      `Remove ${duplicateRows.length} duplicate imported row${
+        duplicateRows.length === 1 ? '' : 's'
+      } from the cleanup queue? This will not delete CRM contacts or companies.`
+    )
+
+    if (!confirmed) return
+
+    setRemovingDuplicates(true)
+    setMessage('')
+    setErrorMessage('')
+
+    const duplicateIds = duplicateRows.map((row) => row.id)
+
+    const { error } = await supabase
+      .from('lead_import_rows')
+      .delete()
+      .in('id', duplicateIds)
+
+    if (error) {
+      setErrorMessage(error.message)
+      setRemovingDuplicates(false)
+      return
+    }
+
+    setMessage(
+      `Removed ${duplicateRows.length} duplicate imported row${
+        duplicateRows.length === 1 ? '' : 's'
+      }.`
+    )
+
+    setRemovingDuplicates(false)
+    await loadRows()
   }
 
   return (
@@ -214,6 +403,7 @@ export default function CleanupPage() {
             <p className="text-xl font-black tracking-tight text-red-600">
               Fixing IT
             </p>
+
             <p className="text-xs font-medium uppercase tracking-[0.2em] text-stone-400">
               Marketing Dashboard
             </p>
@@ -222,6 +412,8 @@ export default function CleanupPage() {
           <nav className="hidden items-center gap-2 text-sm font-semibold text-stone-600 md:flex">
             <NavLink href="/">Dashboard</NavLink>
             <NavLink href="/import">Import</NavLink>
+            <NavLink href="/companies">Companies</NavLink>
+            <NavLink href="/contacts">Contacts</NavLink>
             <NavLink href="/campaigns">Campaigns</NavLink>
             <LogoutButton />
           </nav>
@@ -244,18 +436,28 @@ export default function CleanupPage() {
             </h1>
 
             <p className="mt-5 text-base leading-7 text-stone-600">
-              Approve clean rows into the CRM, or fix missing names, invalid
-              emails and unknown company sizes first.
+              Approve clean rows into the CRM, fix missing names and invalid
+              emails, or remove imported rows that already exist in the CRM.
+              Business size is optional and can be updated later.
             </p>
           </div>
         </div>
       </section>
 
       <section className="mx-auto max-w-7xl px-4 py-8">
-        <div className="grid gap-4 md:grid-cols-3">
+        <div className="grid gap-4 md:grid-cols-4">
           <SummaryCard label="Unapproved rows" value={rows.length} />
           <SummaryCard label="Ready to approve" value={readyCount} />
-          <SummaryCard label="Need cleanup" value={issueCount} urgent={issueCount > 0} />
+          <SummaryCard
+            label="Need cleanup"
+            value={issueCount}
+            urgent={issueCount > 0}
+          />
+          <SummaryCard
+            label="Duplicates"
+            value={duplicateRows.length}
+            urgent={duplicateRows.length > 0}
+          />
         </div>
 
         <div className="mt-6 rounded-2xl border border-stone-200 bg-white p-5 shadow-sm">
@@ -266,11 +468,32 @@ export default function CleanupPage() {
               </h2>
 
               <p className="mt-1 text-sm text-stone-500">
-                Showing rows that have not yet been approved into the CRM.
+                Duplicates are imported rows that already match an existing CRM
+                company and contact.
               </p>
             </div>
 
             <div className="flex flex-wrap gap-2">
+              <button
+                onClick={approveAllReadyRows}
+                disabled={bulkApproving || readyCount === 0}
+                className="rounded-xl bg-red-600 px-4 py-2 text-sm font-bold text-white transition hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {bulkApproving
+                  ? 'Approving ready rows...'
+                  : `Approve all ready (${readyCount})`}
+              </button>
+
+              <button
+                onClick={removeAllDuplicateRows}
+                disabled={removingDuplicates || duplicateRows.length === 0}
+                className="rounded-xl border border-red-300 bg-white px-4 py-2 text-sm font-bold text-red-700 transition hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {removingDuplicates
+                  ? 'Removing duplicates...'
+                  : `Remove all duplicates (${duplicateRows.length})`}
+              </button>
+
               <FilterButton
                 active={filterMode === 'all'}
                 onClick={() => setFilterMode('all')}
@@ -290,6 +513,13 @@ export default function CleanupPage() {
                 onClick={() => setFilterMode('needs-cleanup')}
               >
                 Needs cleanup
+              </FilterButton>
+
+              <FilterButton
+                active={filterMode === 'duplicates'}
+                onClick={() => setFilterMode('duplicates')}
+              >
+                Duplicates
               </FilterButton>
             </div>
           </div>
@@ -325,9 +555,11 @@ export default function CleanupPage() {
                 <section
                   key={row.id}
                   className={`rounded-2xl border bg-white p-5 shadow-sm ${
-                    hasIssues
-                      ? 'border-red-200 ring-4 ring-red-50'
-                      : 'border-green-200 ring-4 ring-green-50'
+                    row.is_existing_duplicate
+                      ? 'border-amber-300 ring-4 ring-amber-50'
+                      : hasIssues
+                        ? 'border-red-200 ring-4 ring-red-50'
+                        : 'border-green-200 ring-4 ring-green-50'
                   }`}
                 >
                   <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
@@ -337,7 +569,11 @@ export default function CleanupPage() {
                           {row.lead_company_name || 'Missing company'}
                         </h3>
 
-                        {hasIssues ? (
+                        {row.is_existing_duplicate ? (
+                          <span className="rounded-full bg-amber-100 px-2 py-1 text-xs font-bold text-amber-800">
+                            Duplicate
+                          </span>
+                        ) : hasIssues ? (
                           <span className="rounded-full bg-red-100 px-2 py-1 text-xs font-bold text-red-700">
                             Needs cleanup
                           </span>
@@ -352,7 +588,15 @@ export default function CleanupPage() {
                         Raw contact: {row.contact_name_raw || 'Missing'}
                       </p>
 
-                      {row.import_notes && (
+                      {row.is_existing_duplicate && (
+                        <p className="mt-3 rounded-xl bg-amber-50 p-3 text-sm font-semibold text-amber-800">
+                          This imported row already appears to exist in the CRM
+                          for the same business and contact. Remove this import
+                          row instead of approving it again.
+                        </p>
+                      )}
+
+                      {row.import_notes && !row.is_existing_duplicate && (
                         <p className="mt-3 rounded-xl bg-stone-100 p-3 text-sm text-stone-700">
                           {row.import_notes}
                         </p>
@@ -360,9 +604,9 @@ export default function CleanupPage() {
                     </div>
 
                     <div className="flex flex-wrap gap-2">
+                      {row.is_existing_duplicate && <Flag label="Duplicate" />}
                       {row.needs_contact_name_cleanup && <Flag label="Name" />}
                       {row.needs_email_cleanup && <Flag label="Email" />}
-                      {row.needs_size_cleanup && <Flag label="Size" />}
                       {row.needs_dnc_review && <Flag label="DNC" />}
                     </div>
                   </div>
@@ -403,7 +647,9 @@ export default function CleanupPage() {
                     <Input
                       label="Role"
                       value={row.role ?? ''}
-                      onChange={(value) => updateLocalRow(row.id, 'role', value)}
+                      onChange={(value) =>
+                        updateLocalRow(row.id, 'role', value)
+                      }
                     />
 
                     <Input
@@ -445,34 +691,47 @@ export default function CleanupPage() {
 
                     <button
                       onClick={() => splitName(row)}
-                      className="rounded-xl border border-stone-300 bg-white px-4 py-2 text-sm font-bold transition hover:bg-stone-50"
+                      disabled={Boolean(row.is_existing_duplicate)}
+                      className="rounded-xl border border-stone-300 bg-white px-4 py-2 text-sm font-bold transition hover:bg-stone-50 disabled:cursor-not-allowed disabled:opacity-40"
                     >
                       Try split name
                     </button>
 
                     <button
                       onClick={() => saveRow(row)}
-                      disabled={isSaving}
-                      className="rounded-xl border border-stone-300 bg-white px-4 py-2 text-sm font-bold transition hover:bg-stone-50 disabled:opacity-50"
+                      disabled={isSaving || Boolean(row.is_existing_duplicate)}
+                      className="rounded-xl border border-stone-300 bg-white px-4 py-2 text-sm font-bold transition hover:bg-stone-50 disabled:cursor-not-allowed disabled:opacity-40"
                     >
                       {isSaving ? 'Saving...' : 'Save changes'}
                     </button>
 
                     <button
                       onClick={() => approveRow(row)}
-                      disabled={isSaving || hasIssues}
+                      disabled={
+                        isSaving || hasIssues || Boolean(row.is_existing_duplicate)
+                      }
                       className="rounded-xl bg-stone-950 px-4 py-2 text-sm font-bold text-white transition hover:bg-red-600 disabled:cursor-not-allowed disabled:opacity-40"
                     >
                       Approve into CRM
                     </button>
 
-                    {hasIssues && (
+                    {hasIssues && !row.is_existing_duplicate && (
                       <button
                         onClick={() => saveAndApprove(row)}
                         disabled={isSaving}
                         className="rounded-xl bg-red-600 px-4 py-2 text-sm font-bold text-white transition hover:bg-red-700 disabled:opacity-50"
                       >
                         Save and approve
+                      </button>
+                    )}
+
+                    {row.is_existing_duplicate && (
+                      <button
+                        onClick={() => removeDuplicateRow(row)}
+                        disabled={isSaving}
+                        className="rounded-xl bg-amber-600 px-4 py-2 text-sm font-bold text-white transition hover:bg-amber-700 disabled:opacity-50"
+                      >
+                        {isSaving ? 'Removing...' : 'Remove duplicate'}
                       </button>
                     )}
                   </div>
@@ -490,12 +749,11 @@ function rowHasIssues(row: CleanupRow) {
   return Boolean(
     row.needs_contact_name_cleanup ||
       row.needs_email_cleanup ||
-      row.needs_size_cleanup ||
       row.needs_dnc_review
   )
 }
 
-function NavLink({ href, children }: { href: string; children: React.ReactNode }) {
+function NavLink({ href, children }: { href: string; children: ReactNode }) {
   return (
     <Link
       href={href}
@@ -522,6 +780,7 @@ function SummaryCard({
       }`}
     >
       <p className="text-sm font-bold text-stone-500">{label}</p>
+
       <p
         className={`mt-3 text-4xl font-black tracking-tight ${
           urgent ? 'text-red-600' : 'text-stone-950'
@@ -540,7 +799,7 @@ function FilterButton({
 }: {
   active: boolean
   onClick: () => void
-  children: React.ReactNode
+  children: ReactNode
 }) {
   return (
     <button

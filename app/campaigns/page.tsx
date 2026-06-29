@@ -1,5 +1,6 @@
 'use client'
 
+import type { ReactNode } from 'react'
 import { useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import { supabase } from '@/lib/supabaseClient'
@@ -34,6 +35,7 @@ const sizeBands = [
 
 export default function CampaignsPage() {
   const [rows, setRows] = useState<ExportRow[]>([])
+  const [campaignName, setCampaignName] = useState('')
   const [sizeBand, setSizeBand] = useState('')
   const [industry, setIndustry] = useState('')
   const [location, setLocation] = useState('')
@@ -98,7 +100,7 @@ export default function CampaignsPage() {
     if (error) {
       setErrorMessage(error.message)
     } else {
-      setRows(data ?? [])
+      setRows((data ?? []) as ExportRow[])
     }
 
     setLoading(false)
@@ -109,13 +111,25 @@ export default function CampaignsPage() {
     setIndustry('')
     setLocation('')
     setDue90Only(false)
+    setMessage('')
+    setErrorMessage('')
   }
 
   function downloadCsv() {
+    const cleanedCampaignName = campaignName.trim()
+
+    if (!cleanedCampaignName) {
+      setErrorMessage('Give this campaign a name before downloading.')
+      return
+    }
+
     if (filteredRows.length === 0) {
       setErrorMessage('There are no contacts to export.')
       return
     }
+
+    setMessage('')
+    setErrorMessage('')
 
     const headers = [
       'First Name',
@@ -155,14 +169,18 @@ export default function CampaignsPage() {
 
     const link = document.createElement('a')
     link.href = url
-    link.download = `mail-merge-export-${new Date()
+    link.download = `${slugifyCampaignName(cleanedCampaignName)}-${new Date()
       .toISOString()
       .slice(0, 10)}.csv`
     link.click()
 
     URL.revokeObjectURL(url)
 
-    setMessage(`Exported ${filteredRows.length} contacts.`)
+    setMessage(
+      `Downloaded "${cleanedCampaignName}" with ${filteredRows.length} contact${
+        filteredRows.length === 1 ? '' : 's'
+      }.`
+    )
   }
 
   return (
@@ -173,6 +191,7 @@ export default function CampaignsPage() {
             <p className="text-xl font-black tracking-tight text-red-600">
               Fixing IT
             </p>
+
             <p className="text-xs font-medium uppercase tracking-[0.2em] text-stone-400">
               Marketing Dashboard
             </p>
@@ -182,6 +201,9 @@ export default function CampaignsPage() {
             <NavLink href="/">Dashboard</NavLink>
             <NavLink href="/import">Import</NavLink>
             <NavLink href="/cleanup">Cleanup</NavLink>
+            <NavLink href="/companies">Companies</NavLink>
+            <NavLink href="/contacts">Contacts</NavLink>
+            <NavLink href="/duplicates">Duplicates</NavLink>
             <LogoutButton />
           </nav>
         </div>
@@ -195,7 +217,7 @@ export default function CampaignsPage() {
 
           <div className="mt-6 max-w-3xl">
             <p className="inline-flex rounded-full bg-red-100 px-3 py-1 text-xs font-bold uppercase tracking-wide text-red-700">
-              Step 03
+              Step 04
             </p>
 
             <h1 className="mt-5 text-4xl font-black tracking-tight text-stone-950 md:text-5xl">
@@ -203,8 +225,9 @@ export default function CampaignsPage() {
             </h1>
 
             <p className="mt-5 text-base leading-7 text-stone-600">
-              Filter contacts by business size, industry, location and 90-day
-              follow-up status, then export a clean CSV for mail merge.
+              Name your campaign, filter contacts by business size, industry,
+              location and 90-day follow-up status, then download the campaign
+              as a clean CSV for mail merge.
             </p>
           </div>
         </div>
@@ -213,24 +236,26 @@ export default function CampaignsPage() {
       <section className="mx-auto max-w-7xl px-4 py-8">
         <div className="grid gap-4 md:grid-cols-3">
           <SummaryCard label="Clean export contacts" value={rows.length} />
+
           <SummaryCard
             label="90+ days since contact"
             value={due90Count}
             urgent={due90Count > 0}
           />
-          <SummaryCard label="Current export list" value={filteredRows.length} />
+
+          <SummaryCard label="Current campaign list" value={filteredRows.length} />
         </div>
 
         <div className="mt-6 rounded-2xl border border-stone-200 bg-white p-6 shadow-sm">
           <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
             <div>
               <h2 className="text-xl font-black text-stone-950">
-                Campaign filters
+                Campaign setup
               </h2>
 
               <p className="mt-1 text-sm text-stone-500">
-                DNC contacts and incomplete names/emails are automatically
-                excluded from this export.
+                Give this export a clear name so the downloaded file is easy to
+                identify later.
               </p>
             </div>
 
@@ -244,15 +269,28 @@ export default function CampaignsPage() {
 
               <button
                 onClick={downloadCsv}
-                disabled={filteredRows.length === 0}
+                disabled={filteredRows.length === 0 || !campaignName.trim()}
                 className="rounded-xl bg-red-600 px-4 py-2 text-sm font-bold text-white shadow-sm transition hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-50"
               >
-                Download CSV
+                Download campaign
               </button>
             </div>
           </div>
 
-          <div className="mt-6 grid gap-4 md:grid-cols-4">
+          <div className="mt-6 grid gap-4 lg:grid-cols-[1.2fr_0.8fr_0.8fr_0.8fr_0.7fr]">
+            <label className="block">
+              <span className="text-xs font-black uppercase tracking-wide text-stone-500">
+                Campaign name
+              </span>
+
+              <input
+                value={campaignName}
+                onChange={(event) => setCampaignName(event.target.value)}
+                placeholder="Example: Small business cyber review July"
+                className="mt-1 w-full rounded-xl border border-stone-300 bg-white px-3 py-2 text-sm outline-none transition focus:border-red-500 focus:ring-4 focus:ring-red-50"
+              />
+            </label>
+
             <label className="block">
               <span className="text-xs font-black uppercase tracking-wide text-stone-500">
                 Company size
@@ -319,6 +357,25 @@ export default function CampaignsPage() {
             </label>
           </div>
 
+          {campaignName.trim() && (
+            <div className="mt-5 rounded-2xl border border-stone-200 bg-stone-50 p-4">
+              <p className="text-xs font-black uppercase tracking-wide text-stone-500">
+                Current campaign
+              </p>
+
+              <div className="mt-2 flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+                <p className="text-lg font-black text-stone-950">
+                  {campaignName.trim()}
+                </p>
+
+                <p className="text-sm font-semibold text-stone-600">
+                  {filteredRows.length} contact
+                  {filteredRows.length === 1 ? '' : 's'} ready to download
+                </p>
+              </div>
+            </div>
+          )}
+
           {message && (
             <p className="mt-4 rounded-xl bg-green-50 p-3 text-sm font-semibold text-green-700">
               {message}
@@ -335,12 +392,12 @@ export default function CampaignsPage() {
         <div className="mt-6 overflow-hidden rounded-2xl border border-stone-200 bg-white shadow-sm">
           <div className="border-b border-stone-200 p-5">
             <h2 className="text-xl font-black text-stone-950">
-              Export preview
+              Campaign preview
             </h2>
 
             <p className="mt-1 text-sm text-stone-500">
-              Showing the first 100 matching contacts. CSV export includes all
-              matching contacts.
+              Showing the first 100 matching contacts. The CSV download includes
+              all matching contacts.
             </p>
           </div>
 
@@ -407,7 +464,7 @@ export default function CampaignsPage() {
 
           {filteredRows.length > 100 && (
             <div className="border-t border-stone-200 p-4 text-sm text-stone-500">
-              Showing first 100 rows only. The CSV export includes all{' '}
+              Showing first 100 rows only. The CSV download includes all{' '}
               {filteredRows.length} matching contacts.
             </div>
           )}
@@ -417,7 +474,17 @@ export default function CampaignsPage() {
   )
 }
 
-function NavLink({ href, children }: { href: string; children: React.ReactNode }) {
+function slugifyCampaignName(value: string) {
+  return (
+    value
+      .toLowerCase()
+      .trim()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '') || 'campaign'
+  )
+}
+
+function NavLink({ href, children }: { href: string; children: ReactNode }) {
   return (
     <Link
       href={href}

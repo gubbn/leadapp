@@ -359,7 +359,6 @@ function mapSpreadsheetRow(row: Record<string, unknown>): ImportPreviewRow {
   if (multipleContacts) notes.push('Multiple contacts may be in one cell')
   if (!splitName.firstName || !splitName.lastName) notes.push('Name needs checking')
   if (!isValidEmail(email)) notes.push('Missing or invalid email')
-  if (sizeBand === 'unknown') notes.push('Unknown business size')
   if (needsDncReview(dncRaw)) notes.push('DNC value needs review')
 
   return {
@@ -384,7 +383,7 @@ function mapSpreadsheetRow(row: Record<string, unknown>): ImportPreviewRow {
     needs_contact_name_cleanup:
       multipleContacts || !splitName.firstName || !splitName.lastName,
     needs_email_cleanup: !isValidEmail(email),
-    needs_size_cleanup: sizeBand === 'unknown',
+  needs_size_cleanup: false,
     needs_dnc_review: needsDncReview(dncRaw),
     import_notes: notes.join(', '),
   }
@@ -429,8 +428,7 @@ function FlagList({ row }: { row: ImportPreviewRow }) {
 
   if (row.needs_contact_name_cleanup) flags.push('Name')
   if (row.needs_email_cleanup) flags.push('Email')
-  if (row.needs_size_cleanup) flags.push('Size')
-  if (row.needs_dnc_review) flags.push('DNC')
+   if (row.needs_dnc_review) flags.push('DNC')
 
   if (flags.length === 0) {
     return (
