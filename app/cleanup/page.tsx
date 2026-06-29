@@ -44,6 +44,12 @@ type DuplicateImportRow = {
   duplicate_reason: string | null
 }
 
+type SplitContact = {
+  full_name: string
+  first_name: string
+  last_name: string
+}
+
 type FilterMode = 'all' | 'needs-cleanup' | 'ready' | 'duplicates'
 
 export default function CleanupPage() {
@@ -60,18 +66,6 @@ export default function CleanupPage() {
     loadRows()
   }, [])
 
-  const filteredRows = useMemo(() => {
-    return rows.filter((row) => {
-      const hasIssues = rowHasIssues(row)
-
-      if (filterMode === 'needs-cleanup') return hasIssues
-      if (filterMode === 'ready') return !hasIssues && !row.is_existing_duplicate
-      if (filterMode === 'duplicates') return row.is_existing_duplicate
-
-      return true
-    })
-  }, [rows, filterMode])
-
   const duplicateRows = useMemo(
     () => rows.filter((row) => row.is_existing_duplicate),
     [rows]
@@ -83,6 +77,18 @@ export default function CleanupPage() {
     return rows.filter((row) => !rowHasIssues(row) && !row.is_existing_duplicate)
       .length
   }, [rows])
+
+  const filteredRows = useMemo(() => {
+    return rows.filter((row) => {
+      const hasIssues = rowHasIssues(row)
+
+      if (filterMode === 'needs-cleanup') return hasIssues
+      if (filterMode === 'ready') return !hasIssues && !row.is_existing_duplicate
+      if (filterMode === 'duplicates') return row.is_existing_duplicate
+
+      return true
+    })
+  }, [rows, filterMode])
 
   async function loadRows() {
     setLoading(true)
@@ -164,6 +170,59 @@ export default function CleanupPage() {
         }
       })
     )
+  }
+
+  function getContactPartsFromRawName(rawName: string): SplitContact[] {
+    return rawName
+      .split(/\s+(?:and|&)\s+|\/|\\|;|\n/gi)
+      .map((name) => name.trim())
+      .filter(Boolean)
+      .map((fullName) => {
+        const split = splitSingleName(fullName)
+
+        return {
+          full_name: fullName,
+          first_name: split.firstName,
+          last_name: split.lastName,
+        }
+      })
+  }
+
+  async function splitContactRow(row: CleanupRow) {
+    const contacts = getContactPartsFromRawName(row.contact_name_raw ?? '')
+
+    if (contacts.length <= 1) {
+      splitName(row)
+      return
+    }
+
+    const confirmed = window.confirm(
+      `Split this row into ${contacts.length} separate contact rows?`
+    )
+
+    if (!confirmed) return
+
+    setSavingId(row.id)
+    setMessage('')
+    setErrorMessage('')
+
+    const { data, error } = await supabase.rpc('split_import_row_contacts', {
+      p_row_id: row.id,
+      p_contacts: contacts,
+    })
+
+    if (error) {
+      setErrorMessage(error.message)
+      setSavingId(null)
+      return
+    }
+
+    setMessage(
+      `Split into ${data} separate contact row${Number(data) === 1 ? '' : 's'}.`
+    )
+
+    setSavingId(null)
+    await loadRows()
   }
 
   function getCleanedRow(row: CleanupRow) {
@@ -436,9 +495,10 @@ export default function CleanupPage() {
             </h1>
 
             <p className="mt-5 text-base leading-7 text-stone-600">
-              Approve clean rows into the CRM, fix missing names and invalid
-              emails, or remove imported rows that already exist in the CRM.
-              Business size is optional and can be updated later.
+              Approve clean rows into the CRM, split multi-contact rows, fix
+              missing names and invalid emails, or remove imported rows that
+              already exist in the CRM. Business size is optional and can be
+              updated later.
             </p>
           </div>
         </div>
@@ -447,12 +507,15 @@ export default function CleanupPage() {
       <section className="mx-auto max-w-7xl px-4 py-8">
         <div className="grid gap-4 md:grid-cols-4">
           <SummaryCard label="Unapproved rows" value={rows.length} />
+
           <SummaryCard label="Ready to approve" value={readyCount} />
+
           <SummaryCard
             label="Need cleanup"
             value={issueCount}
             urgent={issueCount > 0}
           />
+
           <SummaryCard
             label="Duplicates"
             value={duplicateRows.length}
@@ -690,11 +753,11 @@ export default function CleanupPage() {
                     </label>
 
                     <button
-                      onClick={() => splitName(row)}
-                      disabled={Boolean(row.is_existing_duplicate)}
+                      onClick={() => splitContactRow(row)}
+                      disabled={isSaving || Boolean(row.is_existing_duplicate)}
                       className="rounded-xl border border-stone-300 bg-white px-4 py-2 text-sm font-bold transition hover:bg-stone-50 disabled:cursor-not-allowed disabled:opacity-40"
                     >
-                      Try split name
+                      Split contact name
                     </button>
 
                     <button
@@ -708,7 +771,9 @@ export default function CleanupPage() {
                     <button
                       onClick={() => approveRow(row)}
                       disabled={
-                        isSaving || hasIssues || Boolean(row.is_existing_duplicate)
+                        isSaving ||
+                        hasIssues ||
+                        Boolean(row.is_existing_duplicate)
                       }
                       className="rounded-xl bg-stone-950 px-4 py-2 text-sm font-bold text-white transition hover:bg-red-600 disabled:cursor-not-allowed disabled:opacity-40"
                     >
