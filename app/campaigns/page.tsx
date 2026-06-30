@@ -4,7 +4,7 @@ import type { ReactNode } from 'react'
 import { useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import { supabase } from '@/lib/supabaseClient'
-import { csvEscape } from '@/lib/marketingImportHelpers'
+import { isRoleAddress, isValidEmail } from '@/lib/marketingImportHelpers'
 import LogoutButton from '@/app/components/LogoutButton'
 
 type ExportRow = {
@@ -23,6 +23,17 @@ type ExportRow = {
   outcome: string | null
 }
 
+type CampaignEmailStatus =
+  | 'deliverable'
+  | 'risky'
+  | 'missing'
+  | 'invalid_format'
+
+type CampaignRow = ExportRow & {
+  campaign_email_status: CampaignEmailStatus
+  campaign_email_note: string
+}
+
 type MultiSelectOption = {
   value: string
   label: string
@@ -35,15 +46,21 @@ const sizeBandOptions: MultiSelectOption[] = [
   { value: 'large', label: 'Large: 251–1000' },
   { value: 'enterprise', label: 'Enterprise: 1000+' },
   { value: 'unknown', label: 'Unknown' },
+  { value: '1-10', label: '1–10' },
+  { value: '11-50', label: '11–50' },
+  { value: '51-250', label: '51–250' },
+  { value: '250+', label: '250+' },
 ]
 
 export default function CampaignsPage() {
-  const [rows, setRows] = useState<ExportRow[]>([])
+  const [rows, setRows] = useState<CampaignRow[]>([])
   const [campaignName, setCampaignName] = useState('')
   const [selectedSizeBands, setSelectedSizeBands] = useState<string[]>([])
   const [selectedIndustries, setSelectedIndustries] = useState<string[]>([])
   const [selectedLocations, setSelectedLocations] = useState<string[]>([])
   const [due90Only, setDue90Only] = useState(false)
+  const [includeRiskyEmails, setIncludeRiskyEmails] = useState(true)
+  const [includeInvalidEmails, setIncludeInvalidEmails] = useState(false)
   const [loading, setLoading] = useState(true)
   const [message, setMessage] = useState('')
   const [errorMessage, setErrorMessage] = useState('')
@@ -59,8 +76,8 @@ export default function CampaignsPage() {
       new Set(
         rows
           .map((row) => row.industry)
-          .filter((value): value is string => Boolean(value))
-      )
+          .filter((value): value is string => Boolean(value)),
+      ),
     )
       .sort()
       .map((value) => ({ value, label: value }))
@@ -71,11 +88,26 @@ export default function CampaignsPage() {
       new Set(
         rows
           .map((row) => row.location)
-          .filter((value): value is string => Boolean(value))
-      )
+          .filter((value): value is string => Boolean(value)),
+      ),
     )
       .sort()
       .map((value) => ({ value, label: value }))
+  }, [rows])
+
+  const emailCounts = useMemo(() => {
+    return rows.reduce(
+      (counts, row) => {
+        counts[row.campaign_email_status] += 1
+        return counts
+      },
+      {
+        deliverable: 0,
+        risky: 0,
+        missing: 0,
+        invalid_format: 0,
+      } as Record<CampaignEmailStatus, number>,
+    )
   }, [rows])
 
   const filteredRows = useMemo(() => {
@@ -99,7 +131,23 @@ export default function CampaignsPage() {
       const matchesDue90 =
         !due90Only || Number(row.days_since_last_contact ?? 0) >= 90
 
-      return matchesSize && matchesIndustry && matchesLocation && matchesDue90
+      const isRisky = row.campaign_email_status === 'risky'
+
+      const isInvalid =
+        row.campaign_email_status === 'missing' ||
+        row.campaign_email_status === 'invalid_format'
+
+      const matchesEmailRules =
+        (!isRisky || includeRiskyEmails) &&
+        (!isInvalid || includeInvalidEmails)
+
+      return (
+        matchesSize &&
+        matchesIndustry &&
+        matchesLocation &&
+        matchesDue90 &&
+        matchesEmailRules
+      )
     })
   }, [
     rows,
@@ -107,7 +155,13 @@ export default function CampaignsPage() {
     selectedIndustries,
     selectedLocations,
     due90Only,
+    includeRiskyEmails,
+    includeInvalidEmails,
   ])
+
+  const excludedEmailCount = useMemo(() => {
+    return rows.length - filteredRows.length
+  }, [rows.length, filteredRows.length])
 
   const due90Count = useMemo(() => {
     return rows.filter((row) => Number(row.days_since_last_contact ?? 0) >= 90)
@@ -127,7 +181,7 @@ export default function CampaignsPage() {
     if (error) {
       setErrorMessage(error.message)
     } else {
-      setRows((data ?? []) as ExportRow[])
+      setRows(((data ?? []) as ExportRow[]).map(addCampaignEmailStatus))
     }
 
     setLoading(false)
@@ -138,6 +192,8 @@ export default function CampaignsPage() {
     setSelectedIndustries([])
     setSelectedLocations([])
     setDue90Only(false)
+    setIncludeRiskyEmails(true)
+    setIncludeInvalidEmails(false)
     setMessage('')
     setErrorMessage('')
   }
@@ -159,10 +215,13 @@ export default function CampaignsPage() {
     setErrorMessage('')
 
     const headers = [
+      'Campaign Name',
       'First Name',
       'Last Name',
       'Company Name',
       'Email Address',
+      'Email Status',
+      'Email Note',
       'Role',
       'Industry',
       'Location',
@@ -174,10 +233,13 @@ export default function CampaignsPage() {
 
     const lines = filteredRows.map((row) =>
       [
+        cleanedCampaignName,
         row.first_name,
         row.last_name,
         row.company_name,
         row.email,
+        row.campaign_email_status,
+        row.campaign_email_note,
         row.role,
         row.industry,
         row.location,
@@ -187,7 +249,7 @@ export default function CampaignsPage() {
         row.outcome,
       ]
         .map(csvEscape)
-        .join(',')
+        .join(','),
     )
 
     const csv = [headers.join(','), ...lines].join('\n')
@@ -206,7 +268,7 @@ export default function CampaignsPage() {
     setMessage(
       `Downloaded "${cleanedCampaignName}" with ${filteredRows.length} contact${
         filteredRows.length === 1 ? '' : 's'
-      }.`
+      }.`,
     )
   }
 
@@ -252,15 +314,21 @@ export default function CampaignsPage() {
 
             <p className="mt-5 text-base leading-7 text-stone-600">
               Name your campaign, select one or more business sizes, industries
-              and locations, then download a clean CSV for mail merge.
+              and locations, then download a cleaner CSV for mail merge. Invalid
+              and missing emails are excluded by default.
             </p>
           </div>
         </div>
       </section>
 
       <section className="mx-auto max-w-7xl px-4 py-8">
-        <div className="grid gap-4 md:grid-cols-3">
-          <SummaryCard label="Clean export contacts" value={rows.length} />
+        <div className="grid gap-4 md:grid-cols-5">
+          <SummaryCard label="Total contacts" value={rows.length} />
+
+          <SummaryCard
+            label="Campaign contacts"
+            value={filteredRows.length}
+          />
 
           <SummaryCard
             label="90+ days since contact"
@@ -268,7 +336,17 @@ export default function CampaignsPage() {
             urgent={due90Count > 0}
           />
 
-          <SummaryCard label="Current campaign list" value={filteredRows.length} />
+          <SummaryCard
+            label="Risky emails"
+            value={emailCounts.risky}
+            urgent={emailCounts.risky > 0}
+          />
+
+          <SummaryCard
+            label="Invalid/missing"
+            value={emailCounts.invalid_format + emailCounts.missing}
+            urgent={emailCounts.invalid_format + emailCounts.missing > 0}
+          />
         </div>
 
         <div className="mt-6 rounded-2xl border border-stone-200 bg-white p-6 shadow-sm">
@@ -302,7 +380,7 @@ export default function CampaignsPage() {
             </div>
           </div>
 
-          <div className="mt-6 grid gap-4 lg:grid-cols-[1.2fr_0.8fr_0.8fr_0.8fr_0.7fr]">
+          <div className="mt-6 grid gap-4 lg:grid-cols-[1.2fr_0.8fr_0.8fr_0.8fr]">
             <label className="block">
               <span className="text-xs font-black uppercase tracking-wide text-stone-500">
                 Campaign name
@@ -339,8 +417,10 @@ export default function CampaignsPage() {
               selectedValues={selectedLocations}
               onChange={setSelectedLocations}
             />
+          </div>
 
-            <label className="flex items-end gap-3 rounded-xl border border-stone-300 bg-white px-4 py-3 text-sm font-bold">
+          <div className="mt-5 grid gap-3 md:grid-cols-3">
+            <label className="flex items-center gap-3 rounded-xl border border-stone-300 bg-white px-4 py-3 text-sm font-bold">
               <input
                 type="checkbox"
                 checked={due90Only}
@@ -348,6 +428,66 @@ export default function CampaignsPage() {
               />
               90+ days only
             </label>
+
+            <label className="flex items-center gap-3 rounded-xl border border-stone-300 bg-white px-4 py-3 text-sm font-bold">
+              <input
+                type="checkbox"
+                checked={includeRiskyEmails}
+                onChange={(event) =>
+                  setIncludeRiskyEmails(event.target.checked)
+                }
+              />
+              Include risky emails
+            </label>
+
+            <label className="flex items-center gap-3 rounded-xl border border-stone-300 bg-white px-4 py-3 text-sm font-bold">
+              <input
+                type="checkbox"
+                checked={includeInvalidEmails}
+                onChange={(event) =>
+                  setIncludeInvalidEmails(event.target.checked)
+                }
+              />
+              Include invalid or missing emails
+            </label>
+          </div>
+
+          <div className="mt-5 rounded-2xl border border-stone-200 bg-stone-50 p-4">
+            <p className="text-xs font-black uppercase tracking-wide text-stone-500">
+              Email safety
+            </p>
+
+            <div className="mt-3 grid gap-2 text-sm md:grid-cols-4">
+              <EmailCountPill
+                label="Looks usable"
+                value={emailCounts.deliverable}
+                tone="good"
+              />
+
+              <EmailCountPill
+                label="Risky / role address"
+                value={emailCounts.risky}
+                tone="warning"
+              />
+
+              <EmailCountPill
+                label="Invalid format"
+                value={emailCounts.invalid_format}
+                tone="bad"
+              />
+
+              <EmailCountPill
+                label="Missing email"
+                value={emailCounts.missing}
+                tone="bad"
+              />
+            </div>
+
+            <p className="mt-3 text-sm text-stone-600">
+              {excludedEmailCount} contact
+              {excludedEmailCount === 1 ? ' is' : 's are'} currently excluded by
+              your filters and email rules.
+            </p>
           </div>
 
           {campaignName.trim() && (
@@ -401,6 +541,7 @@ export default function CampaignsPage() {
                   <th className="px-4 py-3">Contact</th>
                   <th className="px-4 py-3">Company</th>
                   <th className="px-4 py-3">Email</th>
+                  <th className="px-4 py-3">Email status</th>
                   <th className="px-4 py-3">Size</th>
                   <th className="px-4 py-3">Industry</th>
                   <th className="px-4 py-3">Location</th>
@@ -411,13 +552,13 @@ export default function CampaignsPage() {
               <tbody>
                 {loading ? (
                   <tr>
-                    <td className="px-4 py-5 text-stone-500" colSpan={7}>
+                    <td className="px-4 py-5 text-stone-500" colSpan={8}>
                       Loading contacts...
                     </td>
                   </tr>
                 ) : filteredRows.length === 0 ? (
                   <tr>
-                    <td className="px-4 py-5 text-stone-500" colSpan={7}>
+                    <td className="px-4 py-5 text-stone-500" colSpan={8}>
                       No contacts match this campaign.
                     </td>
                   </tr>
@@ -428,12 +569,26 @@ export default function CampaignsPage() {
                       className="border-t border-stone-100"
                     >
                       <td className="px-4 py-3 font-semibold text-stone-900">
-                        {row.first_name} {row.last_name}
+                        {[row.first_name, row.last_name]
+                          .filter(Boolean)
+                          .join(' ') || '-'}
                       </td>
 
-                      <td className="px-4 py-3">{row.company_name}</td>
+                      <td className="px-4 py-3">{row.company_name || '-'}</td>
 
-                      <td className="px-4 py-3">{row.email}</td>
+                      <td className="px-4 py-3">{row.email || '-'}</td>
+
+                      <td className="px-4 py-3">
+                        <div className="flex flex-col gap-1">
+                          <EmailStatusBadge
+                            status={row.campaign_email_status}
+                          />
+
+                          <span className="text-xs text-stone-500">
+                            {row.campaign_email_note}
+                          </span>
+                        </div>
+                      </td>
 
                       <td className="px-4 py-3">
                         <span className="rounded-full bg-stone-100 px-2 py-1 text-xs font-bold text-stone-600">
@@ -471,6 +626,40 @@ export default function CampaignsPage() {
       </section>
     </main>
   )
+}
+
+function addCampaignEmailStatus(row: ExportRow): CampaignRow {
+  const email = row.email?.trim().toLowerCase() || null
+
+  if (!email) {
+    return {
+      ...row,
+      campaign_email_status: 'missing',
+      campaign_email_note: 'Email address is missing.',
+    }
+  }
+
+  if (!isValidEmail(email)) {
+    return {
+      ...row,
+      campaign_email_status: 'invalid_format',
+      campaign_email_note: 'Email address format is invalid.',
+    }
+  }
+
+  if (isRoleAddress(email)) {
+    return {
+      ...row,
+      campaign_email_status: 'risky',
+      campaign_email_note: 'Shared address such as info@, sales@ or admin@.',
+    }
+  }
+
+  return {
+    ...row,
+    campaign_email_status: 'deliverable',
+    campaign_email_note: 'Email format looks usable.',
+  }
 }
 
 function MultiSelectDropdown({
@@ -557,6 +746,44 @@ function MultiSelectDropdown({
   )
 }
 
+function EmailStatusBadge({ status }: { status: CampaignEmailStatus }) {
+  const classes =
+    status === 'deliverable'
+      ? 'bg-green-100 text-green-800'
+      : status === 'risky'
+        ? 'bg-amber-100 text-amber-800'
+        : 'bg-red-100 text-red-800'
+
+  return (
+    <span className={`w-fit rounded-full px-2 py-1 text-xs font-bold ${classes}`}>
+      {status.replaceAll('_', ' ')}
+    </span>
+  )
+}
+
+function EmailCountPill({
+  label,
+  value,
+  tone,
+}: {
+  label: string
+  value: number
+  tone: 'good' | 'warning' | 'bad'
+}) {
+  const classes =
+    tone === 'good'
+      ? 'bg-green-50 text-green-800 ring-green-100'
+      : tone === 'warning'
+        ? 'bg-amber-50 text-amber-800 ring-amber-100'
+        : 'bg-red-50 text-red-800 ring-red-100'
+
+  return (
+    <div className={`rounded-xl px-3 py-2 font-bold ring-1 ${classes}`}>
+      {label}: {value}
+    </div>
+  )
+}
+
 function slugifyCampaignName(value: string) {
   return (
     value
@@ -565,6 +792,22 @@ function slugifyCampaignName(value: string) {
       .replace(/[^a-z0-9]+/g, '-')
       .replace(/^-+|-+$/g, '') || 'campaign'
   )
+}
+
+function csvEscape(value: unknown) {
+  if (value === null || value === undefined) return ''
+
+  const stringValue = String(value)
+
+  if (
+    stringValue.includes(',') ||
+    stringValue.includes('"') ||
+    stringValue.includes('\n')
+  ) {
+    return `"${stringValue.replaceAll('"', '""')}"`
+  }
+
+  return stringValue
 }
 
 function NavLink({ href, children }: { href: string; children: ReactNode }) {
