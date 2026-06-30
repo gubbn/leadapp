@@ -307,7 +307,11 @@ export default function CleanupPage() {
     const emailValidation = await validateLeadEmail(row)
 
     const sizeBand = classifySizeBand(row.business_size_raw ?? '')
-    const needsNameCleanup = !row.first_name?.trim() || !row.last_name?.trim()
+
+    const firstName = row.first_name?.trim() || null
+    const lastName = row.last_name?.trim() || null
+
+    const needsNameCleanup = !firstName || !lastName
 
     const needsEmailCleanup =
       emailValidation.email_status === 'missing' ||
@@ -318,13 +322,18 @@ export default function CleanupPage() {
 
     const notes: string[] = []
 
-    if (needsNameCleanup) notes.push('Name needs checking')
+    if (needsNameCleanup) {
+      notes.push('Name needs checking')
+    }
+
     if (needsEmailCleanup && emailValidation.email_validation_notes) {
       notes.push(emailValidation.email_validation_notes)
     }
 
     return {
       ...row,
+      first_name: firstName,
+      last_name: lastName,
       email_address: emailValidation.cleanedEmail,
       email_status: emailValidation.email_status,
       email_deliverability: emailValidation.email_deliverability,
@@ -344,11 +353,10 @@ export default function CleanupPage() {
     setMessage('')
     setErrorMessage('')
 
-    const cleanedRow = await getCleanedRow(row)
+    try {
+      const cleanedRow = await getCleanedRow(row)
 
-    const { error } = await supabase
-      .from('lead_import_rows')
-      .update({
+      const updatePayload = {
         first_name: cleanedRow.first_name,
         last_name: cleanedRow.last_name,
         role: cleanedRow.role,
@@ -363,31 +371,58 @@ export default function CleanupPage() {
         outcome: cleanedRow.outcome,
         needs_contact_name_cleanup: cleanedRow.needs_contact_name_cleanup,
         needs_email_cleanup: cleanedRow.needs_email_cleanup,
-        needs_size_cleanup: false,
-        needs_dnc_review: false,
+        needs_size_cleanup: cleanedRow.needs_size_cleanup,
+        needs_dnc_review: cleanedRow.needs_dnc_review,
         import_notes: cleanedRow.import_notes,
         email_status: cleanedRow.email_status,
         email_deliverability: cleanedRow.email_deliverability,
         email_validation_notes: cleanedRow.email_validation_notes,
         email_checked_at: cleanedRow.email_checked_at,
-        updated_at: new Date().toISOString(),
-      })
-      .eq('id', row.id)
+      }
 
-    if (error) {
-      setErrorMessage(error.message)
+      const { data, error } = await supabase
+        .from('lead_import_rows')
+        .update(updatePayload)
+        .eq('id', row.id)
+        .select('*')
+        .single()
+
+      if (error) {
+        setErrorMessage(error.message)
+        setSavingId(null)
+        return false
+      }
+
+      if (data) {
+        setRows((currentRows) =>
+          currentRows.map((currentRow) =>
+            currentRow.id === row.id
+              ? {
+                  ...currentRow,
+                  ...(data as CleanupRow),
+                  is_existing_duplicate: currentRow.is_existing_duplicate,
+                  duplicate_reason: currentRow.duplicate_reason,
+                }
+              : currentRow,
+          ),
+        )
+      }
+
+      setMessage('Row saved and email validation updated.')
+      setSavingId(null)
+
+      if (reloadAfterSave) {
+        await loadRows()
+      }
+
+      return true
+    } catch (error) {
+      setErrorMessage(
+        error instanceof Error ? error.message : 'Could not save this row.',
+      )
       setSavingId(null)
       return false
     }
-
-    setMessage('Row saved and email validation updated.')
-    setSavingId(null)
-
-    if (reloadAfterSave) {
-      await loadRows()
-    }
-
-    return true
   }
 
   async function approveRow(row: CleanupRow) {
@@ -594,8 +629,7 @@ export default function CleanupPage() {
             <p className="mt-5 text-base leading-7 text-stone-600">
               Approve clean rows into the CRM, split multi-contact rows, fix
               missing names and invalid emails, or remove imported rows that
-              already exist in the CRM. Email checks now show whether an address
-              is deliverable, risky, duplicated, invalid, or missing.
+              already exist in the CRM.
             </p>
           </div>
         </div>
@@ -605,8 +639,16 @@ export default function CleanupPage() {
         <div className="grid gap-4 md:grid-cols-4">
           <SummaryCard label="Unapproved rows" value={rows.length} />
           <SummaryCard label="Ready to approve" value={readyCount} />
-          <SummaryCard label="Need cleanup" value={issueCount} urgent={issueCount > 0} />
-          <SummaryCard label="Duplicates" value={duplicateRows.length} urgent={duplicateRows.length > 0} />
+          <SummaryCard
+            label="Need cleanup"
+            value={issueCount}
+            urgent={issueCount > 0}
+          />
+          <SummaryCard
+            label="Duplicates"
+            value={duplicateRows.length}
+            urgent={duplicateRows.length > 0}
+          />
         </div>
 
         <div className="mt-6 rounded-2xl border border-stone-200 bg-white p-5 shadow-sm">
@@ -617,8 +659,8 @@ export default function CleanupPage() {
               </h2>
 
               <p className="mt-1 text-sm text-stone-500">
-                Email validation is shown against each row. Save a row to refresh
-                the validation result.
+                Save and validate updates the row fields and refreshes the email
+                deliverability status.
               </p>
             </div>
 
@@ -643,19 +685,31 @@ export default function CleanupPage() {
                   : `Remove all duplicates (${duplicateRows.length})`}
               </button>
 
-              <FilterButton active={filterMode === 'all'} onClick={() => setFilterMode('all')}>
+              <FilterButton
+                active={filterMode === 'all'}
+                onClick={() => setFilterMode('all')}
+              >
                 All
               </FilterButton>
 
-              <FilterButton active={filterMode === 'ready'} onClick={() => setFilterMode('ready')}>
+              <FilterButton
+                active={filterMode === 'ready'}
+                onClick={() => setFilterMode('ready')}
+              >
                 Ready
               </FilterButton>
 
-              <FilterButton active={filterMode === 'needs-cleanup'} onClick={() => setFilterMode('needs-cleanup')}>
+              <FilterButton
+                active={filterMode === 'needs-cleanup'}
+                onClick={() => setFilterMode('needs-cleanup')}
+              >
                 Needs cleanup
               </FilterButton>
 
-              <FilterButton active={filterMode === 'duplicates'} onClick={() => setFilterMode('duplicates')}>
+              <FilterButton
+                active={filterMode === 'duplicates'}
+                onClick={() => setFilterMode('duplicates')}
+              >
                 Duplicates
               </FilterButton>
             </div>
@@ -700,7 +754,7 @@ export default function CleanupPage() {
                   }`}
                 >
                   <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-                    <div>
+                    <div className="min-w-0 flex-1">
                       <div className="flex flex-wrap items-center gap-2">
                         <h3 className="text-xl font-black text-stone-950">
                           {row.lead_company_name || 'Missing company'}
@@ -732,7 +786,7 @@ export default function CleanupPage() {
                           Email validation
                         </p>
 
-                        <p className="mt-1 text-sm font-semibold text-stone-800">
+                        <p className="mt-1 break-all text-sm font-semibold text-stone-800">
                           {row.email_address || 'No email address'}
                         </p>
 
@@ -759,7 +813,10 @@ export default function CleanupPage() {
 
                         {row.email_checked_at ? (
                           <p className="mt-2 text-xs text-stone-400">
-                            Checked: {new Date(row.email_checked_at).toLocaleString('en-GB')}
+                            Checked:{' '}
+                            {new Date(row.email_checked_at).toLocaleString(
+                              'en-GB',
+                            )}
                           </p>
                         ) : null}
                       </div>
@@ -791,49 +848,65 @@ export default function CleanupPage() {
                     <Input
                       label="First name"
                       value={row.first_name ?? ''}
-                      onChange={(value) => updateLocalRow(row.id, 'first_name', value)}
+                      onChange={(value) =>
+                        updateLocalRow(row.id, 'first_name', value)
+                      }
                     />
 
                     <Input
                       label="Last name"
                       value={row.last_name ?? ''}
-                      onChange={(value) => updateLocalRow(row.id, 'last_name', value)}
+                      onChange={(value) =>
+                        updateLocalRow(row.id, 'last_name', value)
+                      }
                     />
 
                     <Input
                       label="Email"
                       value={row.email_address ?? ''}
-                      onChange={(value) => updateLocalRow(row.id, 'email_address', value)}
+                      onChange={(value) =>
+                        updateLocalRow(row.id, 'email_address', value)
+                      }
                     />
 
                     <Input
                       label="Telephone"
                       value={row.telephone ?? ''}
-                      onChange={(value) => updateLocalRow(row.id, 'telephone', value)}
+                      onChange={(value) =>
+                        updateLocalRow(row.id, 'telephone', value)
+                      }
                     />
 
                     <Input
                       label="Role"
                       value={row.role ?? ''}
-                      onChange={(value) => updateLocalRow(row.id, 'role', value)}
+                      onChange={(value) =>
+                        updateLocalRow(row.id, 'role', value)
+                      }
                     />
 
                     <Input
                       label="Industry"
                       value={row.industry ?? ''}
-                      onChange={(value) => updateLocalRow(row.id, 'industry', value)}
+                      onChange={(value) =>
+                        updateLocalRow(row.id, 'industry', value)
+                      }
                     />
 
                     <Input
                       label="Location"
                       value={row.location ?? ''}
-                      onChange={(value) => updateLocalRow(row.id, 'location', value)}
+                      onChange={(value) =>
+                        updateLocalRow(row.id, 'location', value)
+                      }
                     />
 
                     <Input
                       label="Business size"
                       value={row.business_size_raw ?? ''}
-                      onChange={(value) => updateLocalRow(row.id, 'business_size_raw', value)}
+                      onChange={(value) =>
+                        updateLocalRow(row.id, 'business_size_raw', value)
+                      }
                     />
                   </div>
 
