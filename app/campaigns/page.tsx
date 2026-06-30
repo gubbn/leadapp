@@ -326,6 +326,7 @@ export default function CampaignsPage() {
             <NavLink href="/cleanup">Cleanup</NavLink>
             <NavLink href="/companies">Companies</NavLink>
             <NavLink href="/contacts">Contacts</NavLink>
+            <NavLink href="/reports">Reports</NavLink>
             <LogoutButton />
           </nav>
         </div>

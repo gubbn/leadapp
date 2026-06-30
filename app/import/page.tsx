@@ -146,6 +146,7 @@ export default function ImportPage() {
             <NavLink href="/">Dashboard</NavLink>
             <NavLink href="/cleanup">Cleanup</NavLink>
             <NavLink href="/campaigns">Campaigns</NavLink>
+            <NavLink href="/reports">Reports</NavLink>
             <LogoutButton />
           </nav>
         </div>

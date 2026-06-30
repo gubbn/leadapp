@@ -64,6 +64,7 @@ export default async function MarketingDashboardPage() {
             <NavLink href="/contacts">Contacts</NavLink>
             <NavLink href="/campaigns">Campaigns</NavLink>
             <NavLink href="/duplicates">Duplicates</NavLink>
+            <NavLink href="/reports">Reports</NavLink>
             <LogoutButton />
           </nav>
         </div>

@@ -274,6 +274,7 @@ function ContactsContent() {
             <NavLink href="/cleanup">Cleanup</NavLink>
             <NavLink href="/companies">Companies</NavLink>
             <NavLink href="/campaigns">Campaigns</NavLink>
+            <NavLink href="/reports">Reports</NavLink>
             <LogoutButton />
           </nav>
         </div>
