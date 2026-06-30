@@ -29,9 +29,13 @@ type CampaignEmailStatus =
   | 'missing'
   | 'invalid_format'
 
+type CampaignRelationshipStatus = 'prospect' | 'customer' | 'quoted'
+
 type CampaignRow = ExportRow & {
   campaign_email_status: CampaignEmailStatus
   campaign_email_note: string
+  campaign_relationship_status: CampaignRelationshipStatus
+  campaign_relationship_note: string
 }
 
 type MultiSelectOption = {
@@ -61,6 +65,8 @@ export default function CampaignsPage() {
   const [due90Only, setDue90Only] = useState(false)
   const [includeRiskyEmails, setIncludeRiskyEmails] = useState(true)
   const [includeInvalidEmails, setIncludeInvalidEmails] = useState(false)
+  const [excludeCustomers, setExcludeCustomers] = useState(true)
+  const [excludeQuotedCompanies, setExcludeQuotedCompanies] = useState(true)
   const [loading, setLoading] = useState(true)
   const [message, setMessage] = useState('')
   const [errorMessage, setErrorMessage] = useState('')
@@ -110,6 +116,17 @@ export default function CampaignsPage() {
     )
   }, [rows])
 
+  const customerCount = useMemo(() => {
+    return rows.filter(
+      (row) => row.campaign_relationship_status === 'customer',
+    ).length
+  }, [rows])
+
+  const quotedCount = useMemo(() => {
+    return rows.filter((row) => row.campaign_relationship_status === 'quoted')
+      .length
+  }, [rows])
+
   const filteredRows = useMemo(() => {
     return rows.filter((row) => {
       const rowSizeBand = row.size_band || 'unknown'
@@ -141,12 +158,21 @@ export default function CampaignsPage() {
         (!isRisky || includeRiskyEmails) &&
         (!isInvalid || includeInvalidEmails)
 
+      const isCustomer = row.campaign_relationship_status === 'customer'
+      const isQuoted = row.campaign_relationship_status === 'quoted'
+
+      const matchesCustomerRules = !excludeCustomers || !isCustomer
+
+      const matchesQuotedRules = !excludeQuotedCompanies || !isQuoted
+
       return (
         matchesSize &&
         matchesIndustry &&
         matchesLocation &&
         matchesDue90 &&
-        matchesEmailRules
+        matchesEmailRules &&
+        matchesCustomerRules &&
+        matchesQuotedRules
       )
     })
   }, [
@@ -157,9 +183,11 @@ export default function CampaignsPage() {
     due90Only,
     includeRiskyEmails,
     includeInvalidEmails,
+    excludeCustomers,
+    excludeQuotedCompanies,
   ])
 
-  const excludedEmailCount = useMemo(() => {
+  const excludedCount = useMemo(() => {
     return rows.length - filteredRows.length
   }, [rows.length, filteredRows.length])
 
@@ -181,7 +209,7 @@ export default function CampaignsPage() {
     if (error) {
       setErrorMessage(error.message)
     } else {
-      setRows(((data ?? []) as ExportRow[]).map(addCampaignEmailStatus))
+      setRows(((data ?? []) as ExportRow[]).map(addCampaignStatuses))
     }
 
     setLoading(false)
@@ -194,6 +222,8 @@ export default function CampaignsPage() {
     setDue90Only(false)
     setIncludeRiskyEmails(true)
     setIncludeInvalidEmails(false)
+    setExcludeCustomers(true)
+    setExcludeQuotedCompanies(true)
     setMessage('')
     setErrorMessage('')
   }
@@ -222,6 +252,8 @@ export default function CampaignsPage() {
       'Email Address',
       'Email Status',
       'Email Note',
+      'Relationship Status',
+      'Relationship Note',
       'Role',
       'Industry',
       'Location',
@@ -240,6 +272,8 @@ export default function CampaignsPage() {
         row.email,
         row.campaign_email_status,
         row.campaign_email_note,
+        row.campaign_relationship_status,
+        row.campaign_relationship_note,
         row.role,
         row.industry,
         row.location,
@@ -314,8 +348,8 @@ export default function CampaignsPage() {
 
             <p className="mt-5 text-base leading-7 text-stone-600">
               Name your campaign, select one or more business sizes, industries
-              and locations, then download a cleaner CSV for mail merge. Invalid
-              and missing emails are excluded by default.
+              and locations, then download a cleaner CSV for mail merge. Existing
+              customers and quoted companies are excluded by default.
             </p>
           </div>
         </div>
@@ -325,11 +359,28 @@ export default function CampaignsPage() {
         <div className="grid gap-4 md:grid-cols-5">
           <SummaryCard label="Total contacts" value={rows.length} />
 
+          <SummaryCard label="Campaign contacts" value={filteredRows.length} />
+
           <SummaryCard
-            label="Campaign contacts"
-            value={filteredRows.length}
+            label="Customers"
+            value={customerCount}
+            urgent={customerCount > 0}
           />
 
+          <SummaryCard
+            label="Quoted / negotiating"
+            value={quotedCount}
+            urgent={quotedCount > 0}
+          />
+
+          <SummaryCard
+            label="Invalid/missing"
+            value={emailCounts.invalid_format + emailCounts.missing}
+            urgent={emailCounts.invalid_format + emailCounts.missing > 0}
+          />
+        </div>
+
+        <div className="mt-6 grid gap-4 md:grid-cols-3">
           <SummaryCard
             label="90+ days since contact"
             value={due90Count}
@@ -343,9 +394,9 @@ export default function CampaignsPage() {
           />
 
           <SummaryCard
-            label="Invalid/missing"
-            value={emailCounts.invalid_format + emailCounts.missing}
-            urgent={emailCounts.invalid_format + emailCounts.missing > 0}
+            label="Excluded by filters"
+            value={excludedCount}
+            urgent={excludedCount > 0}
           />
         </div>
 
@@ -420,73 +471,79 @@ export default function CampaignsPage() {
           </div>
 
           <div className="mt-5 grid gap-3 md:grid-cols-3">
-            <label className="flex items-center gap-3 rounded-xl border border-stone-300 bg-white px-4 py-3 text-sm font-bold">
-              <input
-                type="checkbox"
-                checked={due90Only}
-                onChange={(event) => setDue90Only(event.target.checked)}
-              />
-              90+ days only
-            </label>
+            <CheckboxCard
+              checked={due90Only}
+              onChange={setDue90Only}
+              label="90+ days only"
+            />
 
-            <label className="flex items-center gap-3 rounded-xl border border-stone-300 bg-white px-4 py-3 text-sm font-bold">
-              <input
-                type="checkbox"
-                checked={includeRiskyEmails}
-                onChange={(event) =>
-                  setIncludeRiskyEmails(event.target.checked)
-                }
-              />
-              Include risky emails
-            </label>
+            <CheckboxCard
+              checked={includeRiskyEmails}
+              onChange={setIncludeRiskyEmails}
+              label="Include risky emails"
+            />
 
-            <label className="flex items-center gap-3 rounded-xl border border-stone-300 bg-white px-4 py-3 text-sm font-bold">
-              <input
-                type="checkbox"
-                checked={includeInvalidEmails}
-                onChange={(event) =>
-                  setIncludeInvalidEmails(event.target.checked)
-                }
-              />
-              Include invalid or missing emails
-            </label>
+            <CheckboxCard
+              checked={includeInvalidEmails}
+              onChange={setIncludeInvalidEmails}
+              label="Include invalid or missing emails"
+            />
+
+            <CheckboxCard
+              checked={excludeCustomers}
+              onChange={setExcludeCustomers}
+              label="Exclude existing customers"
+            />
+
+            <CheckboxCard
+              checked={excludeQuotedCompanies}
+              onChange={setExcludeQuotedCompanies}
+              label="Exclude quoted / negotiating companies"
+            />
           </div>
 
           <div className="mt-5 rounded-2xl border border-stone-200 bg-stone-50 p-4">
             <p className="text-xs font-black uppercase tracking-wide text-stone-500">
-              Email safety
+              Campaign safety
             </p>
 
-            <div className="mt-3 grid gap-2 text-sm md:grid-cols-4">
-              <EmailCountPill
+            <div className="mt-3 grid gap-2 text-sm md:grid-cols-5">
+              <CountPill
                 label="Looks usable"
                 value={emailCounts.deliverable}
                 tone="good"
               />
 
-              <EmailCountPill
-                label="Risky / role address"
+              <CountPill
+                label="Risky / role"
                 value={emailCounts.risky}
                 tone="warning"
               />
 
-              <EmailCountPill
-                label="Invalid format"
+              <CountPill
+                label="Invalid"
                 value={emailCounts.invalid_format}
                 tone="bad"
               />
 
-              <EmailCountPill
-                label="Missing email"
+              <CountPill
+                label="Missing"
                 value={emailCounts.missing}
                 tone="bad"
+              />
+
+              <CountPill
+                label="Customers/quoted"
+                value={customerCount + quotedCount}
+                tone="warning"
               />
             </div>
 
             <p className="mt-3 text-sm text-stone-600">
-              {excludedEmailCount} contact
-              {excludedEmailCount === 1 ? ' is' : 's are'} currently excluded by
-              your filters and email rules.
+              {excludedCount} contact
+              {excludedCount === 1 ? ' is' : 's are'} currently excluded by
+              your filters, email rules, customer rules, or quoted-company
+              rules.
             </p>
           </div>
 
@@ -542,6 +599,7 @@ export default function CampaignsPage() {
                   <th className="px-4 py-3">Company</th>
                   <th className="px-4 py-3">Email</th>
                   <th className="px-4 py-3">Email status</th>
+                  <th className="px-4 py-3">Relationship</th>
                   <th className="px-4 py-3">Size</th>
                   <th className="px-4 py-3">Industry</th>
                   <th className="px-4 py-3">Location</th>
@@ -552,13 +610,13 @@ export default function CampaignsPage() {
               <tbody>
                 {loading ? (
                   <tr>
-                    <td className="px-4 py-5 text-stone-500" colSpan={8}>
+                    <td className="px-4 py-5 text-stone-500" colSpan={9}>
                       Loading contacts...
                     </td>
                   </tr>
                 ) : filteredRows.length === 0 ? (
                   <tr>
-                    <td className="px-4 py-5 text-stone-500" colSpan={8}>
+                    <td className="px-4 py-5 text-stone-500" colSpan={9}>
                       No contacts match this campaign.
                     </td>
                   </tr>
@@ -586,6 +644,18 @@ export default function CampaignsPage() {
 
                           <span className="text-xs text-stone-500">
                             {row.campaign_email_note}
+                          </span>
+                        </div>
+                      </td>
+
+                      <td className="px-4 py-3">
+                        <div className="flex flex-col gap-1">
+                          <RelationshipBadge
+                            status={row.campaign_relationship_status}
+                          />
+
+                          <span className="text-xs text-stone-500">
+                            {row.campaign_relationship_note}
                           </span>
                         </div>
                       </td>
@@ -628,12 +698,25 @@ export default function CampaignsPage() {
   )
 }
 
-function addCampaignEmailStatus(row: ExportRow): CampaignRow {
+function addCampaignStatuses(row: ExportRow): CampaignRow {
+  const emailStatus = getCampaignEmailStatus(row)
+  const relationshipStatus = getCampaignRelationshipStatus(row.outcome)
+
+  return {
+    ...row,
+    ...emailStatus,
+    ...relationshipStatus,
+  }
+}
+
+function getCampaignEmailStatus(row: ExportRow): {
+  campaign_email_status: CampaignEmailStatus
+  campaign_email_note: string
+} {
   const email = row.email?.trim().toLowerCase() || null
 
   if (!email) {
     return {
-      ...row,
       campaign_email_status: 'missing',
       campaign_email_note: 'Email address is missing.',
     }
@@ -641,7 +724,6 @@ function addCampaignEmailStatus(row: ExportRow): CampaignRow {
 
   if (!isValidEmail(email)) {
     return {
-      ...row,
       campaign_email_status: 'invalid_format',
       campaign_email_note: 'Email address format is invalid.',
     }
@@ -649,16 +731,40 @@ function addCampaignEmailStatus(row: ExportRow): CampaignRow {
 
   if (isRoleAddress(email)) {
     return {
-      ...row,
       campaign_email_status: 'risky',
       campaign_email_note: 'Shared address such as info@, sales@ or admin@.',
     }
   }
 
   return {
-    ...row,
     campaign_email_status: 'deliverable',
     campaign_email_note: 'Email format looks usable.',
+  }
+}
+
+function getCampaignRelationshipStatus(outcome: string | null): {
+  campaign_relationship_status: CampaignRelationshipStatus
+  campaign_relationship_note: string
+} {
+  const cleaned = outcome?.trim().toLowerCase() || ''
+
+  if (cleaned === 'customer' || cleaned === 'won') {
+    return {
+      campaign_relationship_status: 'customer',
+      campaign_relationship_note: outcome || 'Existing customer.',
+    }
+  }
+
+  if (cleaned === 'quote sent' || cleaned === 'negotiating') {
+    return {
+      campaign_relationship_status: 'quoted',
+      campaign_relationship_note: outcome || 'Quoted or active sales lead.',
+    }
+  }
+
+  return {
+    campaign_relationship_status: 'prospect',
+    campaign_relationship_note: outcome || 'No customer/quote outcome.',
   }
 }
 
@@ -746,6 +852,27 @@ function MultiSelectDropdown({
   )
 }
 
+function CheckboxCard({
+  checked,
+  onChange,
+  label,
+}: {
+  checked: boolean
+  onChange: (value: boolean) => void
+  label: string
+}) {
+  return (
+    <label className="flex items-center gap-3 rounded-xl border border-stone-300 bg-white px-4 py-3 text-sm font-bold">
+      <input
+        type="checkbox"
+        checked={checked}
+        onChange={(event) => onChange(event.target.checked)}
+      />
+      {label}
+    </label>
+  )
+}
+
 function EmailStatusBadge({ status }: { status: CampaignEmailStatus }) {
   const classes =
     status === 'deliverable'
@@ -761,7 +888,26 @@ function EmailStatusBadge({ status }: { status: CampaignEmailStatus }) {
   )
 }
 
-function EmailCountPill({
+function RelationshipBadge({
+  status,
+}: {
+  status: CampaignRelationshipStatus
+}) {
+  const classes =
+    status === 'prospect'
+      ? 'bg-green-100 text-green-800'
+      : status === 'quoted'
+        ? 'bg-amber-100 text-amber-800'
+        : 'bg-blue-100 text-blue-800'
+
+  return (
+    <span className={`w-fit rounded-full px-2 py-1 text-xs font-bold ${classes}`}>
+      {status}
+    </span>
+  )
+}
+
+function CountPill({
   label,
   value,
   tone,
@@ -802,7 +948,8 @@ function csvEscape(value: unknown) {
   if (
     stringValue.includes(',') ||
     stringValue.includes('"') ||
-    stringValue.includes('\n')
+    stringValue.includes('\n') ||
+    stringValue.includes('\r')
   ) {
     return `"${stringValue.replaceAll('"', '""')}"`
   }
