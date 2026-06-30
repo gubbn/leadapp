@@ -190,6 +190,16 @@ export function splitSingleName(name: string | null | undefined) {
   }
 }
 
+export function hasMultipleContacts(name: string | null | undefined) {
+  if (!name) return false
+
+  const cleaned = name.trim()
+
+  if (!cleaned) return false
+
+  return /\s+(and|&)\s+|\/|\\|;|\n/i.test(cleaned)
+}
+
 export function classifySizeBand(value: string | number | null | undefined) {
   if (value === null || value === undefined || value === '') return 'unknown'
 
@@ -281,6 +291,124 @@ export function parseDnc(value: string | boolean | null | undefined) {
   ].includes(cleaned)
 }
 
+export function needsDncReview(value: string | boolean | null | undefined) {
+  if (typeof value === 'boolean') return false
+
+  if (value === null || value === undefined) return false
+
+  const cleaned = String(value).trim().toLowerCase()
+
+  if (!cleaned) return false
+
+  const clearValues = [
+    'yes',
+    'y',
+    'true',
+    '1',
+    'no',
+    'n',
+    'false',
+    '0',
+    'do not contact',
+    'dnc',
+    'no contact',
+    'unsubscribe',
+    'unsubscribed',
+    'opt out',
+    'opt-out',
+  ]
+
+  return !clearValues.includes(cleaned)
+}
+
+export function parseDate(value: string | Date | null | undefined) {
+  if (!value) return null
+
+  if (value instanceof Date) {
+    if (Number.isNaN(value.getTime())) return null
+
+    return value.toISOString().slice(0, 10)
+  }
+
+  const cleaned = String(value).trim()
+
+  if (!cleaned) return null
+
+  const parsed = new Date(cleaned)
+
+  if (!Number.isNaN(parsed.getTime())) {
+    return parsed.toISOString().slice(0, 10)
+  }
+
+  const ukDateMatch = cleaned.match(/^(\d{1,2})[./-](\d{1,2})[./-](\d{2,4})$/)
+
+  if (ukDateMatch) {
+    const day = Number(ukDateMatch[1])
+    const month = Number(ukDateMatch[2])
+    const year =
+      ukDateMatch[3].length === 2
+        ? Number(`20${ukDateMatch[3]}`)
+        : Number(ukDateMatch[3])
+
+    const date = new Date(Date.UTC(year, month - 1, day))
+
+    if (!Number.isNaN(date.getTime())) {
+      return date.toISOString().slice(0, 10)
+    }
+  }
+
+  return null
+}
+
+export function estimatedLastContactDate(
+  daysSinceLastContact: string | number | null | undefined,
+) {
+  if (
+    daysSinceLastContact === null ||
+    daysSinceLastContact === undefined ||
+    daysSinceLastContact === ''
+  ) {
+    return null
+  }
+
+  const days =
+    typeof daysSinceLastContact === 'number'
+      ? daysSinceLastContact
+      : Number(String(daysSinceLastContact).replace(/[^0-9]/g, ''))
+
+  if (!Number.isFinite(days) || days < 0) return null
+
+  const date = new Date()
+  date.setDate(date.getDate() - days)
+
+  return date.toISOString().slice(0, 10)
+}
+
+export function getField(
+  row: Record<string, unknown>,
+  possibleNames: string[],
+) {
+  const normalisedRowEntries = Object.entries(row).map(([key, value]) => ({
+    key,
+    normalisedKey: normaliseColumnName(key),
+    value,
+  }))
+
+  for (const possibleName of possibleNames) {
+    const normalisedPossibleName = normaliseColumnName(possibleName)
+
+    const match = normalisedRowEntries.find(
+      (entry) => entry.normalisedKey === normalisedPossibleName,
+    )
+
+    if (match) {
+      return cleanFieldValue(match.value)
+    }
+  }
+
+  return ''
+}
+
 export function csvEscape(value: unknown) {
   if (value === null || value === undefined) return ''
 
@@ -296,4 +424,18 @@ export function csvEscape(value: unknown) {
   }
 
   return stringValue
+}
+
+function normaliseColumnName(value: string) {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/[\s_-]+/g, '')
+    .replace(/[^a-z0-9]/g, '')
+}
+
+function cleanFieldValue(value: unknown) {
+  if (value === null || value === undefined) return ''
+
+  return String(value).trim()
 }
