@@ -182,16 +182,65 @@ export function splitSingleName(name: string | null | undefined) {
 export function classifySizeBand(value: string | number | null | undefined) {
   if (value === null || value === undefined || value === '') return null
 
+  const rawValue = String(value).trim().toLowerCase()
+
+  if (rawValue === 'micro') return 'micro'
+  if (rawValue === 'small') return 'small'
+  if (rawValue === 'medium') return 'medium'
+  if (rawValue === 'large') return 'large'
+  if (rawValue === 'enterprise') return 'enterprise'
+  if (rawValue === 'unknown') return 'unknown'
+
   const numberValue =
     typeof value === 'number'
       ? value
       : Number(String(value).replace(/[^0-9]/g, ''))
 
-  if (!Number.isFinite(numberValue) || numberValue <= 0) return null
+  if (!Number.isFinite(numberValue) || numberValue <= 0) return 'unknown'
 
-  if (numberValue <= 10) return '1-10'
-  if (numberValue <= 50) return '11-50'
-  if (numberValue <= 250) return '51-250'
+  if (numberValue <= 10) return 'micro'
+  if (numberValue <= 50) return 'small'
+  if (numberValue <= 250) return 'medium'
+  if (numberValue <= 1000) return 'large'
 
-  return '250+'
+  return 'enterprise'
+}
+
+export function parseDnc(value: string | boolean | null | undefined) {
+  if (typeof value === 'boolean') return value
+
+  if (value === null || value === undefined) return false
+
+  const cleaned = String(value).trim().toLowerCase()
+
+  if (!cleaned) return false
+
+  return [
+    'yes',
+    'y',
+    'true',
+    '1',
+    'do not contact',
+    'dnc',
+    'no contact',
+    'unsubscribe',
+    'unsubscribed',
+  ].includes(cleaned)
+}
+
+export function csvEscape(value: unknown) {
+  if (value === null || value === undefined) return ''
+
+  const stringValue = String(value)
+
+  if (
+    stringValue.includes(',') ||
+    stringValue.includes('"') ||
+    stringValue.includes('\n') ||
+    stringValue.includes('\r')
+  ) {
+    return `"${stringValue.replaceAll('"', '""')}"`
+  }
+
+  return stringValue
 }
