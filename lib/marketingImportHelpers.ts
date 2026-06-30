@@ -154,6 +154,8 @@ export function splitSingleName(name: string | null | undefined) {
     return {
       first_name: null,
       last_name: null,
+      firstName: null,
+      lastName: null,
     }
   }
 
@@ -163,6 +165,8 @@ export function splitSingleName(name: string | null | undefined) {
     return {
       first_name: null,
       last_name: null,
+      firstName: null,
+      lastName: null,
     }
   }
 
@@ -170,17 +174,24 @@ export function splitSingleName(name: string | null | undefined) {
     return {
       first_name: parts[0],
       last_name: null,
+      firstName: parts[0],
+      lastName: null,
     }
   }
 
+  const firstName = parts[0]
+  const lastName = parts.slice(1).join(' ')
+
   return {
-    first_name: parts[0],
-    last_name: parts.slice(1).join(' '),
+    first_name: firstName,
+    last_name: lastName,
+    firstName,
+    lastName,
   }
 }
 
 export function classifySizeBand(value: string | number | null | undefined) {
-  if (value === null || value === undefined || value === '') return null
+  if (value === null || value === undefined || value === '') return 'unknown'
 
   const rawValue = String(value).trim().toLowerCase()
 
@@ -190,6 +201,46 @@ export function classifySizeBand(value: string | number | null | undefined) {
   if (rawValue === 'large') return 'large'
   if (rawValue === 'enterprise') return 'enterprise'
   if (rawValue === 'unknown') return 'unknown'
+
+  if (
+    rawValue.includes('1-10') ||
+    rawValue.includes('1–10') ||
+    rawValue.includes('1 to 10')
+  ) {
+    return 'micro'
+  }
+
+  if (
+    rawValue.includes('11-50') ||
+    rawValue.includes('11–50') ||
+    rawValue.includes('11 to 50')
+  ) {
+    return 'small'
+  }
+
+  if (
+    rawValue.includes('51-250') ||
+    rawValue.includes('51–250') ||
+    rawValue.includes('51 to 250')
+  ) {
+    return 'medium'
+  }
+
+  if (
+    rawValue.includes('251-1000') ||
+    rawValue.includes('251–1000') ||
+    rawValue.includes('251 to 1000')
+  ) {
+    return 'large'
+  }
+
+  if (
+    rawValue.includes('1000+') ||
+    rawValue.includes('1000 plus') ||
+    rawValue.includes('over 1000')
+  ) {
+    return 'enterprise'
+  }
 
   const numberValue =
     typeof value === 'number'
@@ -225,6 +276,8 @@ export function parseDnc(value: string | boolean | null | undefined) {
     'no contact',
     'unsubscribe',
     'unsubscribed',
+    'opt out',
+    'opt-out',
   ].includes(cleaned)
 }
 
