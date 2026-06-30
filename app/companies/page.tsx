@@ -1,10 +1,9 @@
 'use client'
 
-import type { ReactNode } from 'react'
 import { useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import { supabase } from '@/lib/supabaseClient'
-import LogoutButton from '@/app/components/LogoutButton'
+import AppHeader from '@/app/components/AppHeader'
 
 type CompanyRow = {
   id: string
@@ -301,29 +300,7 @@ export default function CompaniesPage() {
 
   return (
     <main className="min-h-screen bg-stone-100 text-stone-900">
-      <header className="border-b border-stone-200 bg-white">
-        <div className="mx-auto flex max-w-7xl items-center justify-between px-4 py-4">
-          <Link href="/" className="group">
-            <p className="text-xl font-black tracking-tight text-red-600">
-              Fixing IT
-            </p>
-
-            <p className="text-xs font-medium uppercase tracking-[0.2em] text-stone-400">
-              Marketing Dashboard
-            </p>
-          </Link>
-
-          <nav className="hidden items-center gap-2 text-sm font-semibold text-stone-600 md:flex">
-            <NavLink href="/">Dashboard</NavLink>
-            <NavLink href="/import">Import</NavLink>
-            <NavLink href="/cleanup">Cleanup</NavLink>
-            <NavLink href="/contacts">Contacts</NavLink>
-            <NavLink href="/campaigns">Campaigns</NavLink>
-            <NavLink href="/reports">Reports</NavLink>
-            <LogoutButton />
-          </nav>
-        </div>
-      </header>
+      <AppHeader />
 
       <section className="border-b border-stone-200 bg-gradient-to-br from-white via-stone-50 to-red-50">
         <div className="mx-auto max-w-7xl px-4 py-10">
@@ -792,8 +769,7 @@ function getRelationshipStatus(outcome: string | null): RelationshipStatus {
 }
 
 function cleanText(value: string | null | undefined) {
-  const cleaned = value?.trim() || null
-  return cleaned
+  return value?.trim() || null
 }
 
 function normaliseWebsiteUrl(value: string) {
@@ -957,17 +933,6 @@ function CountPill({
     <div className={`rounded-xl px-3 py-2 text-sm font-bold ring-1 ${classes}`}>
       {label}: {value}
     </div>
-  )
-}
-
-function NavLink({ href, children }: { href: string; children: ReactNode }) {
-  return (
-    <Link
-      href={href}
-      className="rounded-lg px-3 py-2 transition hover:bg-stone-100 hover:text-red-600"
-    >
-      {children}
-    </Link>
   )
 }
 

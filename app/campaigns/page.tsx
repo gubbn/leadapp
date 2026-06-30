@@ -1,11 +1,10 @@
 'use client'
 
-import type { ReactNode } from 'react'
 import { useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import { supabase } from '@/lib/supabaseClient'
 import { isRoleAddress, isValidEmail } from '@/lib/marketingImportHelpers'
-import LogoutButton from '@/app/components/LogoutButton'
+import AppHeader from '@/app/components/AppHeader'
 
 type ExportRow = {
   contact_id: string
@@ -308,29 +307,7 @@ export default function CampaignsPage() {
 
   return (
     <main className="min-h-screen bg-stone-100 text-stone-900">
-      <header className="border-b border-stone-200 bg-white">
-        <div className="mx-auto flex max-w-7xl items-center justify-between px-4 py-4">
-          <Link href="/" className="group">
-            <p className="text-xl font-black tracking-tight text-red-600">
-              Fixing IT
-            </p>
-
-            <p className="text-xs font-medium uppercase tracking-[0.2em] text-stone-400">
-              Marketing Dashboard
-            </p>
-          </Link>
-
-          <nav className="hidden items-center gap-2 text-sm font-semibold text-stone-600 md:flex">
-            <NavLink href="/">Dashboard</NavLink>
-            <NavLink href="/import">Import</NavLink>
-            <NavLink href="/cleanup">Cleanup</NavLink>
-            <NavLink href="/companies">Companies</NavLink>
-            <NavLink href="/contacts">Contacts</NavLink>
-            <NavLink href="/reports">Reports</NavLink>
-            <LogoutButton />
-          </nav>
-        </div>
-      </header>
+      <AppHeader />
 
       <section className="border-b border-stone-200 bg-gradient-to-br from-white via-stone-50 to-red-50">
         <div className="mx-auto max-w-7xl px-4 py-10">
@@ -883,7 +860,9 @@ function EmailStatusBadge({ status }: { status: CampaignEmailStatus }) {
         : 'bg-red-100 text-red-800'
 
   return (
-    <span className={`w-fit rounded-full px-2 py-1 text-xs font-bold ${classes}`}>
+    <span
+      className={`w-fit rounded-full px-2 py-1 text-xs font-bold ${classes}`}
+    >
       {status.replaceAll('_', ' ')}
     </span>
   )
@@ -902,7 +881,9 @@ function RelationshipBadge({
         : 'bg-blue-100 text-blue-800'
 
   return (
-    <span className={`w-fit rounded-full px-2 py-1 text-xs font-bold ${classes}`}>
+    <span
+      className={`w-fit rounded-full px-2 py-1 text-xs font-bold ${classes}`}
+    >
       {status}
     </span>
   )
@@ -956,17 +937,6 @@ function csvEscape(value: unknown) {
   }
 
   return stringValue
-}
-
-function NavLink({ href, children }: { href: string; children: ReactNode }) {
-  return (
-    <Link
-      href={href}
-      className="rounded-lg px-3 py-2 transition hover:bg-stone-100 hover:text-red-600"
-    >
-      {children}
-    </Link>
-  )
 }
 
 function SummaryCard({

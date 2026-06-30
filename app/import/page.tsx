@@ -15,7 +15,7 @@ import {
   parseDnc,
   splitSingleName,
 } from '@/lib/marketingImportHelpers'
-import LogoutButton from '@/app/components/LogoutButton'
+import AppHeader from '@/app/components/AppHeader'
 
 type ImportPreviewRow = {
   lead_company_name: string
@@ -56,7 +56,7 @@ export default function ImportPage() {
         row.needs_contact_name_cleanup ||
         row.needs_email_cleanup ||
         row.needs_size_cleanup ||
-        row.needs_dnc_review
+        row.needs_dnc_review,
     ).length
   }, [rows])
 
@@ -131,26 +131,7 @@ export default function ImportPage() {
 
   return (
     <main className="min-h-screen bg-stone-100 text-stone-900">
-      <header className="border-b border-stone-200 bg-white">
-        <div className="mx-auto flex max-w-7xl items-center justify-between px-4 py-4">
-          <Link href="/" className="group">
-            <p className="text-xl font-black tracking-tight text-red-600">
-              Fixing IT
-            </p>
-            <p className="text-xs font-medium uppercase tracking-[0.2em] text-stone-400">
-              Marketing Dashboard
-            </p>
-          </Link>
-
-          <nav className="hidden items-center gap-2 text-sm font-semibold text-stone-600 md:flex">
-            <NavLink href="/">Dashboard</NavLink>
-            <NavLink href="/cleanup">Cleanup</NavLink>
-            <NavLink href="/campaigns">Campaigns</NavLink>
-            <NavLink href="/reports">Reports</NavLink>
-            <LogoutButton />
-          </nav>
-        </div>
-      </header>
+      <AppHeader />
 
       <section className="border-b border-stone-200 bg-gradient-to-br from-white via-stone-50 to-red-50">
         <div className="mx-auto max-w-7xl px-4 py-10">
@@ -217,7 +198,11 @@ export default function ImportPage() {
               <div className="mt-6 grid gap-3">
                 <StatLine label="Rows found" value={rows.length} />
                 <StatLine label="Ready rows" value={readyCount} />
-                <StatLine label="Rows needing cleanup" value={issueCount} urgent />
+                <StatLine
+                  label="Rows needing cleanup"
+                  value={issueCount}
+                  urgent
+                />
               </div>
             )}
 
@@ -355,18 +340,21 @@ function mapSpreadsheetRow(row: Record<string, unknown>): ImportPreviewRow {
   const sizeBand = classifySizeBand(businessSize)
   const parsedDays = Number(daysSinceLastContact)
 
+  const firstName = splitName.firstName ?? splitName.first_name ?? ''
+  const lastName = splitName.lastName ?? splitName.last_name ?? ''
+
   const notes: string[] = []
 
   if (multipleContacts) notes.push('Multiple contacts may be in one cell')
-  if (!splitName.firstName || !splitName.lastName) notes.push('Name needs checking')
+  if (!firstName || !lastName) notes.push('Name needs checking')
   if (!isValidEmail(email)) notes.push('Missing or invalid email')
   if (needsDncReview(dncRaw)) notes.push('DNC value needs review')
 
   return {
     lead_company_name: companyName,
     contact_name_raw: contactName,
-first_name: splitName.firstName ?? '',
-last_name: splitName.lastName ?? '',
+    first_name: firstName,
+    last_name: lastName,
     role,
     industry,
     email_address: email,
@@ -381,24 +369,12 @@ last_name: splitName.lastName ?? '',
     dnc: parseDnc(dncRaw),
     outcome,
     next_contact_opportunity: parseDate(nextContactOpportunity),
-    needs_contact_name_cleanup:
-      multipleContacts || !splitName.firstName || !splitName.lastName,
+    needs_contact_name_cleanup: multipleContacts || !firstName || !lastName,
     needs_email_cleanup: !isValidEmail(email),
-  needs_size_cleanup: false,
+    needs_size_cleanup: false,
     needs_dnc_review: needsDncReview(dncRaw),
     import_notes: notes.join(', '),
   }
-}
-
-function NavLink({ href, children }: { href: string; children: React.ReactNode }) {
-  return (
-    <Link
-      href={href}
-      className="rounded-lg px-3 py-2 transition hover:bg-stone-100 hover:text-red-600"
-    >
-      {children}
-    </Link>
-  )
 }
 
 function StatLine({
@@ -429,7 +405,7 @@ function FlagList({ row }: { row: ImportPreviewRow }) {
 
   if (row.needs_contact_name_cleanup) flags.push('Name')
   if (row.needs_email_cleanup) flags.push('Email')
-   if (row.needs_dnc_review) flags.push('DNC')
+  if (row.needs_dnc_review) flags.push('DNC')
 
   if (flags.length === 0) {
     return (

@@ -5,7 +5,7 @@ import { Suspense, useEffect, useMemo, useState } from 'react'
 import { useSearchParams } from 'next/navigation'
 import Link from 'next/link'
 import { supabase } from '@/lib/supabaseClient'
-import LogoutButton from '@/app/components/LogoutButton'
+import AppHeader from '@/app/components/AppHeader'
 
 type Contact = {
   id: string
@@ -114,10 +114,9 @@ function ContactsContent() {
     })
   }, [contacts, search, sizeBand, showDnc])
 
-  const dncCount = useMemo(
-    () => contacts.filter((contact) => contact.dnc).length,
-    [contacts]
-  )
+  const dncCount = useMemo(() => {
+    return contacts.filter((contact) => contact.dnc).length
+  }, [contacts])
 
   const due90Count = useMemo(() => {
     return contacts.filter((contact) => {
@@ -152,7 +151,7 @@ function ContactsContent() {
           industry,
           location
         )
-      `
+      `,
       )
       .eq('is_active', true)
       .order('created_at', { ascending: false })
@@ -194,7 +193,7 @@ function ContactsContent() {
   function updateLocalContact(
     id: string,
     field: keyof Contact,
-    value: string | boolean | null
+    value: string | boolean | null,
   ) {
     setContacts((current) =>
       current.map((contact) => {
@@ -204,7 +203,7 @@ function ContactsContent() {
           ...contact,
           [field]: value,
         }
-      })
+      }),
     )
   }
 
@@ -257,28 +256,7 @@ function ContactsContent() {
 
   return (
     <main className="min-h-screen bg-stone-100 text-stone-900">
-      <header className="border-b border-stone-200 bg-white">
-        <div className="mx-auto flex max-w-7xl items-center justify-between px-4 py-4">
-          <Link href="/" className="group">
-            <p className="text-xl font-black tracking-tight text-red-600">
-              Fixing IT
-            </p>
-            <p className="text-xs font-medium uppercase tracking-[0.2em] text-stone-400">
-              Marketing Dashboard
-            </p>
-          </Link>
-
-          <nav className="hidden items-center gap-2 text-sm font-semibold text-stone-600 md:flex">
-            <NavLink href="/">Dashboard</NavLink>
-            <NavLink href="/import">Import</NavLink>
-            <NavLink href="/cleanup">Cleanup</NavLink>
-            <NavLink href="/companies">Companies</NavLink>
-            <NavLink href="/campaigns">Campaigns</NavLink>
-            <NavLink href="/reports">Reports</NavLink>
-            <LogoutButton />
-          </nav>
-        </div>
-      </header>
+      <AppHeader />
 
       <section className="border-b border-stone-200 bg-gradient-to-br from-white via-stone-50 to-red-50">
         <div className="mx-auto max-w-7xl px-4 py-10">
@@ -415,7 +393,7 @@ function ContactsContent() {
             {filteredContacts.map((contact) => {
               const isSaving = savingId === contact.id
               const daysSinceContact = getDaysSinceContact(
-                contact.last_contact_date
+                contact.last_contact_date,
               )
 
               return (
@@ -462,12 +440,15 @@ function ContactsContent() {
 
                       <div className="mt-3 flex flex-wrap gap-2">
                         <InfoPill>{contact.size_band || 'unknown'}</InfoPill>
+
                         {contact.industry && (
                           <InfoPill>{contact.industry}</InfoPill>
                         )}
+
                         {contact.location && (
                           <InfoPill>{contact.location}</InfoPill>
                         )}
+
                         {contact.role && <InfoPill>{contact.role}</InfoPill>}
                       </div>
                     </div>
@@ -541,7 +522,7 @@ function ContactsContent() {
                           updateLocalContact(
                             contact.id,
                             'outcome',
-                            event.target.value
+                            event.target.value,
                           )
                         }
                         className="mt-1 w-full rounded-xl border border-stone-300 bg-white px-3 py-2 text-sm outline-none transition focus:border-red-500 focus:ring-4 focus:ring-red-50"
@@ -562,7 +543,7 @@ function ContactsContent() {
                         updateLocalContact(
                           contact.id,
                           'last_contact_date',
-                          value
+                          value,
                         )
                       }
                     />
@@ -575,7 +556,7 @@ function ContactsContent() {
                         updateLocalContact(
                           contact.id,
                           'next_contact_opportunity',
-                          value
+                          value,
                         )
                       }
                     />
@@ -590,7 +571,7 @@ function ContactsContent() {
                           updateLocalContact(
                             contact.id,
                             'dnc',
-                            event.target.checked
+                            event.target.checked,
                           )
                         }
                       />
@@ -634,17 +615,6 @@ function getDaysSinceContact(lastContactDate: string | null) {
   const diffMs = today.getTime() - lastContact.getTime()
 
   return Math.floor(diffMs / 1000 / 60 / 60 / 24)
-}
-
-function NavLink({ href, children }: { href: string; children: ReactNode }) {
-  return (
-    <Link
-      href={href}
-      className="rounded-lg px-3 py-2 transition hover:bg-stone-100 hover:text-red-600"
-    >
-      {children}
-    </Link>
-  )
 }
 
 function SummaryCard({
@@ -712,12 +682,16 @@ function InfoPill({ children }: { children: ReactNode }) {
 
 function ContactsLoading() {
   return (
-    <main className="min-h-screen bg-stone-100 px-4 py-8 text-stone-900">
-      <div className="mx-auto max-w-7xl rounded-2xl border border-stone-200 bg-white p-6 shadow-sm">
-        <p className="text-sm font-semibold text-stone-500">
-          Loading contacts...
-        </p>
-      </div>
+    <main className="min-h-screen bg-stone-100 text-stone-900">
+      <AppHeader />
+
+      <section className="mx-auto max-w-7xl px-4 py-8">
+        <div className="rounded-2xl border border-stone-200 bg-white p-6 shadow-sm">
+          <p className="text-sm font-semibold text-stone-500">
+            Loading contacts...
+          </p>
+        </div>
+      </section>
     </main>
   )
 }

@@ -1,12 +1,12 @@
-import type { ReactNode } from 'react'
 import Link from 'next/link'
 import { createSupabaseServerClient } from '@/lib/supabaseServer'
-import LogoutButton from './components/LogoutButton'
+import AppHeader from '@/app/components/AppHeader'
 
 export const dynamic = 'force-dynamic'
 
 export default async function MarketingDashboardPage() {
   const supabase = await createSupabaseServerClient()
+
   const [
     contactsResult,
     companiesResult,
@@ -27,8 +27,8 @@ export default async function MarketingDashboardPage() {
       .from('lead_import_rows')
       .select('id', { count: 'exact', head: true })
       .or(
-  'needs_contact_name_cleanup.eq.true,needs_email_cleanup.eq.true,needs_dnc_review.eq.true'
-)
+        'needs_contact_name_cleanup.eq.true,needs_email_cleanup.eq.true,needs_dnc_review.eq.true',
+      )
       .eq('approved_to_crm', false),
 
     supabase.from('company_duplicate_groups').select('match_key', {
@@ -45,30 +45,7 @@ export default async function MarketingDashboardPage() {
 
   return (
     <main className="min-h-screen bg-stone-100 text-stone-900">
-      <header className="border-b border-stone-200 bg-white">
-        <div className="mx-auto flex max-w-7xl items-center justify-between px-4 py-4">
-          <Link href="/" className="group">
-            <p className="text-xl font-black tracking-tight text-red-600">
-              Fixing IT
-            </p>
-
-            <p className="text-xs font-medium uppercase tracking-[0.2em] text-stone-400">
-              Marketing Dashboard
-            </p>
-          </Link>
-
-          <nav className="hidden items-center gap-2 text-sm font-semibold text-stone-600 md:flex">
-            <NavLink href="/import">Import</NavLink>
-            <NavLink href="/cleanup">Cleanup</NavLink>
-            <NavLink href="/companies">Companies</NavLink>
-            <NavLink href="/contacts">Contacts</NavLink>
-            <NavLink href="/campaigns">Campaigns</NavLink>
-            <NavLink href="/duplicates">Duplicates</NavLink>
-            <NavLink href="/reports">Reports</NavLink>
-            <LogoutButton />
-          </nav>
-        </div>
-      </header>
+      <AppHeader />
 
       <section className="border-b border-stone-200 bg-gradient-to-br from-white via-stone-50 to-red-50">
         <div className="mx-auto grid max-w-7xl gap-8 px-4 py-10 lg:grid-cols-[1.4fr_0.6fr] lg:items-center">
@@ -217,17 +194,6 @@ export default async function MarketingDashboardPage() {
         </div>
       </section>
     </main>
-  )
-}
-
-function NavLink({ href, children }: { href: string; children: ReactNode }) {
-  return (
-    <Link
-      href={href}
-      className="rounded-lg px-3 py-2 transition hover:bg-stone-100 hover:text-red-600"
-    >
-      {children}
-    </Link>
   )
 }
 

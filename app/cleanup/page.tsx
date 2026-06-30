@@ -2,7 +2,6 @@
 
 import type { ReactNode } from 'react'
 import { useEffect, useMemo, useState } from 'react'
-import Link from 'next/link'
 import { supabase } from '@/lib/supabaseClient'
 import {
   classifySizeBand,
@@ -10,7 +9,7 @@ import {
   splitSingleName,
   validateEmailForLead,
 } from '@/lib/marketingImportHelpers'
-import LogoutButton from '@/app/components/LogoutButton'
+import AppHeader from '@/app/components/AppHeader'
 
 type CleanupRow = {
   id: string
@@ -588,37 +587,11 @@ export default function CleanupPage() {
 
   return (
     <main className="min-h-screen bg-stone-100 text-stone-900">
-      <header className="border-b border-stone-200 bg-white">
-        <div className="mx-auto flex max-w-7xl items-center justify-between px-4 py-4">
-          <Link href="/" className="group">
-            <p className="text-xl font-black tracking-tight text-red-600">
-              Fixing IT
-            </p>
-
-            <p className="text-xs font-medium uppercase tracking-[0.2em] text-stone-400">
-              Marketing Dashboard
-            </p>
-          </Link>
-
-          <nav className="hidden items-center gap-2 text-sm font-semibold text-stone-600 md:flex">
-            <NavLink href="/">Dashboard</NavLink>
-            <NavLink href="/import">Import</NavLink>
-            <NavLink href="/companies">Companies</NavLink>
-            <NavLink href="/contacts">Contacts</NavLink>
-            <NavLink href="/campaigns">Campaigns</NavLink>
-            <NavLink href="/reports">Reports</NavLink>
-            <LogoutButton />
-          </nav>
-        </div>
-      </header>
+      <AppHeader />
 
       <section className="border-b border-stone-200 bg-gradient-to-br from-white via-stone-50 to-red-50">
         <div className="mx-auto max-w-7xl px-4 py-10">
-          <Link href="/" className="text-sm font-bold text-red-600">
-            ← Back to dashboard
-          </Link>
-
-          <div className="mt-6 max-w-3xl">
+          <div className="max-w-3xl">
             <p className="inline-flex rounded-full bg-red-100 px-3 py-1 text-xs font-bold uppercase tracking-wide text-red-700">
               Step 02
             </p>
@@ -1036,17 +1009,6 @@ function EmailStatusBadge({ status }: { status: string | null }) {
     >
       {label.replaceAll('_', ' ')}
     </span>
-  )
-}
-
-function NavLink({ href, children }: { href: string; children: ReactNode }) {
-  return (
-    <Link
-      href={href}
-      className="rounded-lg px-3 py-2 transition hover:bg-stone-100 hover:text-red-600"
-    >
-      {children}
-    </Link>
   )
 }
 
