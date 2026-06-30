@@ -364,8 +364,8 @@ function mapSpreadsheetRow(row: Record<string, unknown>): ImportPreviewRow {
   return {
     lead_company_name: companyName,
     contact_name_raw: contactName,
-    first_name: splitName.firstName,
-    last_name: splitName.lastName,
+first_name: splitName.firstName ?? '',
+last_name: splitName.lastName ?? '',
     role,
     industry,
     email_address: email,
