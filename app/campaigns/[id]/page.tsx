@@ -6,108 +6,128 @@ import { useParams } from 'next/navigation'
 import { supabase } from '@/lib/supabaseClient'
 import AppHeader from '@/app/components/AppHeader'
 
-type Campaign = {
+type DbRow = Record<string, unknown>
+
+type CampaignCompanyView = {
   id: string
-  name: string
-  description: string | null
-  created_at: string
+  raw: DbRow
+  company: DbRow | null
+  contact: DbRow | null
 }
 
-type CampaignCompany = {
-  id: string
-  campaign_id: string
-  company_id: string
-  contact_id: string | null
-  email_address_used: string | null
-  email_status: string | null
-  outcome: string | null
-  notes: string | null
-  created_at: string
-  companies?: {
-    id: string
-    business_name: string | null
-    location?: string | null
-    industry?: string | null
-  } | null
-  contacts?: {
-    id: string
-    first_name: string | null
-    last_name: string | null
-    email_address: string | null
-    role: string | null
-    telephone: string | null
-    outcome?: string | null
-  } | null
-}
+type FilterValue =
+  | 'all'
+  | 'selected'
+  | 'sent'
+  | 'bounced'
+  | 'out_of_office'
+  | 'quoted'
+  | 'customer'
+  | 'no_response'
 
 type NewContactForm = {
-  first_name: string
-  last_name: string
-  email_address: string
+  firstName: string
+  lastName: string
+  email: string
   role: string
-  telephone: string
+  phone: string
   notes: string
 }
 
 const emptyContactForm: NewContactForm = {
-  first_name: '',
-  last_name: '',
-  email_address: '',
+  firstName: '',
+  lastName: '',
+  email: '',
   role: '',
-  telephone: '',
+  phone: '',
   notes: '',
-}
-
-const emailStatusLabels: Record<string, string> = {
-  selected: 'Selected',
-  sent: 'Sent',
-  bounced: 'Bounced',
-  out_of_office: 'Out of office',
-  replied: 'Replied',
-  no_response: 'No response',
-}
-
-const outcomeLabels: Record<string, string> = {
-  none: 'None',
-  quoted: 'Quoted',
-  customer: 'Customer',
-  negative: 'Negative',
-  dnc: 'DNC',
-  no_answer: 'No answer',
-}
-
-function formatName(contact?: CampaignCompany['contacts']) {
-  if (!contact) return 'No contact selected'
-
-  const name = [contact.first_name, contact.last_name]
-    .filter(Boolean)
-    .join(' ')
-    .trim()
-
-  return name || contact.email_address || 'Unnamed contact'
-}
-
-function percent(part: number, total: number) {
-  if (!total) return '0%'
-  return `${((part / total) * 100).toFixed(1)}%`
 }
 
 export default function CampaignDetailPage() {
   const params = useParams()
-  const campaignId = String(params.id)
+  const campaignId = Array.isArray(params.id)
+    ? params.id[0]
+    : String(params.id || '')
 
-  const [campaign, setCampaign] = useState<Campaign | null>(null)
-  const [rows, setRows] = useState<CampaignCompany[]>([])
+  const [campaign, setCampaign] = useState<DbRow | null>(null)
+  const [rows, setRows] = useState<CampaignCompanyView[]>([])
+  const [contactColumnKeys, setContactColumnKeys] = useState<string[]>([])
   const [loading, setLoading] = useState(true)
   const [savingId, setSavingId] = useState<string | null>(null)
-  const [filter, setFilter] = useState<string>('all')
-  const [error, setError] = useState<string | null>(null)
-  const [openContactFormId, setOpenContactFormId] = useState<string | null>(null)
-  const [contactForms, setContactForms] = useState<Record<string, NewContactForm>>({})
+  const [filter, setFilter] = useState<FilterValue>('all')
+  const [message, setMessage] = useState('')
+  const [errorMessage, setErrorMessage] = useState('')
+  const [warningMessage, setWarningMessage] = useState('')
+  const [openContactFormId, setOpenContactFormId] = useState<string | null>(
+    null,
+  )
+  const [contactForms, setContactForms] = useState<
+    Record<string, NewContactForm>
+  >({})
+  const [noteDrafts, setNoteDrafts] = useState<Record<string, string>>({})
+
+  useEffect(() => {
+    loadCampaign()
+  }, [campaignId])
+
+  const stats = useMemo(() => {
+    const selected = rows.length
+
+    const sent = rows.filter((row) => getEmailStatus(row) === 'sent').length
+
+    const bounced = rows.filter(
+      (row) => getEmailStatus(row) === 'bounced',
+    ).length
+
+    const outOfOffice = rows.filter(
+      (row) => getEmailStatus(row) === 'out_of_office',
+    ).length
+
+    const quoted = rows.filter(
+      (row) => getEffectiveOutcome(row) === 'quoted',
+    ).length
+
+    const customers = rows.filter(
+      (row) => getEffectiveOutcome(row) === 'customer',
+    ).length
+
+    const success = quoted + customers
+
+    return {
+      selected,
+      sent,
+      bounced,
+      outOfOffice,
+      quoted,
+      customers,
+      success,
+      successRate: percent(success, selected),
+      bounceRate: percent(bounced, selected),
+      outOfOfficeRate: percent(outOfOffice, selected),
+    }
+  }, [rows])
+
+  const filteredRows = useMemo(() => {
+    if (filter === 'all') return rows
+
+    if (filter === 'quoted') {
+      return rows.filter((row) => getEffectiveOutcome(row) === 'quoted')
+    }
+
+    if (filter === 'customer') {
+      return rows.filter((row) => getEffectiveOutcome(row) === 'customer')
+    }
+
+    return rows.filter((row) => getEmailStatus(row) === filter)
+  }, [rows, filter])
 
   async function loadCampaign() {
     setLoading(true)
-    setError(null)
+    setMessage('')
+    setErrorMessage('')
+    setWarningMessage('')
+
+    const warnings: string[] = []
 
     const { data: campaignData, error: campaignError } = await supabase
       .from('campaigns')
@@ -116,138 +136,254 @@ export default function CampaignDetailPage() {
       .single()
 
     if (campaignError) {
-      setError(campaignError.message)
+      setErrorMessage(campaignError.message)
       setLoading(false)
       return
     }
 
-    const { data: campaignRows, error: rowsError } = await supabase
-      .from('campaign_companies')
-      .select(
-        `
-        *,
-        companies (*),
-        contacts (*)
-      `
+    setCampaign((campaignData || null) as DbRow | null)
+
+    const { data: campaignCompanyData, error: campaignCompanyError } =
+      await supabase
+        .from('campaign_companies')
+        .select('*')
+        .eq('campaign_id', campaignId)
+
+    if (campaignCompanyError) {
+      setErrorMessage(campaignCompanyError.message)
+      setLoading(false)
+      return
+    }
+
+    const campaignCompanyRows = ((campaignCompanyData ?? []) as DbRow[])
+      .filter(isRowWithId)
+      .map((row) => row as DbRow & { id: string })
+
+    const companyIds = Array.from(
+      new Set(
+        campaignCompanyRows
+          .map((row) => getString(row, ['company_id']))
+          .filter((value): value is string => Boolean(value)),
+      ),
+    )
+
+    const contactIds = Array.from(
+      new Set(
+        campaignCompanyRows
+          .map((row) => getString(row, ['contact_id']))
+          .filter((value): value is string => Boolean(value)),
+      ),
+    )
+
+    const companiesById = new Map<string, DbRow>()
+    const contactsById = new Map<string, DbRow>()
+    const contactKeys = new Set<string>()
+
+    if (companyIds.length > 0) {
+      const { rows: companyRows, error: companyError } = await fetchRowsByIds(
+        'companies',
+        companyIds,
       )
-      .eq('campaign_id', campaignId)
-      .order('created_at', { ascending: false })
 
-    if (rowsError) {
-      setError(rowsError.message)
-      setLoading(false)
-      return
+      if (companyError) {
+        warnings.push(`Companies could not be loaded: ${companyError}`)
+      } else {
+        companyRows.forEach((company) => {
+          const id = getString(company, ['id'])
+          if (id) companiesById.set(id, company)
+        })
+      }
     }
 
-    setCampaign(campaignData)
-    setRows((campaignRows || []) as CampaignCompany[])
+    if (contactIds.length > 0) {
+      const { rows: contactRows, error: contactError } = await fetchRowsByIds(
+        'contacts',
+        contactIds,
+      )
+
+      if (contactError) {
+        warnings.push(`Contacts could not be loaded: ${contactError}`)
+      } else {
+        contactRows.forEach((contact) => {
+          const id = getString(contact, ['id'])
+          if (id) contactsById.set(id, contact)
+          Object.keys(contact).forEach((key) => contactKeys.add(key))
+        })
+      }
+    }
+
+    const { data: sampleContacts, error: sampleContactError } = await supabase
+      .from('contacts')
+      .select('*')
+      .limit(1)
+
+    if (!sampleContactError) {
+      ;((sampleContacts ?? []) as DbRow[]).forEach((contact) => {
+        Object.keys(contact).forEach((key) => contactKeys.add(key))
+      })
+    }
+
+    const viewRows = campaignCompanyRows
+      .map((row) => {
+        const companyId = getString(row, ['company_id'])
+        const contactId = getString(row, ['contact_id'])
+
+        return {
+          id: row.id,
+          raw: row,
+          company: companyId ? companiesById.get(companyId) || null : null,
+          contact: contactId ? contactsById.get(contactId) || null : null,
+        }
+      })
+      .sort((a, b) => {
+        return getCompanyName(a.company || {}).localeCompare(
+          getCompanyName(b.company || {}),
+        )
+      })
+
+    const initialNotes: Record<string, string> = {}
+
+    viewRows.forEach((row) => {
+      initialNotes[row.id] = getString(row.raw, ['notes'])
+    })
+
+    setRows(viewRows)
+    setNoteDrafts(initialNotes)
+    setContactColumnKeys(Array.from(contactKeys))
+    setWarningMessage(warnings.join(' '))
     setLoading(false)
   }
 
-  useEffect(() => {
-    loadCampaign()
-  }, [campaignId])
+  async function fetchRowsByIds(table: string, ids: string[]) {
+    const rows: DbRow[] = []
+    const chunks = chunkArray(ids, 500)
 
-  const stats = useMemo(() => {
-    const total = rows.length
+    for (const chunk of chunks) {
+      const { data, error } = await supabase
+        .from(table)
+        .select('*')
+        .in('id', chunk)
 
-    const bounced = rows.filter((row) => row.email_status === 'bounced').length
-    const outOfOffice = rows.filter(
-      (row) => row.email_status === 'out_of_office'
-    ).length
+      if (error) {
+        return {
+          rows,
+          error: error.message,
+        }
+      }
 
-    const quoted = rows.filter((row) => {
-      const campaignOutcome = row.outcome === 'quoted'
-      const contactOutcome = row.contacts?.outcome === 'Quote sent'
-      return campaignOutcome || contactOutcome
-    }).length
-
-    const customer = rows.filter((row) => {
-      const campaignOutcome = row.outcome === 'customer'
-      const contactOutcome =
-        row.contacts?.outcome === 'Customer' || row.contacts?.outcome === 'Won'
-      return campaignOutcome || contactOutcome
-    }).length
+      rows.push(...((data ?? []) as DbRow[]))
+    }
 
     return {
-      total,
-      bounced,
-      outOfOffice,
-      quoted,
-      customer,
-      success: quoted + customer,
+      rows,
+      error: '',
     }
-  }, [rows])
+  }
 
-  const filteredRows = useMemo(() => {
-    if (filter === 'all') return rows
-
-    if (filter === 'quoted') {
-      return rows.filter(
-        (row) =>
-          row.outcome === 'quoted' || row.contacts?.outcome === 'Quote sent'
-      )
-    }
-
-    if (filter === 'customer') {
-      return rows.filter(
-        (row) =>
-          row.outcome === 'customer' ||
-          row.contacts?.outcome === 'Customer' ||
-          row.contacts?.outcome === 'Won'
-      )
-    }
-
-    return rows.filter((row) => row.email_status === filter)
-  }, [rows, filter])
-
-  async function updateEmailStatus(rowId: string, status: string) {
+  async function updateCampaignRow(rowId: string, updates: DbRow) {
     setSavingId(rowId)
+    setMessage('')
+    setErrorMessage('')
 
-    const { error: updateError } = await supabase
+    const payload: DbRow = {
+      ...updates,
+      updated_at: new Date().toISOString(),
+    }
+
+    let { data, error } = await supabase
       .from('campaign_companies')
-      .update({
-        email_status: status,
-        updated_at: new Date().toISOString(),
-      })
+      .update(payload)
       .eq('id', rowId)
+      .select('*')
 
-    if (updateError) {
-      setError(updateError.message)
-    } else {
-      setRows((current) =>
-        current.map((row) =>
-          row.id === rowId ? { ...row, email_status: status } : row
-        )
+    if (error && error.message.includes('updated_at')) {
+      const fallbackPayload = { ...updates }
+
+      const fallbackResult = await supabase
+        .from('campaign_companies')
+        .update(fallbackPayload)
+        .eq('id', rowId)
+        .select('*')
+
+      data = fallbackResult.data
+      error = fallbackResult.error
+    }
+
+    if (error) {
+      setErrorMessage(error.message)
+      setSavingId(null)
+      return false
+    }
+
+    const updatedRow = ((data ?? []) as DbRow[]).find(
+      (row) => getString(row, ['id']) === rowId,
+    )
+
+    if (!updatedRow) {
+      setErrorMessage(
+        'No campaign row was updated. This is usually caused by Supabase RLS blocking updates.',
       )
+      setSavingId(null)
+      return false
+    }
+
+    setRows((current) =>
+      current.map((row) =>
+        row.id === rowId
+          ? {
+              ...row,
+              raw: updatedRow,
+            }
+          : row,
+      ),
+    )
+
+    if (typeof updates.notes === 'string') {
+      setNoteDrafts((current) => ({
+        ...current,
+        [rowId]: updates.notes as string,
+      }))
     }
 
     setSavingId(null)
+    return true
   }
 
-  async function updateOutcome(rowId: string, outcome: string) {
-    setSavingId(rowId)
+  async function markEmailStatus(rowId: string, status: string) {
+    const success = await updateCampaignRow(rowId, {
+      email_status: status,
+    })
 
-    const { error: updateError } = await supabase
-      .from('campaign_companies')
-      .update({
-        outcome,
-        updated_at: new Date().toISOString(),
-      })
-      .eq('id', rowId)
-
-    if (updateError) {
-      setError(updateError.message)
-    } else {
-      setRows((current) =>
-        current.map((row) => (row.id === rowId ? { ...row, outcome } : row))
-      )
+    if (success) {
+      setMessage(`Email status updated to ${status.replaceAll('_', ' ')}.`)
     }
-
-    setSavingId(null)
   }
 
-  function updateContactForm(rowId: string, field: keyof NewContactForm, value: string) {
+  async function markOutcome(rowId: string, outcome: string) {
+    const success = await updateCampaignRow(rowId, {
+      outcome,
+    })
+
+    if (success) {
+      setMessage(`Outcome updated to ${outcome.replaceAll('_', ' ')}.`)
+    }
+  }
+
+  async function saveNotes(rowId: string) {
+    const success = await updateCampaignRow(rowId, {
+      notes: noteDrafts[rowId] || null,
+    })
+
+    if (success) {
+      setMessage('Notes saved.')
+    }
+  }
+
+  function updateContactForm(
+    rowId: string,
+    field: keyof NewContactForm,
+    value: string,
+  ) {
     setContactForms((current) => ({
       ...current,
       [rowId]: {
@@ -257,63 +393,39 @@ export default function CampaignDetailPage() {
     }))
   }
 
-  async function addContactFromOutOfOffice(row: CampaignCompany) {
+  async function addContactFromOutOfOffice(row: CampaignCompanyView) {
     const form = contactForms[row.id] || emptyContactForm
+    const companyId = getString(row.raw, ['company_id'])
 
-    if (!form.first_name.trim() || !form.last_name.trim() || !form.email_address.trim()) {
-      setError('First name, last name and email address are required.')
+    if (!companyId) {
+      setErrorMessage('This campaign row is not linked to a company.')
+      return
+    }
+
+    if (!form.firstName.trim() || !form.lastName.trim() || !form.email.trim()) {
+      setErrorMessage('First name, last name and email are required.')
       return
     }
 
     setSavingId(row.id)
-    setError(null)
+    setMessage('')
+    setErrorMessage('')
 
-    const { data: newContact, error: insertError } = await supabase
-      .from('contacts')
-      .insert({
-        company_id: row.company_id,
-        first_name: form.first_name.trim(),
-        last_name: form.last_name.trim(),
-        email_address: form.email_address.trim(),
-        role: form.role.trim() || null,
-        telephone: form.telephone.trim() || null,
-        notes:
-          form.notes.trim() ||
-          `Added from out-of-office reply in campaign ${campaign?.name || ''}`,
-        contact_source: 'out_of_office',
-        is_active: true,
-      })
-      .select('*')
-      .single()
+    const insertResult = await insertContactWithFallbacks(companyId, form)
 
-    if (insertError) {
-      setError(insertError.message)
+    if (!insertResult.success) {
+      setErrorMessage(insertResult.error || 'Could not add contact.')
       setSavingId(null)
       return
     }
 
-    await supabase
-      .from('campaign_companies')
-      .update({
-        notes: row.notes
-          ? `${row.notes}\nNew contact added from out-of-office reply: ${form.first_name} ${form.last_name}`
-          : `New contact added from out-of-office reply: ${form.first_name} ${form.last_name}`,
-        updated_at: new Date().toISOString(),
-      })
-      .eq('id', row.id)
+    const existingNotes = noteDrafts[row.id] || getString(row.raw, ['notes'])
+    const newNote = `New contact added from out-of-office reply: ${form.firstName.trim()} ${form.lastName.trim()} <${form.email.trim()}>`
 
-    setRows((current) =>
-      current.map((currentRow) =>
-        currentRow.id === row.id
-          ? {
-              ...currentRow,
-              notes: currentRow.notes
-                ? `${currentRow.notes}\nNew contact added from out-of-office reply: ${form.first_name} ${form.last_name}`
-                : `New contact added from out-of-office reply: ${form.first_name} ${form.last_name}`,
-            }
-          : currentRow
-      )
-    )
+    await updateCampaignRow(row.id, {
+      email_status: 'out_of_office',
+      notes: existingNotes ? `${existingNotes}\n${newNote}` : newNote,
+    })
 
     setContactForms((current) => ({
       ...current,
@@ -321,317 +433,556 @@ export default function CampaignDetailPage() {
     }))
 
     setOpenContactFormId(null)
+    setMessage('New contact added to the company.')
     setSavingId(null)
   }
 
+  async function insertContactWithFallbacks(
+    companyId: string,
+    form: NewContactForm,
+  ) {
+    const keySet = new Set(contactColumnKeys)
+
+    if (keySet.size > 0) {
+      const payload: DbRow = {}
+
+      setIfColumnExists(payload, keySet, 'company_id', companyId)
+      setIfColumnExists(payload, keySet, 'first_name', form.firstName.trim())
+      setIfColumnExists(payload, keySet, 'last_name', form.lastName.trim())
+
+      if (keySet.has('email_address')) {
+        payload.email_address = form.email.trim()
+      } else if (keySet.has('email')) {
+        payload.email = form.email.trim()
+      }
+
+      setIfColumnExists(payload, keySet, 'role', cleanText(form.role))
+      setIfColumnExists(payload, keySet, 'job_title', cleanText(form.role))
+      setIfColumnExists(payload, keySet, 'telephone', cleanText(form.phone))
+      setIfColumnExists(payload, keySet, 'phone', cleanText(form.phone))
+      setIfColumnExists(payload, keySet, 'notes', cleanText(form.notes))
+      setIfColumnExists(payload, keySet, 'contact_source', 'out_of_office')
+      setIfColumnExists(payload, keySet, 'source', 'out_of_office')
+      setIfColumnExists(payload, keySet, 'is_active', true)
+
+      if (!('company_id' in payload)) payload.company_id = companyId
+      if (!('first_name' in payload)) payload.first_name = form.firstName.trim()
+      if (!('last_name' in payload)) payload.last_name = form.lastName.trim()
+      if (!('email_address' in payload) && !('email' in payload)) {
+        payload.email_address = form.email.trim()
+      }
+
+      const { error } = await supabase.from('contacts').insert(payload)
+
+      if (!error) {
+        return {
+          success: true,
+          error: '',
+        }
+      }
+
+      return {
+        success: false,
+        error: error.message,
+      }
+    }
+
+    const payloadVariants: DbRow[] = [
+      {
+        company_id: companyId,
+        first_name: form.firstName.trim(),
+        last_name: form.lastName.trim(),
+        email_address: form.email.trim(),
+        role: cleanText(form.role),
+        telephone: cleanText(form.phone),
+        notes: cleanText(form.notes),
+        contact_source: 'out_of_office',
+        is_active: true,
+      },
+      {
+        company_id: companyId,
+        first_name: form.firstName.trim(),
+        last_name: form.lastName.trim(),
+        email: form.email.trim(),
+        role: cleanText(form.role),
+        phone: cleanText(form.phone),
+        notes: cleanText(form.notes),
+        source: 'out_of_office',
+        is_active: true,
+      },
+      {
+        company_id: companyId,
+        first_name: form.firstName.trim(),
+        last_name: form.lastName.trim(),
+        email_address: form.email.trim(),
+        role: cleanText(form.role),
+        notes: cleanText(form.notes),
+      },
+      {
+        company_id: companyId,
+        first_name: form.firstName.trim(),
+        last_name: form.lastName.trim(),
+        email: form.email.trim(),
+        role: cleanText(form.role),
+        notes: cleanText(form.notes),
+      },
+      {
+        company_id: companyId,
+        first_name: form.firstName.trim(),
+        last_name: form.lastName.trim(),
+        email_address: form.email.trim(),
+      },
+      {
+        company_id: companyId,
+        first_name: form.firstName.trim(),
+        last_name: form.lastName.trim(),
+        email: form.email.trim(),
+      },
+    ]
+
+    let lastError = ''
+
+    for (const payload of payloadVariants) {
+      const cleanedPayload = removeNullValues(payload)
+
+      const { error } = await supabase.from('contacts').insert(cleanedPayload)
+
+      if (!error) {
+        return {
+          success: true,
+          error: '',
+        }
+      }
+
+      lastError = error.message
+    }
+
+    return {
+      success: false,
+      error: lastError,
+    }
+  }
+
   return (
-    <main className="min-h-screen bg-slate-50 text-slate-900">
+    <main className="min-h-screen bg-stone-100 text-stone-900">
       <AppHeader />
 
-      <div className="mx-auto max-w-7xl px-4 py-8">
-        <div className="mb-6 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-          <div>
-            <Link
-              href="/campaigns"
-              className="text-sm font-semibold text-blue-700 hover:text-blue-900"
-            >
-              ← Back to campaigns
-            </Link>
+      <section className="border-b border-stone-200 bg-gradient-to-br from-white via-stone-50 to-red-50">
+        <div className="mx-auto max-w-7xl px-4 py-10">
+          <Link
+            href="/campaigns/history"
+            className="text-sm font-bold text-red-600"
+          >
+            ← Back to campaign history
+          </Link>
 
-            <h1 className="mt-2 text-3xl font-bold">
-              {campaign?.name || 'Campaign'}
+          <div className="mt-6 max-w-4xl">
+            <p className="inline-flex rounded-full bg-red-100 px-3 py-1 text-xs font-bold uppercase tracking-wide text-red-700">
+              Campaign record
+            </p>
+
+            <h1 className="mt-5 text-4xl font-black tracking-tight text-stone-950 md:text-5xl">
+              {campaign ? getCampaignName(campaign) || 'Unnamed campaign' : 'Campaign'}
             </h1>
 
-            {campaign?.description ? (
-              <p className="mt-1 max-w-3xl text-sm text-slate-600">
-                {campaign.description}
-              </p>
-            ) : null}
+            <p className="mt-5 text-base leading-7 text-stone-600">
+              Review selected companies, mark bounced emails and out-of-office
+              replies, update outcomes, and add new contacts from OOO replies.
+            </p>
+          </div>
+
+          <div className="mt-6 flex flex-wrap gap-3">
+            <Link
+              href="/campaigns/builder"
+              className="rounded-xl bg-red-600 px-4 py-2 text-sm font-bold text-white hover:bg-red-700"
+            >
+              Build new campaign
+            </Link>
+
+            <Link
+              href="/campaigns/history"
+              className="rounded-xl border border-stone-300 bg-white px-4 py-2 text-sm font-bold text-stone-700 hover:bg-stone-50"
+            >
+              View history
+            </Link>
           </div>
         </div>
+      </section>
 
-        {error ? (
-          <div className="mb-6 rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-700">
-            {error}
-          </div>
+      <section className="mx-auto max-w-7xl px-4 py-8">
+        {errorMessage ? (
+          <p className="mb-6 rounded-xl bg-red-50 p-4 text-sm font-semibold text-red-700">
+            {errorMessage}
+          </p>
+        ) : null}
+
+        {warningMessage ? (
+          <p className="mb-6 rounded-xl bg-amber-50 p-4 text-sm font-semibold text-amber-800">
+            {warningMessage}
+          </p>
+        ) : null}
+
+        {message ? (
+          <p className="mb-6 rounded-xl bg-green-50 p-4 text-sm font-semibold text-green-700">
+            {message}
+          </p>
         ) : null}
 
         {loading ? (
-          <div className="rounded-xl border bg-white p-6 text-sm text-slate-600">
+          <div className="rounded-2xl border border-stone-200 bg-white p-6 text-sm font-semibold text-stone-500">
             Loading campaign...
           </div>
         ) : (
           <>
-            <section className="mb-6 grid gap-4 md:grid-cols-5">
-              <div className="rounded-xl border bg-white p-4">
-                <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
-                  Selected
+            <div className="grid gap-4 md:grid-cols-6">
+              <SummaryCard label="Selected" value={stats.selected} />
+              <SummaryCard label="Sent" value={stats.sent} />
+              <SummaryCard
+                label="Bounced"
+                value={stats.bounced}
+                urgent={stats.bounced > 0}
+              />
+              <SummaryCard
+                label="Out of office"
+                value={stats.outOfOffice}
+                urgent={stats.outOfOffice > 0}
+              />
+              <SummaryCard
+                label="Quoted"
+                value={stats.quoted}
+                urgent={stats.quoted > 0}
+              />
+              <SummaryCard
+                label="Customers"
+                value={stats.customers}
+                urgent={stats.customers > 0}
+              />
+            </div>
+
+            <div className="mt-6 rounded-2xl border border-stone-200 bg-white p-5 shadow-sm">
+              <h2 className="text-xl font-black text-stone-950">
+                Campaign success
+              </h2>
+
+              <div className="mt-4 grid gap-3 md:grid-cols-4">
+                <MetricBlock label="Success rate" value={stats.successRate} />
+                <MetricBlock
+                  label="Bounce rate"
+                  value={stats.bounceRate}
+                />
+                <MetricBlock
+                  label="Out of office rate"
+                  value={stats.outOfOfficeRate}
+                />
+                <MetricBlock
+                  label="Selected companies"
+                  value={String(stats.selected)}
+                />
+              </div>
+            </div>
+
+            <div className="mt-6 rounded-2xl border border-stone-200 bg-white p-5 shadow-sm">
+              <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+                <div>
+                  <h2 className="text-xl font-black text-stone-950">
+                    Campaign filters
+                  </h2>
+
+                  <p className="mt-1 text-sm text-stone-500">
+                    Use these to work through bounces, out-of-office replies and
+                    successful outcomes.
+                  </p>
+                </div>
+
+                <div className="flex flex-wrap gap-2">
+                  <FilterButton
+                    active={filter === 'all'}
+                    label={`All (${rows.length})`}
+                    onClick={() => setFilter('all')}
+                  />
+                  <FilterButton
+                    active={filter === 'selected'}
+                    label={`Selected (${countEmailStatus(rows, 'selected')})`}
+                    onClick={() => setFilter('selected')}
+                  />
+                  <FilterButton
+                    active={filter === 'sent'}
+                    label={`Sent (${countEmailStatus(rows, 'sent')})`}
+                    onClick={() => setFilter('sent')}
+                  />
+                  <FilterButton
+                    active={filter === 'bounced'}
+                    label={`Bounced (${stats.bounced})`}
+                    onClick={() => setFilter('bounced')}
+                  />
+                  <FilterButton
+                    active={filter === 'out_of_office'}
+                    label={`OOO (${stats.outOfOffice})`}
+                    onClick={() => setFilter('out_of_office')}
+                  />
+                  <FilterButton
+                    active={filter === 'quoted'}
+                    label={`Quoted (${stats.quoted})`}
+                    onClick={() => setFilter('quoted')}
+                  />
+                  <FilterButton
+                    active={filter === 'customer'}
+                    label={`Customers (${stats.customers})`}
+                    onClick={() => setFilter('customer')}
+                  />
+                </div>
+              </div>
+            </div>
+
+            <div className="mt-6 overflow-hidden rounded-2xl border border-stone-200 bg-white shadow-sm">
+              <div className="border-b border-stone-200 p-5">
+                <h2 className="text-xl font-black text-stone-950">
+                  Selected companies
+                </h2>
+
+                <p className="mt-1 text-sm text-stone-500">
+                  Showing {filteredRows.length} of {rows.length} campaign rows.
                 </p>
-                <p className="mt-2 text-3xl font-bold">{stats.total}</p>
               </div>
 
-              <div className="rounded-xl border bg-white p-4">
-                <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
-                  Bounced
-                </p>
-                <p className="mt-2 text-3xl font-bold">{stats.bounced}</p>
-                <p className="text-xs text-slate-500">
-                  {percent(stats.bounced, stats.total)}
-                </p>
-              </div>
-
-              <div className="rounded-xl border bg-white p-4">
-                <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
-                  Out of office
-                </p>
-                <p className="mt-2 text-3xl font-bold">{stats.outOfOffice}</p>
-                <p className="text-xs text-slate-500">
-                  {percent(stats.outOfOffice, stats.total)}
-                </p>
-              </div>
-
-              <div className="rounded-xl border bg-white p-4">
-                <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
-                  Quoted
-                </p>
-                <p className="mt-2 text-3xl font-bold">{stats.quoted}</p>
-                <p className="text-xs text-slate-500">
-                  {percent(stats.quoted, stats.total)}
-                </p>
-              </div>
-
-              <div className="rounded-xl border bg-white p-4">
-                <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
-                  Customers
-                </p>
-                <p className="mt-2 text-3xl font-bold">{stats.customer}</p>
-                <p className="text-xs text-slate-500">
-                  {percent(stats.customer, stats.total)}
-                </p>
-              </div>
-            </section>
-
-            <section className="mb-6 rounded-xl border bg-white p-4">
-              <div className="flex flex-wrap gap-2">
-                {[
-                  ['all', 'All companies'],
-                  ['bounced', 'Bounced'],
-                  ['out_of_office', 'Out of office'],
-                  ['quoted', 'Quoted'],
-                  ['customer', 'Customer'],
-                  ['sent', 'Sent'],
-                  ['no_response', 'No response'],
-                ].map(([value, label]) => (
-                  <button
-                    key={value}
-                    type="button"
-                    onClick={() => setFilter(value)}
-                    className={`rounded-lg border px-3 py-2 text-sm font-semibold ${
-                      filter === value
-                        ? 'border-blue-600 bg-blue-600 text-white'
-                        : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'
-                    }`}
-                  >
-                    {label}
-                  </button>
-                ))}
-              </div>
-            </section>
-
-            <section className="overflow-hidden rounded-xl border bg-white">
               <div className="overflow-x-auto">
-                <table className="min-w-full divide-y divide-slate-200 text-sm">
-                  <thead className="bg-slate-100">
+                <table className="min-w-full text-left text-sm">
+                  <thead className="bg-stone-50 text-xs uppercase tracking-wide text-stone-500">
                     <tr>
-                      <th className="px-4 py-3 text-left font-semibold">
-                        Company
-                      </th>
-                      <th className="px-4 py-3 text-left font-semibold">
-                        Contact
-                      </th>
-                      <th className="px-4 py-3 text-left font-semibold">
-                        Email used
-                      </th>
-                      <th className="px-4 py-3 text-left font-semibold">
-                        Email status
-                      </th>
-                      <th className="px-4 py-3 text-left font-semibold">
-                        Outcome
-                      </th>
-                      <th className="px-4 py-3 text-left font-semibold">
-                        Actions
-                      </th>
+                      <th className="px-4 py-3">Company</th>
+                      <th className="px-4 py-3">Contact</th>
+                      <th className="px-4 py-3">Email used</th>
+                      <th className="px-4 py-3">Email status</th>
+                      <th className="px-4 py-3">Outcome</th>
+                      <th className="px-4 py-3">Notes</th>
+                      <th className="px-4 py-3">Actions</th>
                     </tr>
                   </thead>
 
-                  <tbody className="divide-y divide-slate-100">
+                  <tbody>
                     {filteredRows.length === 0 ? (
                       <tr>
-                        <td
-                          colSpan={6}
-                          className="px-4 py-8 text-center text-slate-500"
-                        >
-                          No companies found for this filter.
+                        <td className="px-4 py-5 text-stone-500" colSpan={7}>
+                          No companies match this filter.
                         </td>
                       </tr>
                     ) : (
                       filteredRows.map((row) => {
+                        const companyId = getString(row.raw, ['company_id'])
+                        const emailStatus = getEmailStatus(row)
+                        const effectiveOutcome = getEffectiveOutcome(row)
                         const form = contactForms[row.id] || emptyContactForm
 
                         return (
-                          <tr key={row.id} className="align-top">
+                          <tr
+                            key={row.id}
+                            className="border-t border-stone-100 align-top"
+                          >
                             <td className="px-4 py-4">
-                              <div className="font-semibold">
-                                {row.companies?.business_name || 'Unnamed company'}
+                              <div className="font-black text-stone-950">
+                                {getCompanyName(row.company || {}) ||
+                                  'Unnamed company'}
                               </div>
 
-                              <div className="mt-1 text-xs text-slate-500">
-                                {row.companies?.location || row.companies?.industry || ''}
+                              <div className="mt-1 text-xs text-stone-500">
+                                {[
+                                  getString(row.company || {}, ['industry']),
+                                  getString(row.company || {}, [
+                                    'location',
+                                    'town',
+                                    'postcode',
+                                  ]),
+                                ]
+                                  .filter(Boolean)
+                                  .join(' · ') || 'No company details'}
                               </div>
 
-                              <Link
-                                href={`/companies/${row.company_id}`}
-                                className="mt-2 inline-block text-xs font-semibold text-blue-700 hover:text-blue-900"
-                              >
-                                Open company
-                              </Link>
-                            </td>
-
-                            <td className="px-4 py-4">
-                              <div className="font-medium">
-                                {formatName(row.contacts)}
-                              </div>
-
-                              {row.contacts?.role ? (
-                                <div className="text-xs text-slate-500">
-                                  {row.contacts.role}
-                                </div>
+                              {companyId ? (
+                                <Link
+                                  href={`/companies/${companyId}`}
+                                  className="mt-2 inline-flex text-xs font-bold text-red-600 hover:underline"
+                                >
+                                  Open company
+                                </Link>
                               ) : null}
                             </td>
 
                             <td className="px-4 py-4">
-                              {row.email_address_used ||
-                                row.contacts?.email_address ||
-                                '—'}
+                              <div className="font-bold text-stone-950">
+                                {getContactName(row.contact || {}) ||
+                                  'No contact selected'}
+                              </div>
+
+                              <div className="mt-1 text-xs text-stone-500">
+                                {getContactRole(row.contact || {}) || '-'}
+                              </div>
                             </td>
 
                             <td className="px-4 py-4">
-                              <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-700">
-                                {
-                                  emailStatusLabels[
-                                    row.email_status || 'selected'
-                                  ]
+                              {getString(row.raw, ['email_address_used']) ||
+                                getContactEmail(row.contact || {}) ||
+                                '-'}
+                            </td>
+
+                            <td className="px-4 py-4">
+                              <StatusPill value={emailStatus} />
+                            </td>
+
+                            <td className="px-4 py-4">
+                              <StatusPill value={effectiveOutcome} />
+                            </td>
+
+                            <td className="min-w-72 px-4 py-4">
+                              <textarea
+                                value={noteDrafts[row.id] || ''}
+                                onChange={(event) =>
+                                  setNoteDrafts((current) => ({
+                                    ...current,
+                                    [row.id]: event.target.value,
+                                  }))
                                 }
-                              </span>
+                                rows={3}
+                                className="w-full rounded-xl border border-stone-300 bg-white px-3 py-2 text-sm outline-none focus:border-red-500 focus:ring-4 focus:ring-red-50"
+                                placeholder="Add notes..."
+                              />
+
+                              <button
+                                type="button"
+                                onClick={() => saveNotes(row.id)}
+                                disabled={savingId === row.id}
+                                className="mt-2 rounded-lg border border-stone-300 bg-white px-3 py-2 text-xs font-bold text-stone-700 hover:bg-stone-50 disabled:opacity-50"
+                              >
+                                Save notes
+                              </button>
                             </td>
 
-                            <td className="px-4 py-4">
-                              <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-700">
-                                {outcomeLabels[row.outcome || 'none'] || row.outcome}
-                              </span>
-                            </td>
-
-                            <td className="px-4 py-4">
+                            <td className="min-w-72 px-4 py-4">
                               <div className="flex flex-wrap gap-2">
                                 <button
                                   type="button"
-                                  disabled={savingId === row.id}
                                   onClick={() =>
-                                    updateEmailStatus(row.id, 'bounced')
+                                    markEmailStatus(row.id, 'sent')
                                   }
-                                  className="rounded-lg border border-red-200 bg-red-50 px-3 py-1.5 text-xs font-semibold text-red-700 hover:bg-red-100 disabled:opacity-50"
+                                  disabled={savingId === row.id}
+                                  className="rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-xs font-bold text-blue-700 hover:bg-blue-100 disabled:opacity-50"
                                 >
-                                  Mark bounced
+                                  Sent
                                 </button>
 
                                 <button
                                   type="button"
-                                  disabled={savingId === row.id}
                                   onClick={() =>
-                                    updateEmailStatus(row.id, 'out_of_office')
+                                    markEmailStatus(row.id, 'bounced')
                                   }
-                                  className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-1.5 text-xs font-semibold text-amber-800 hover:bg-amber-100 disabled:opacity-50"
+                                  disabled={savingId === row.id}
+                                  className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs font-bold text-red-700 hover:bg-red-100 disabled:opacity-50"
                                 >
-                                  Mark OOO
+                                  Bounced
                                 </button>
 
                                 <button
                                   type="button"
+                                  onClick={() =>
+                                    markEmailStatus(row.id, 'out_of_office')
+                                  }
                                   disabled={savingId === row.id}
-                                  onClick={() => updateOutcome(row.id, 'quoted')}
-                                  className="rounded-lg border border-blue-200 bg-blue-50 px-3 py-1.5 text-xs font-semibold text-blue-700 hover:bg-blue-100 disabled:opacity-50"
+                                  className="rounded-lg border border-purple-200 bg-purple-50 px-3 py-2 text-xs font-bold text-purple-700 hover:bg-purple-100 disabled:opacity-50"
+                                >
+                                  Out of office
+                                </button>
+
+                                <button
+                                  type="button"
+                                  onClick={() => markOutcome(row.id, 'quoted')}
+                                  disabled={savingId === row.id}
+                                  className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-bold text-amber-800 hover:bg-amber-100 disabled:opacity-50"
                                 >
                                   Quoted
                                 </button>
 
                                 <button
                                   type="button"
-                                  disabled={savingId === row.id}
                                   onClick={() =>
-                                    updateOutcome(row.id, 'customer')
+                                    markOutcome(row.id, 'customer')
                                   }
-                                  className="rounded-lg border border-green-200 bg-green-50 px-3 py-1.5 text-xs font-semibold text-green-700 hover:bg-green-100 disabled:opacity-50"
+                                  disabled={savingId === row.id}
+                                  className="rounded-lg border border-green-200 bg-green-50 px-3 py-2 text-xs font-bold text-green-700 hover:bg-green-100 disabled:opacity-50"
                                 >
                                   Customer
                                 </button>
 
-                                {row.email_status === 'out_of_office' ? (
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    markEmailStatus(row.id, 'no_response')
+                                  }
+                                  disabled={savingId === row.id}
+                                  className="rounded-lg border border-stone-300 bg-white px-3 py-2 text-xs font-bold text-stone-700 hover:bg-stone-50 disabled:opacity-50"
+                                >
+                                  No response
+                                </button>
+
+                                {emailStatus === 'out_of_office' ? (
                                   <button
                                     type="button"
                                     onClick={() =>
                                       setOpenContactFormId(
                                         openContactFormId === row.id
                                           ? null
-                                          : row.id
+                                          : row.id,
                                       )
                                     }
-                                    className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+                                    className="rounded-lg border border-stone-300 bg-white px-3 py-2 text-xs font-bold text-stone-700 hover:bg-stone-50"
                                   >
-                                    Add contact
+                                    Add OOO contact
                                   </button>
                                 ) : null}
                               </div>
 
                               {openContactFormId === row.id ? (
-                                <div className="mt-4 rounded-xl border bg-slate-50 p-4">
-                                  <div className="grid gap-3 md:grid-cols-2">
+                                <div className="mt-4 rounded-2xl border border-stone-200 bg-stone-50 p-4">
+                                  <p className="text-sm font-black text-stone-950">
+                                    Add new contact
+                                  </p>
+
+                                  <div className="mt-3 grid gap-3 sm:grid-cols-2">
                                     <input
-                                      value={form.first_name}
+                                      value={form.firstName}
                                       onChange={(event) =>
                                         updateContactForm(
                                           row.id,
-                                          'first_name',
-                                          event.target.value
+                                          'firstName',
+                                          event.target.value,
                                         )
                                       }
                                       placeholder="First name"
-                                      className="rounded-lg border px-3 py-2 text-sm"
+                                      className="rounded-lg border border-stone-300 px-3 py-2 text-sm outline-none focus:border-red-500 focus:ring-4 focus:ring-red-50"
                                     />
 
                                     <input
-                                      value={form.last_name}
+                                      value={form.lastName}
                                       onChange={(event) =>
                                         updateContactForm(
                                           row.id,
-                                          'last_name',
-                                          event.target.value
+                                          'lastName',
+                                          event.target.value,
                                         )
                                       }
                                       placeholder="Last name"
-                                      className="rounded-lg border px-3 py-2 text-sm"
+                                      className="rounded-lg border border-stone-300 px-3 py-2 text-sm outline-none focus:border-red-500 focus:ring-4 focus:ring-red-50"
                                     />
 
                                     <input
-                                      value={form.email_address}
+                                      value={form.email}
                                       onChange={(event) =>
                                         updateContactForm(
                                           row.id,
-                                          'email_address',
-                                          event.target.value
+                                          'email',
+                                          event.target.value,
                                         )
                                       }
-                                      placeholder="Email address"
-                                      className="rounded-lg border px-3 py-2 text-sm"
+                                      placeholder="Email"
+                                      className="rounded-lg border border-stone-300 px-3 py-2 text-sm outline-none focus:border-red-500 focus:ring-4 focus:ring-red-50"
                                     />
 
                                     <input
@@ -640,24 +991,24 @@ export default function CampaignDetailPage() {
                                         updateContactForm(
                                           row.id,
                                           'role',
-                                          event.target.value
+                                          event.target.value,
                                         )
                                       }
                                       placeholder="Role"
-                                      className="rounded-lg border px-3 py-2 text-sm"
+                                      className="rounded-lg border border-stone-300 px-3 py-2 text-sm outline-none focus:border-red-500 focus:ring-4 focus:ring-red-50"
                                     />
 
                                     <input
-                                      value={form.telephone}
+                                      value={form.phone}
                                       onChange={(event) =>
                                         updateContactForm(
                                           row.id,
-                                          'telephone',
-                                          event.target.value
+                                          'phone',
+                                          event.target.value,
                                         )
                                       }
-                                      placeholder="Telephone"
-                                      className="rounded-lg border px-3 py-2 text-sm"
+                                      placeholder="Phone"
+                                      className="rounded-lg border border-stone-300 px-3 py-2 text-sm outline-none focus:border-red-500 focus:ring-4 focus:ring-red-50"
                                     />
 
                                     <input
@@ -666,23 +1017,25 @@ export default function CampaignDetailPage() {
                                         updateContactForm(
                                           row.id,
                                           'notes',
-                                          event.target.value
+                                          event.target.value,
                                         )
                                       }
                                       placeholder="Notes"
-                                      className="rounded-lg border px-3 py-2 text-sm"
+                                      className="rounded-lg border border-stone-300 px-3 py-2 text-sm outline-none focus:border-red-500 focus:ring-4 focus:ring-red-50"
                                     />
                                   </div>
 
                                   <button
                                     type="button"
-                                    disabled={savingId === row.id}
                                     onClick={() =>
                                       addContactFromOutOfOffice(row)
                                     }
-                                    className="mt-3 rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-700 disabled:opacity-50"
+                                    disabled={savingId === row.id}
+                                    className="mt-3 rounded-xl bg-red-600 px-4 py-2 text-sm font-bold text-white hover:bg-red-700 disabled:opacity-50"
                                   >
-                                    Save new contact
+                                    {savingId === row.id
+                                      ? 'Saving...'
+                                      : 'Save new contact'}
                                   </button>
                                 </div>
                               ) : null}
@@ -694,10 +1047,231 @@ export default function CampaignDetailPage() {
                   </tbody>
                 </table>
               </div>
-            </section>
+            </div>
           </>
         )}
-      </div>
+      </section>
     </main>
+  )
+}
+
+function isRowWithId(value: DbRow): value is DbRow & { id: string } {
+  return typeof value.id === 'string' && value.id.length > 0
+}
+
+function getString(row: DbRow, keys: string[]) {
+  for (const key of keys) {
+    const value = row[key]
+
+    if (typeof value === 'string' && value.trim()) {
+      return value.trim()
+    }
+
+    if (typeof value === 'number') {
+      return String(value)
+    }
+  }
+
+  return ''
+}
+
+function getCampaignName(campaign: DbRow) {
+  return getString(campaign, ['name', 'campaign_name', 'title'])
+}
+
+function getCompanyName(company: DbRow) {
+  return getString(company, ['company_name', 'business_name', 'name'])
+}
+
+function getContactName(contact: DbRow) {
+  return [getString(contact, ['first_name']), getString(contact, ['last_name'])]
+    .filter(Boolean)
+    .join(' ')
+    .trim()
+}
+
+function getContactEmail(contact: DbRow) {
+  return getString(contact, ['email_address', 'email'])
+}
+
+function getContactRole(contact: DbRow) {
+  return getString(contact, ['role', 'job_title', 'position'])
+}
+
+function getContactOutcome(contact: DbRow) {
+  return getString(contact, ['outcome', 'status'])
+}
+
+function getEmailStatus(row: CampaignCompanyView) {
+  return getString(row.raw, ['email_status']) || 'selected'
+}
+
+function getCampaignOutcome(row: CampaignCompanyView) {
+  return getString(row.raw, ['outcome']) || 'none'
+}
+
+function getEffectiveOutcome(row: CampaignCompanyView) {
+  const campaignOutcome = cleanOutcome(getCampaignOutcome(row))
+  const contactOutcome = cleanOutcome(getContactOutcome(row.contact || {}))
+
+  if (campaignOutcome === 'customer' || campaignOutcome === 'won') {
+    return 'customer'
+  }
+
+  if (
+    campaignOutcome === 'quoted' ||
+    campaignOutcome === 'quote sent' ||
+    campaignOutcome === 'negotiating'
+  ) {
+    return 'quoted'
+  }
+
+  if (contactOutcome === 'customer' || contactOutcome === 'won') {
+    return 'customer'
+  }
+
+  if (
+    contactOutcome === 'quoted' ||
+    contactOutcome === 'quote sent' ||
+    contactOutcome === 'negotiating'
+  ) {
+    return 'quoted'
+  }
+
+  return getCampaignOutcome(row)
+}
+
+function countEmailStatus(rows: CampaignCompanyView[], status: string) {
+  return rows.filter((row) => getEmailStatus(row) === status).length
+}
+
+function cleanOutcome(value: string) {
+  return value.trim().toLowerCase().replaceAll('_', ' ')
+}
+
+function cleanText(value: string) {
+  return value.trim() || null
+}
+
+function setIfColumnExists(
+  payload: DbRow,
+  keySet: Set<string>,
+  key: string,
+  value: unknown,
+) {
+  if (keySet.has(key)) {
+    payload[key] = value
+  }
+}
+
+function removeNullValues(payload: DbRow) {
+  return Object.fromEntries(
+    Object.entries(payload).filter(([, value]) => value !== null),
+  )
+}
+
+function percent(part: number, total: number) {
+  if (!total) return '0%'
+  return `${((part / total) * 100).toFixed(1)}%`
+}
+
+function chunkArray<T>(items: T[], chunkSize: number) {
+  const chunks: T[][] = []
+
+  for (let index = 0; index < items.length; index += chunkSize) {
+    chunks.push(items.slice(index, index + chunkSize))
+  }
+
+  return chunks
+}
+
+function FilterButton({
+  active,
+  label,
+  onClick,
+}: {
+  active: boolean
+  label: string
+  onClick: () => void
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`rounded-xl px-4 py-2 text-sm font-bold transition ${
+        active
+          ? 'bg-red-600 text-white'
+          : 'border border-stone-300 bg-white text-stone-700 hover:bg-stone-50'
+      }`}
+    >
+      {label}
+    </button>
+  )
+}
+
+function StatusPill({ value }: { value: string }) {
+  const cleaned = cleanOutcome(value)
+
+  const classes =
+    cleaned === 'customer' || cleaned === 'won'
+      ? 'bg-green-100 text-green-800'
+      : cleaned === 'quoted' ||
+          cleaned === 'quote sent' ||
+          cleaned === 'negotiating'
+        ? 'bg-amber-100 text-amber-800'
+        : cleaned === 'bounced' || cleaned === 'negative'
+          ? 'bg-red-100 text-red-800'
+          : cleaned === 'out of office'
+            ? 'bg-purple-100 text-purple-800'
+            : cleaned === 'sent'
+              ? 'bg-blue-100 text-blue-800'
+              : 'bg-stone-100 text-stone-700'
+
+  return (
+    <span
+      className={`inline-flex rounded-full px-2 py-1 text-xs font-bold ${classes}`}
+    >
+      {value.replaceAll('_', ' ')}
+    </span>
+  )
+}
+
+function MetricBlock({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-xl border border-stone-200 bg-stone-50 p-4">
+      <p className="text-xs font-black uppercase tracking-wide text-stone-500">
+        {label}
+      </p>
+
+      <p className="mt-2 text-2xl font-black text-stone-950">{value}</p>
+    </div>
+  )
+}
+
+function SummaryCard({
+  label,
+  value,
+  urgent = false,
+}: {
+  label: string
+  value: number
+  urgent?: boolean
+}) {
+  return (
+    <div
+      className={`rounded-2xl border bg-white p-5 shadow-sm ${
+        urgent ? 'border-red-300 ring-4 ring-red-50' : 'border-stone-200'
+      }`}
+    >
+      <p className="text-sm font-bold text-stone-500">{label}</p>
+
+      <p
+        className={`mt-3 text-4xl font-black tracking-tight ${
+          urgent ? 'text-red-600' : 'text-stone-950'
+        }`}
+      >
+        {value}
+      </p>
+    </div>
   )
 }

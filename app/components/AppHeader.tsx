@@ -15,23 +15,36 @@ const navItems = [
   { href: '/reports', label: 'Reports' },
 ]
 
+const campaignSubItems = [
+  { href: '/campaigns/builder', label: 'Builder' },
+  { href: '/campaigns/history', label: 'History' },
+]
+
 export default function AppHeader() {
   const pathname = usePathname()
+  const isCampaignSection =
+    pathname === '/campaigns' || pathname.startsWith('/campaigns/')
 
   return (
     <header className="border-b border-stone-200 bg-white">
-      <div className="mx-auto flex max-w-7xl items-center justify-between px-4 py-4">
-        <Link href="/" className="group">
-          <p className="text-xl font-black tracking-tight text-red-600">
-            Fixing IT
-          </p>
+      <div className="mx-auto flex max-w-7xl flex-col gap-4 px-4 py-4 lg:flex-row lg:items-center lg:justify-between">
+        <div className="flex items-center justify-between gap-4">
+          <Link href="/" className="group">
+            <p className="text-xl font-black tracking-tight text-red-600">
+              Fixing IT
+            </p>
 
-          <p className="text-xs font-medium uppercase tracking-[0.2em] text-stone-400">
-            Marketing Dashboard
-          </p>
-        </Link>
+            <p className="text-xs font-medium uppercase tracking-[0.2em] text-stone-400">
+              Marketing Dashboard
+            </p>
+          </Link>
 
-        <nav className="hidden items-center gap-2 text-sm font-semibold text-stone-600 md:flex">
+          <div className="md:hidden">
+            <LogoutButton />
+          </div>
+        </div>
+
+        <nav className="flex flex-wrap items-center gap-2 text-sm font-semibold text-stone-600">
           {navItems.map((item) => {
             const isActive =
               item.href === '/'
@@ -53,9 +66,39 @@ export default function AppHeader() {
             )
           })}
 
-          <LogoutButton />
+          <div className="hidden md:block">
+            <LogoutButton />
+          </div>
         </nav>
       </div>
+
+      {isCampaignSection ? (
+        <div className="border-t border-stone-100 bg-stone-50">
+          <div className="mx-auto flex max-w-7xl flex-wrap items-center gap-2 px-4 py-3 text-sm font-semibold">
+            <span className="mr-1 text-xs font-black uppercase tracking-wide text-stone-400">
+              Campaigns
+            </span>
+
+            {campaignSubItems.map((item) => {
+              const isActive = pathname === item.href
+
+              return (
+                <Link
+                  key={item.href}
+                  href={item.href}
+                  className={`rounded-lg px-3 py-2 transition ${
+                    isActive
+                      ? 'bg-red-600 text-white'
+                      : 'bg-white text-stone-700 hover:bg-red-50 hover:text-red-600'
+                  }`}
+                >
+                  {item.label}
+                </Link>
+              )
+            })}
+          </div>
+        </div>
+      ) : null}
     </header>
   )
 }
