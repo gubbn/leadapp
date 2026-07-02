@@ -19,7 +19,7 @@ type ExportRow = {
   location: string | null
   size_band: string | null
   last_contact_date: string | null
-  days_since_last_contact: number | null
+  days_since_last_contact: number | string | null
   next_contact_opportunity: string | null
   outcome: string | null
 }
@@ -36,6 +36,8 @@ type CampaignEmailStatus =
   | 'invalid_format'
 
 type CampaignRelationshipStatus = 'prospect' | 'customer' | 'quoted'
+
+type ContactAgeFilter = 'all' | '30' | '60' | '90' | 'never'
 
 type CampaignRow = ExportRow & {
   company_id: string | null
@@ -69,7 +71,8 @@ export default function CampaignBuilderPage() {
   const [selectedSizeBands, setSelectedSizeBands] = useState<string[]>([])
   const [selectedIndustries, setSelectedIndustries] = useState<string[]>([])
   const [selectedLocations, setSelectedLocations] = useState<string[]>([])
-  const [due90Only, setDue90Only] = useState(false)
+  const [contactAgeFilter, setContactAgeFilter] =
+    useState<ContactAgeFilter>('all')
   const [includeRiskyEmails, setIncludeRiskyEmails] = useState(true)
   const [includeInvalidEmails, setIncludeInvalidEmails] = useState(false)
   const [excludeCustomers, setExcludeCustomers] = useState(true)
@@ -84,7 +87,11 @@ export default function CampaignBuilderPage() {
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search)
-    setDue90Only(params.get('due90') === 'true')
+
+    if (params.get('due90') === 'true') {
+      setContactAgeFilter('90')
+    }
+
     loadRows()
   }, [])
 
@@ -127,6 +134,23 @@ export default function CampaignBuilderPage() {
     )
   }, [rows])
 
+  const contactAgeCounts = useMemo(() => {
+    return {
+      thirty: rows.filter((row) =>
+        matchesContactAgeFilter(row.days_since_last_contact, '30'),
+      ).length,
+      sixty: rows.filter((row) =>
+        matchesContactAgeFilter(row.days_since_last_contact, '60'),
+      ).length,
+      ninety: rows.filter((row) =>
+        matchesContactAgeFilter(row.days_since_last_contact, '90'),
+      ).length,
+      never: rows.filter((row) =>
+        matchesContactAgeFilter(row.days_since_last_contact, 'never'),
+      ).length,
+    }
+  }, [rows])
+
   const customerCount = useMemo(() => {
     return rows.filter(
       (row) => row.campaign_relationship_status === 'customer',
@@ -156,8 +180,10 @@ export default function CampaignBuilderPage() {
         selectedLocations.length === 0 ||
         selectedLocations.includes(rowLocation)
 
-      const matchesDue90 =
-        !due90Only || Number(row.days_since_last_contact ?? 0) >= 90
+      const matchesContactAge = matchesContactAgeFilter(
+        row.days_since_last_contact,
+        contactAgeFilter,
+      )
 
       const isRisky = row.campaign_email_status === 'risky'
 
@@ -179,7 +205,7 @@ export default function CampaignBuilderPage() {
         matchesSize &&
         matchesIndustry &&
         matchesLocation &&
-        matchesDue90 &&
+        matchesContactAge &&
         matchesEmailRules &&
         matchesCustomerRules &&
         matchesQuotedRules
@@ -190,7 +216,7 @@ export default function CampaignBuilderPage() {
     selectedSizeBands,
     selectedIndustries,
     selectedLocations,
-    due90Only,
+    contactAgeFilter,
     includeRiskyEmails,
     includeInvalidEmails,
     excludeCustomers,
@@ -218,11 +244,6 @@ export default function CampaignBuilderPage() {
   const excludedCount = useMemo(() => {
     return rows.length - filteredRows.length
   }, [rows.length, filteredRows.length])
-
-  const due90Count = useMemo(() => {
-    return rows.filter((row) => Number(row.days_since_last_contact ?? 0) >= 90)
-      .length
-  }, [rows])
 
   async function loadRows() {
     setLoading(true)
@@ -288,7 +309,7 @@ export default function CampaignBuilderPage() {
     setSelectedSizeBands([])
     setSelectedIndustries([])
     setSelectedLocations([])
-    setDue90Only(false)
+    setContactAgeFilter('all')
     setIncludeRiskyEmails(true)
     setIncludeInvalidEmails(false)
     setExcludeCustomers(true)
@@ -351,13 +372,14 @@ export default function CampaignBuilderPage() {
       .from('campaigns')
       .insert({
         name: cleanedCampaignName,
+        campaign_name: cleanedCampaignName,
         description: `Created from campaign builder with ${filteredRows.length} exported contact${
           filteredRows.length === 1 ? '' : 's'
         } and ${selectedCompanyRows.length} selected compan${
           selectedCompanyRows.length === 1 ? 'y' : 'ies'
         }.`,
       })
-      .select('id, name')
+      .select('id, name, campaign_name')
       .single()
 
     if (campaignError || !campaignData) {
@@ -451,14 +473,49 @@ export default function CampaignBuilderPage() {
         </div>
 
         <div className="mt-6 grid gap-4 md:grid-cols-4">
-          <SummaryCard label="90+ days since contact" value={due90Count} urgent={due90Count > 0} />
-          <SummaryCard label="Risky emails" value={emailCounts.risky} urgent={emailCounts.risky > 0} />
+          <SummaryCard
+            label="30+ days"
+            value={contactAgeCounts.thirty}
+            urgent={contactAgeCounts.thirty > 0}
+          />
+
+          <SummaryCard
+            label="60+ days"
+            value={contactAgeCounts.sixty}
+            urgent={contactAgeCounts.sixty > 0}
+          />
+
+          <SummaryCard
+            label="90+ days"
+            value={contactAgeCounts.ninety}
+            urgent={contactAgeCounts.ninety > 0}
+          />
+
+          <SummaryCard
+            label="Never contacted"
+            value={contactAgeCounts.never}
+            urgent={contactAgeCounts.never > 0}
+          />
+        </div>
+
+        <div className="mt-6 grid gap-4 md:grid-cols-3">
+          <SummaryCard
+            label="Risky emails"
+            value={emailCounts.risky}
+            urgent={emailCounts.risky > 0}
+          />
+
           <SummaryCard
             label="Invalid/missing"
             value={emailCounts.invalid_format + emailCounts.missing}
             urgent={emailCounts.invalid_format + emailCounts.missing > 0}
           />
-          <SummaryCard label="Excluded by filters" value={excludedCount} urgent={excludedCount > 0} />
+
+          <SummaryCard
+            label="Excluded by filters"
+            value={excludedCount}
+            urgent={excludedCount > 0}
+          />
         </div>
 
         <div className="mt-6 rounded-2xl border border-stone-200 bg-white p-6 shadow-sm">
@@ -469,7 +526,9 @@ export default function CampaignBuilderPage() {
               </h2>
 
               <p className="mt-1 text-sm text-stone-500">
-                Customers and quoted companies are excluded by default.
+                Filter by contact age, company size, industry, location and
+                email quality. Customers and quoted companies are excluded by
+                default.
               </p>
             </div>
 
@@ -561,11 +620,49 @@ export default function CampaignBuilderPage() {
           </div>
 
           <div className="mt-5 grid gap-3 md:grid-cols-3">
-            <CheckboxCard checked={due90Only} onChange={setDue90Only} label="90+ days only" />
-            <CheckboxCard checked={includeRiskyEmails} onChange={setIncludeRiskyEmails} label="Include risky emails" />
-            <CheckboxCard checked={includeInvalidEmails} onChange={setIncludeInvalidEmails} label="Include invalid or missing emails" />
-            <CheckboxCard checked={excludeCustomers} onChange={setExcludeCustomers} label="Exclude existing customers" />
-            <CheckboxCard checked={excludeQuotedCompanies} onChange={setExcludeQuotedCompanies} label="Exclude quoted / negotiating companies" />
+            <label className="block rounded-xl border border-stone-300 bg-white px-4 py-3">
+              <span className="text-xs font-black uppercase tracking-wide text-stone-500">
+                Last contacted
+              </span>
+
+              <select
+                value={contactAgeFilter}
+                onChange={(event) =>
+                  setContactAgeFilter(event.target.value as ContactAgeFilter)
+                }
+                className="mt-1 w-full rounded-lg border border-stone-300 bg-white px-3 py-2 text-sm font-bold outline-none focus:border-red-500 focus:ring-4 focus:ring-red-50"
+              >
+                <option value="all">Any contact age</option>
+                <option value="30">Not contacted for 30+ days</option>
+                <option value="60">Not contacted for 60+ days</option>
+                <option value="90">Not contacted for 90+ days</option>
+                <option value="never">Never contacted / unknown</option>
+              </select>
+            </label>
+
+            <CheckboxCard
+              checked={includeRiskyEmails}
+              onChange={setIncludeRiskyEmails}
+              label="Include risky emails"
+            />
+
+            <CheckboxCard
+              checked={includeInvalidEmails}
+              onChange={setIncludeInvalidEmails}
+              label="Include invalid or missing emails"
+            />
+
+            <CheckboxCard
+              checked={excludeCustomers}
+              onChange={setExcludeCustomers}
+              label="Exclude existing customers"
+            />
+
+            <CheckboxCard
+              checked={excludeQuotedCompanies}
+              onChange={setExcludeQuotedCompanies}
+              label="Exclude quoted / negotiating companies"
+            />
           </div>
 
           <div className="mt-5 rounded-2xl border border-stone-200 bg-stone-50 p-4">
@@ -574,11 +671,35 @@ export default function CampaignBuilderPage() {
             </p>
 
             <div className="mt-3 grid gap-2 text-sm md:grid-cols-5">
-              <CountPill label="Looks usable" value={emailCounts.deliverable} tone="good" />
-              <CountPill label="Risky / role" value={emailCounts.risky} tone="warning" />
-              <CountPill label="Invalid" value={emailCounts.invalid_format} tone="bad" />
-              <CountPill label="Missing" value={emailCounts.missing} tone="bad" />
-              <CountPill label="Customers/quoted" value={customerCount + quotedCount} tone="warning" />
+              <CountPill
+                label="Looks usable"
+                value={emailCounts.deliverable}
+                tone="good"
+              />
+
+              <CountPill
+                label="Risky / role"
+                value={emailCounts.risky}
+                tone="warning"
+              />
+
+              <CountPill
+                label="Invalid"
+                value={emailCounts.invalid_format}
+                tone="bad"
+              />
+
+              <CountPill
+                label="Missing"
+                value={emailCounts.missing}
+                tone="bad"
+              />
+
+              <CountPill
+                label="Customers/quoted"
+                value={customerCount + quotedCount}
+                tone="warning"
+              />
             </div>
 
             <p className="mt-3 text-sm text-stone-600">
@@ -668,11 +789,15 @@ export default function CampaignBuilderPage() {
                 ) : (
                   filteredRows.slice(0, 100).map((row, index) => (
                     <tr
-                      key={`${row.company_id || 'no-company'}-${row.contact_id || index}`}
+                      key={`${row.company_id || 'no-company'}-${
+                        row.contact_id || index
+                      }`}
                       className="border-t border-stone-100"
                     >
                       <td className="px-4 py-3 font-semibold text-stone-900">
-                        {[row.first_name, row.last_name].filter(Boolean).join(' ') || '-'}
+                        {[row.first_name, row.last_name]
+                          .filter(Boolean)
+                          .join(' ') || '-'}
                       </td>
 
                       <td className="px-4 py-3">{row.company_name || '-'}</td>
@@ -680,7 +805,9 @@ export default function CampaignBuilderPage() {
 
                       <td className="px-4 py-3">
                         <div className="flex flex-col gap-1">
-                          <EmailStatusBadge status={row.campaign_email_status} />
+                          <EmailStatusBadge
+                            status={row.campaign_email_status}
+                          />
                           <span className="text-xs text-stone-500">
                             {row.campaign_email_note}
                           </span>
@@ -689,7 +816,9 @@ export default function CampaignBuilderPage() {
 
                       <td className="px-4 py-3">
                         <div className="flex flex-col gap-1">
-                          <RelationshipBadge status={row.campaign_relationship_status} />
+                          <RelationshipBadge
+                            status={row.campaign_relationship_status}
+                          />
                           <span className="text-xs text-stone-500">
                             {row.campaign_relationship_note}
                           </span>
@@ -712,7 +841,7 @@ export default function CampaignBuilderPage() {
                             : 'text-stone-600'
                         }`}
                       >
-                        {row.days_since_last_contact ?? '-'}
+                        {formatDaysSinceContact(row.days_since_last_contact)}
                       </td>
 
                       <td className="px-4 py-3">
@@ -807,7 +936,11 @@ function getCampaignRelationshipStatus(outcome: string | null): {
     }
   }
 
-  if (cleaned === 'quote sent' || cleaned === 'negotiating' || cleaned === 'quoted') {
+  if (
+    cleaned === 'quote sent' ||
+    cleaned === 'negotiating' ||
+    cleaned === 'quoted'
+  ) {
     return {
       campaign_relationship_status: 'quoted',
       campaign_relationship_note: outcome || 'Quoted or active sales lead.',
@@ -818,6 +951,44 @@ function getCampaignRelationshipStatus(outcome: string | null): {
     campaign_relationship_status: 'prospect',
     campaign_relationship_note: outcome || 'No customer/quote outcome.',
   }
+}
+
+function matchesContactAgeFilter(
+  daysSinceLastContact: number | string | null,
+  filter: ContactAgeFilter,
+) {
+  if (filter === 'all') return true
+
+  if (
+    daysSinceLastContact === null ||
+    daysSinceLastContact === undefined ||
+    daysSinceLastContact === ''
+  ) {
+    return filter === 'never' || filter === '30' || filter === '60' || filter === '90'
+  }
+
+  const days = Number(daysSinceLastContact)
+
+  if (Number.isNaN(days)) {
+    return filter === 'never' || filter === '30' || filter === '60' || filter === '90'
+  }
+
+  if (filter === 'never') return false
+  if (filter === '30') return days >= 30
+  if (filter === '60') return days >= 60
+  if (filter === '90') return days >= 90
+
+  return true
+}
+
+function formatDaysSinceContact(value: number | string | null) {
+  if (value === null || value === undefined || value === '') return 'Never'
+
+  const days = Number(value)
+
+  if (Number.isNaN(days)) return 'Unknown'
+
+  return days
 }
 
 function downloadCsvRows(campaignName: string, rows: CampaignRow[]) {
@@ -987,7 +1158,9 @@ function EmailStatusBadge({ status }: { status: CampaignEmailStatus }) {
         : 'bg-red-100 text-red-800'
 
   return (
-    <span className={`w-fit rounded-full px-2 py-1 text-xs font-bold ${classes}`}>
+    <span
+      className={`w-fit rounded-full px-2 py-1 text-xs font-bold ${classes}`}
+    >
       {status.replaceAll('_', ' ')}
     </span>
   )
@@ -1006,7 +1179,9 @@ function RelationshipBadge({
         : 'bg-blue-100 text-blue-800'
 
   return (
-    <span className={`w-fit rounded-full px-2 py-1 text-xs font-bold ${classes}`}>
+    <span
+      className={`w-fit rounded-full px-2 py-1 text-xs font-bold ${classes}`}
+    >
       {status}
     </span>
   )
