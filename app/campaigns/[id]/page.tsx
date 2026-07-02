@@ -891,25 +891,32 @@ export default function CampaignDetailPage() {
                                   Out of office
                                 </button>
 
-                                <button
-                                  type="button"
-                                  onClick={() => markOutcome(row.id, 'quoted')}
-                                  disabled={savingId === row.id}
-                                  className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-bold text-amber-800 hover:bg-amber-100 disabled:opacity-50"
-                                >
-                                  Quoted
-                                </button>
+<button
+  type="button"
+  onClick={() => markOutcome(row.id, 'quoted')}
+  disabled={savingId === row.id}
+  className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-bold text-amber-800 hover:bg-amber-100 disabled:opacity-50"
+>
+  Quoted
+</button>
 
-                                <button
-                                  type="button"
-                                  onClick={() =>
-                                    markOutcome(row.id, 'customer')
-                                  }
-                                  disabled={savingId === row.id}
-                                  className="rounded-lg border border-green-200 bg-green-50 px-3 py-2 text-xs font-bold text-green-700 hover:bg-green-100 disabled:opacity-50"
-                                >
-                                  Customer
-                                </button>
+<button
+  type="button"
+  onClick={() => markOutcome(row.id, 'customer')}
+  disabled={savingId === row.id}
+  className="rounded-lg border border-green-200 bg-green-50 px-3 py-2 text-xs font-bold text-green-700 hover:bg-green-100 disabled:opacity-50"
+>
+  Customer
+</button>
+
+<button
+  type="button"
+  onClick={() => markOutcome(row.id, 'none')}
+  disabled={savingId === row.id}
+  className="rounded-lg border border-stone-300 bg-white px-3 py-2 text-xs font-bold text-stone-700 hover:bg-stone-50 disabled:opacity-50"
+>
+  Clear outcome
+</button>
 
                                 <button
                                   type="button"
