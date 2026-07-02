@@ -5,18 +5,46 @@ import Link from 'next/link'
 import { supabase } from '@/lib/supabaseClient'
 import AppHeader from '@/app/components/AppHeader'
 
-type CompanyRow = {
+type DbRow = Record<string, unknown>
+
+type CompanyRow = DbRow & {
   id: string
-  company_name: string | null
-  industry: string | null
-  location: string | null
-  size_band: string | null
-  domain: string | null
-  dnc: boolean | null
-  outcome: string | null
-  last_contact_date: string | null
-  created_at: string | null
 }
+
+type ContactRow = DbRow & {
+  id: string
+}
+
+type CampaignHistoryRow = DbRow & {
+  id: string
+  campaign?: DbRow | null
+}
+
+type CompanyView = {
+  id: string
+  raw: CompanyRow
+  contacts: ContactRow[]
+  campaignHistory: CampaignHistoryRow[]
+}
+
+type CompanyEditDraft = {
+  companyName: string
+  industry: string
+  location: string
+  sizeBand: string
+  domain: string
+  lastContactDate: string
+  dnc: boolean
+}
+
+type RelationshipStatus =
+  | 'prospect'
+  | 'customer'
+  | 'quoted'
+  | 'bounced'
+  | 'negative'
+  | 'no-answer'
+  | 'other'
 
 type RelationshipFilter =
   | 'all'
@@ -30,26 +58,6 @@ type RelationshipFilter =
 
 type DncFilter = 'all' | 'dnc' | 'not-dnc'
 
-type RelationshipStatus =
-  | 'prospect'
-  | 'customer'
-  | 'quoted'
-  | 'bounced'
-  | 'negative'
-  | 'no-answer'
-  | 'other'
-
-const outcomeOptions = [
-  '',
-  'No answer',
-  'Bounced',
-  'Negative',
-  'Negotiating',
-  'Quote sent',
-  'Customer',
-  'Won',
-]
-
 const sizeBandOptions = [
   '',
   'micro',
@@ -58,13 +66,18 @@ const sizeBandOptions = [
   'large',
   'enterprise',
   'unknown',
+  '1-10',
+  '11-50',
+  '51-250',
+  '250+',
 ]
 
 export default function CompaniesPage() {
-  const [companies, setCompanies] = useState<CompanyRow[]>([])
+  const [companies, setCompanies] = useState<CompanyView[]>([])
   const [loading, setLoading] = useState(true)
   const [message, setMessage] = useState('')
   const [errorMessage, setErrorMessage] = useState('')
+  const [warningMessage, setWarningMessage] = useState('')
   const [searchTerm, setSearchTerm] = useState('')
   const [relationshipFilter, setRelationshipFilter] =
     useState<RelationshipFilter>('all')
@@ -72,7 +85,7 @@ export default function CompaniesPage() {
   const [selectedIndustries, setSelectedIndustries] = useState<string[]>([])
   const [editingId, setEditingId] = useState<string | null>(null)
   const [savingId, setSavingId] = useState<string | null>(null)
-  const [editDraft, setEditDraft] = useState<CompanyRow | null>(null)
+  const [editDraft, setEditDraft] = useState<CompanyEditDraft | null>(null)
 
   useEffect(() => {
     loadCompanies()
@@ -82,49 +95,76 @@ export default function CompaniesPage() {
     return Array.from(
       new Set(
         companies
-          .map((company) => company.industry)
-          .filter((value): value is string => Boolean(value?.trim())),
+          .map((company) => getCompanyIndustry(company.raw))
+          .filter((value): value is string => Boolean(value)),
       ),
     ).sort()
   }, [companies])
 
   const relationshipCounts = useMemo(() => {
-    return companies.reduce(
-      (counts, company) => {
-        const status = getRelationshipStatus(company.outcome)
-        counts[status] += 1
-        return counts
-      },
-      {
-        prospect: 0,
-        customer: 0,
-        quoted: 0,
-        bounced: 0,
-        negative: 0,
-        'no-answer': 0,
-        other: 0,
-      } as Record<RelationshipStatus, number>,
-    )
+    const counts: Record<RelationshipStatus, number> = {
+      prospect: 0,
+      customer: 0,
+      quoted: 0,
+      bounced: 0,
+      negative: 0,
+      'no-answer': 0,
+      other: 0,
+    }
+
+    companies.forEach((company) => {
+      const status = getRelationshipStatus(company)
+      counts[status] += 1
+    })
+
+    return counts
   }, [companies])
 
   const dncCount = useMemo(() => {
-    return companies.filter((company) => Boolean(company.dnc)).length
+    return companies.filter((company) => getCompanyDnc(company.raw)).length
   }, [companies])
 
   const filteredCompanies = useMemo(() => {
     const cleanedSearch = searchTerm.trim().toLowerCase()
 
     return companies.filter((company) => {
-      const relationshipStatus = getRelationshipStatus(company.outcome)
+      const relationshipStatus = getRelationshipStatus(company)
+      const industry = getCompanyIndustry(company.raw)
+
+      const contactSearchText = company.contacts
+        .map((contact) =>
+          [
+            getContactName(contact),
+            getContactEmail(contact),
+            getContactOutcome(contact),
+            getContactRole(contact),
+          ]
+            .filter(Boolean)
+            .join(' '),
+        )
+        .join(' ')
+
+      const campaignSearchText = company.campaignHistory
+        .map((history) =>
+          [
+            getString(history, ['email_status']),
+            getString(history, ['outcome']),
+            getString(history.campaign || {}, ['name']),
+          ]
+            .filter(Boolean)
+            .join(' '),
+        )
+        .join(' ')
 
       const matchesSearch =
         !cleanedSearch ||
         [
-          company.company_name,
-          company.industry,
-          company.location,
-          company.domain,
-          company.outcome,
+          getCompanyName(company.raw),
+          getCompanyIndustry(company.raw),
+          getCompanyLocation(company.raw),
+          getCompanyDomain(company.raw),
+          contactSearchText,
+          campaignSearchText,
         ]
           .filter(Boolean)
           .join(' ')
@@ -147,12 +187,12 @@ export default function CompaniesPage() {
 
       const matchesDnc =
         dncFilter === 'all' ||
-        (dncFilter === 'dnc' && Boolean(company.dnc)) ||
-        (dncFilter === 'not-dnc' && !company.dnc)
+        (dncFilter === 'dnc' && getCompanyDnc(company.raw)) ||
+        (dncFilter === 'not-dnc' && !getCompanyDnc(company.raw))
 
       const matchesIndustry =
         selectedIndustries.length === 0 ||
-        selectedIndustries.includes(company.industry || '')
+        selectedIndustries.includes(industry || '')
 
       return (
         matchesSearch && matchesRelationship && matchesDnc && matchesIndustry
@@ -170,31 +210,111 @@ export default function CompaniesPage() {
     setLoading(true)
     setMessage('')
     setErrorMessage('')
+    setWarningMessage('')
 
-    const { data, error } = await supabase
+    const { data: companyData, error: companyError } = await supabase
       .from('companies')
-      .select(
-        `
-        id,
-        company_name,
-        industry,
-        location,
-        size_band,
-        domain,
-        dnc,
-        outcome,
-        last_contact_date,
-        created_at
-      `,
-      )
-      .order('company_name', { ascending: true })
+      .select('*')
 
-    if (error) {
-      setErrorMessage(error.message)
-    } else {
-      setCompanies((data ?? []) as CompanyRow[])
+    if (companyError) {
+      setErrorMessage(companyError.message)
+      setLoading(false)
+      return
     }
 
+    const companyRows = ((companyData ?? []) as DbRow[])
+      .filter(isRowWithId)
+      .map((row) => row as CompanyRow)
+
+    let contactRows: ContactRow[] = []
+    let campaignHistoryRows: CampaignHistoryRow[] = []
+    let campaignRows: DbRow[] = []
+    const warnings: string[] = []
+
+    const { data: contactsData, error: contactsError } = await supabase
+      .from('contacts')
+      .select('*')
+
+    if (contactsError) {
+      warnings.push(`Contacts could not be loaded: ${contactsError.message}`)
+    } else {
+      contactRows = ((contactsData ?? []) as DbRow[])
+        .filter(isRowWithId)
+        .map((row) => row as ContactRow)
+    }
+
+    const { data: campaignsData, error: campaignsError } = await supabase
+      .from('campaigns')
+      .select('*')
+
+    if (campaignsError) {
+      warnings.push(`Campaign names could not be loaded: ${campaignsError.message}`)
+    } else {
+      campaignRows = (campaignsData ?? []) as DbRow[]
+    }
+
+    const campaignsById = new Map<string, DbRow>()
+
+    campaignRows.forEach((campaign) => {
+      const campaignId = getString(campaign, ['id'])
+      if (campaignId) campaignsById.set(campaignId, campaign)
+    })
+
+    const { data: campaignCompanyData, error: campaignCompanyError } =
+      await supabase.from('campaign_companies').select('*')
+
+    if (campaignCompanyError) {
+      warnings.push(
+        `Campaign history could not be loaded: ${campaignCompanyError.message}`,
+      )
+    } else {
+      campaignHistoryRows = ((campaignCompanyData ?? []) as DbRow[])
+        .filter(isRowWithId)
+        .map((row) => {
+          const campaignId = getString(row, ['campaign_id'])
+
+          return {
+            ...(row as CampaignHistoryRow),
+            campaign: campaignId ? campaignsById.get(campaignId) || null : null,
+          }
+        })
+    }
+
+    const contactsByCompanyId = new Map<string, ContactRow[]>()
+
+    contactRows.forEach((contact) => {
+      const companyId = getString(contact, ['company_id'])
+      if (!companyId) return
+
+      const current = contactsByCompanyId.get(companyId) || []
+      current.push(contact)
+      contactsByCompanyId.set(companyId, current)
+    })
+
+    const campaignHistoryByCompanyId = new Map<string, CampaignHistoryRow[]>()
+
+    campaignHistoryRows.forEach((history) => {
+      const companyId = getString(history, ['company_id'])
+      if (!companyId) return
+
+      const current = campaignHistoryByCompanyId.get(companyId) || []
+      current.push(history)
+      campaignHistoryByCompanyId.set(companyId, current)
+    })
+
+    const companyViews = companyRows
+      .map((company) => ({
+        id: company.id,
+        raw: company,
+        contacts: contactsByCompanyId.get(company.id) || [],
+        campaignHistory: campaignHistoryByCompanyId.get(company.id) || [],
+      }))
+      .sort((a, b) =>
+        getCompanyName(a.raw).localeCompare(getCompanyName(b.raw)),
+      )
+
+    setCompanies(companyViews)
+    setWarningMessage(warnings.join(' '))
     setLoading(false)
   }
 
@@ -207,9 +327,17 @@ export default function CompaniesPage() {
     setErrorMessage('')
   }
 
-  function startEdit(company: CompanyRow) {
+  function startEdit(company: CompanyView) {
     setEditingId(company.id)
-    setEditDraft({ ...company })
+    setEditDraft({
+      companyName: getCompanyName(company.raw),
+      industry: getCompanyIndustry(company.raw),
+      location: getCompanyLocation(company.raw),
+      sizeBand: getCompanySizeBand(company.raw),
+      domain: getCompanyDomain(company.raw),
+      lastContactDate: toDateInputValue(getCompanyLastContactDate(company.raw)),
+      dnc: getCompanyDnc(company.raw),
+    })
     setMessage('')
     setErrorMessage('')
   }
@@ -222,7 +350,7 @@ export default function CompaniesPage() {
     setErrorMessage('')
   }
 
-  function updateDraft(field: keyof CompanyRow, value: string | boolean) {
+  function updateDraft(field: keyof CompanyEditDraft, value: string | boolean) {
     setEditDraft((current) => {
       if (!current) return current
 
@@ -233,42 +361,57 @@ export default function CompaniesPage() {
     })
   }
 
-  async function saveCompany() {
+  async function saveCompany(company: CompanyView) {
     if (!editDraft) return
 
-    setSavingId(editDraft.id)
+    setSavingId(company.id)
     setMessage('')
     setErrorMessage('')
 
-    const payload = {
-      company_name: cleanText(editDraft.company_name),
-      industry: cleanText(editDraft.industry),
-      location: cleanText(editDraft.location),
-      size_band: cleanText(editDraft.size_band),
-      domain: cleanText(editDraft.domain),
-      dnc: Boolean(editDraft.dnc),
-      outcome: cleanText(editDraft.outcome),
-      last_contact_date: cleanText(editDraft.last_contact_date),
+    const payload: DbRow = {}
+
+    const nameKey = findFirstExistingKey(company.raw, [
+      'company_name',
+      'business_name',
+      'name',
+    ])
+
+    if (!nameKey) {
+      setErrorMessage(
+        'Could not find a company name column. Expected company_name, business_name or name.',
+      )
+      setSavingId(null)
+      return
+    }
+
+    payload[nameKey] = cleanText(editDraft.companyName)
+
+    setPayloadIfColumnExists(payload, company.raw, ['industry'], editDraft.industry)
+    setPayloadIfColumnExists(payload, company.raw, ['location', 'town'], editDraft.location)
+    setPayloadIfColumnExists(payload, company.raw, ['size_band'], editDraft.sizeBand)
+    setPayloadIfColumnExists(payload, company.raw, ['domain', 'website'], editDraft.domain)
+    setPayloadIfColumnExists(
+      payload,
+      company.raw,
+      ['last_contact_date'],
+      editDraft.lastContactDate,
+    )
+    setBooleanPayloadIfColumnExists(
+      payload,
+      company.raw,
+      ['dnc', 'is_dnc', 'do_not_contact'],
+      editDraft.dnc,
+    )
+
+    if ('updated_at' in company.raw) {
+      payload.updated_at = new Date().toISOString()
     }
 
     const { data, error } = await supabase
       .from('companies')
       .update(payload)
-      .eq('id', editDraft.id)
-      .select(
-        `
-        id,
-        company_name,
-        industry,
-        location,
-        size_band,
-        domain,
-        dnc,
-        outcome,
-        last_contact_date,
-        created_at
-      `,
-      )
+      .eq('id', company.id)
+      .select('*')
 
     if (error) {
       setErrorMessage(error.message)
@@ -276,7 +419,11 @@ export default function CompaniesPage() {
       return
     }
 
-    if (!data || data.length === 0) {
+    const updatedRow = ((data ?? []) as DbRow[]).find(
+      (row) => getString(row, ['id']) === company.id,
+    )
+
+    if (!updatedRow) {
       setErrorMessage(
         'No company row was updated. This is usually caused by Supabase RLS blocking updates.',
       )
@@ -284,12 +431,19 @@ export default function CompaniesPage() {
       return
     }
 
-    const updatedCompany = data[0] as CompanyRow
-
     setCompanies((current) =>
-      current.map((company) =>
-        company.id === updatedCompany.id ? updatedCompany : company,
-      ),
+      current
+        .map((item) =>
+          item.id === company.id
+            ? {
+                ...item,
+                raw: updatedRow as CompanyRow,
+              }
+            : item,
+        )
+        .sort((a, b) =>
+          getCompanyName(a.raw).localeCompare(getCompanyName(b.raw)),
+        ),
     )
 
     setMessage('Company updated.')
@@ -314,13 +468,13 @@ export default function CompaniesPage() {
             </p>
 
             <h1 className="mt-5 text-4xl font-black tracking-tight text-stone-950 md:text-5xl">
-              Review, filter and edit companies.
+              Review, filter and manage companies.
             </h1>
 
             <p className="mt-5 text-base leading-7 text-stone-600">
-              Filter companies by relationship, do-not-contact status and
-              industry. Use Edit to update company details directly from the
-              table.
+              Search companies, filter by relationship, open full company
+              records, review contacts and see which campaigns each company has
+              been selected for.
             </p>
           </div>
         </div>
@@ -342,7 +496,7 @@ export default function CompaniesPage() {
           />
 
           <SummaryCard
-            label="Quoted / negotiating"
+            label="Quoted"
             value={relationshipCounts.quoted}
             urgent={relationshipCounts.quoted > 0}
           />
@@ -362,12 +516,13 @@ export default function CompaniesPage() {
               </h2>
 
               <p className="mt-1 text-sm text-stone-500">
-                Use these filters to quickly find prospects, customers, quoted
-                companies, DNC records or industry segments.
+                Relationship is calculated from contacts and campaign history,
+                not from the companies table.
               </p>
             </div>
 
             <button
+              type="button"
               onClick={resetFilters}
               className="w-fit rounded-xl border border-stone-300 bg-white px-4 py-2 text-sm font-bold transition hover:bg-stone-50"
             >
@@ -384,7 +539,7 @@ export default function CompaniesPage() {
               <input
                 value={searchTerm}
                 onChange={(event) => setSearchTerm(event.target.value)}
-                placeholder="Search company, industry, location, domain..."
+                placeholder="Search company, contact, campaign, industry, location..."
                 className="mt-1 w-full rounded-xl border border-stone-300 bg-white px-3 py-2 text-sm outline-none transition focus:border-red-500 focus:ring-4 focus:ring-red-50"
               />
             </label>
@@ -482,17 +637,23 @@ export default function CompaniesPage() {
             />
           </div>
 
-          {message && (
+          {message ? (
             <p className="mt-4 rounded-xl bg-green-50 p-3 text-sm font-semibold text-green-700">
               {message}
             </p>
-          )}
+          ) : null}
 
-          {errorMessage && (
+          {warningMessage ? (
+            <p className="mt-4 rounded-xl bg-amber-50 p-3 text-sm font-semibold text-amber-800">
+              {warningMessage}
+            </p>
+          ) : null}
+
+          {errorMessage ? (
             <p className="mt-4 rounded-xl bg-red-50 p-3 text-sm font-semibold text-red-700">
               {errorMessage}
             </p>
-          )}
+          ) : null}
         </div>
 
         <div className="mt-6 overflow-hidden rounded-2xl border border-stone-200 bg-white shadow-sm">
@@ -514,9 +675,10 @@ export default function CompaniesPage() {
                   <th className="px-4 py-3">Company</th>
                   <th className="px-4 py-3">Relationship</th>
                   <th className="px-4 py-3">DNC</th>
+                  <th className="px-4 py-3">Contacts</th>
+                  <th className="px-4 py-3">Campaigns</th>
                   <th className="px-4 py-3">Industry</th>
                   <th className="px-4 py-3">Location</th>
-                  <th className="px-4 py-3">Size</th>
                   <th className="px-4 py-3">Domain</th>
                   <th className="px-4 py-3">Last contact</th>
                   <th className="px-4 py-3">Actions</th>
@@ -526,23 +688,23 @@ export default function CompaniesPage() {
               <tbody>
                 {loading ? (
                   <tr>
-                    <td className="px-4 py-5 text-stone-500" colSpan={9}>
+                    <td className="px-4 py-5 text-stone-500" colSpan={10}>
                       Loading companies...
                     </td>
                   </tr>
                 ) : filteredCompanies.length === 0 ? (
                   <tr>
-                    <td className="px-4 py-5 text-stone-500" colSpan={9}>
+                    <td className="px-4 py-5 text-stone-500" colSpan={10}>
                       No companies match these filters.
                     </td>
                   </tr>
                 ) : (
                   filteredCompanies.map((company) => {
                     const isEditing = editingId === company.id
-                    const draft = isEditing ? editDraft : company
-                    const relationshipStatus = getRelationshipStatus(
-                      draft?.outcome ?? null,
-                    )
+                    const relationshipStatus = getRelationshipStatus(company)
+                    const latestCampaign = getLatestCampaign(company)
+                    const contactCount = company.contacts.length
+                    const campaignCount = company.campaignHistory.length
 
                     return (
                       <tr
@@ -550,60 +712,54 @@ export default function CompaniesPage() {
                         className="border-t border-stone-100 align-top"
                       >
                         <td className="px-4 py-3">
-                          {isEditing && draft ? (
+                          {isEditing && editDraft ? (
                             <TableInput
-                              value={draft.company_name ?? ''}
+                              value={editDraft.companyName}
                               onChange={(value) =>
-                                updateDraft('company_name', value)
+                                updateDraft('companyName', value)
                               }
                               placeholder="Company name"
                             />
                           ) : (
-                            <div className="font-black text-stone-950">
-                              {company.company_name || 'Unnamed company'}
+                            <div>
+                              <Link
+                                href={`/companies/${company.id}`}
+                                className="font-black text-stone-950 hover:text-red-600"
+                              >
+                                {getCompanyName(company.raw) ||
+                                  'Unnamed company'}
+                              </Link>
+
+                              <div className="mt-1 text-xs text-stone-500">
+                                Created {formatDate(getCompanyCreatedAt(company.raw))}
+                              </div>
                             </div>
                           )}
                         </td>
 
                         <td className="px-4 py-3">
-                          {isEditing && draft ? (
-                            <select
-                              value={draft.outcome ?? ''}
-                              onChange={(event) =>
-                                updateDraft('outcome', event.target.value)
-                              }
-                              className="w-44 rounded-lg border border-stone-300 bg-white px-2 py-2 text-sm font-semibold outline-none focus:border-red-500 focus:ring-4 focus:ring-red-50"
-                            >
-                              {outcomeOptions.map((option) => (
-                                <option key={option} value={option}>
-                                  {option || 'No outcome'}
-                                </option>
-                              ))}
-                            </select>
-                          ) : (
-                            <div className="flex flex-col gap-1">
-                              <RelationshipBadge status={relationshipStatus} />
+                          <div className="flex flex-col gap-1">
+                            <RelationshipBadge status={relationshipStatus} />
 
-                              <span className="text-xs text-stone-500">
-                                {company.outcome || 'No outcome'}
-                              </span>
-                            </div>
-                          )}
+                            <span className="text-xs text-stone-500">
+                              {getRelationshipSummary(company)}
+                            </span>
+                          </div>
                         </td>
 
                         <td className="px-4 py-3">
-                          {isEditing && draft ? (
+                          {isEditing && editDraft ? (
                             <label className="flex items-center gap-2 font-bold">
                               <input
                                 type="checkbox"
-                                checked={Boolean(draft.dnc)}
+                                checked={editDraft.dnc}
                                 onChange={(event) =>
                                   updateDraft('dnc', event.target.checked)
                                 }
                               />
                               DNC
                             </label>
-                          ) : company.dnc ? (
+                          ) : getCompanyDnc(company.raw) ? (
                             <span className="rounded-full bg-red-100 px-2 py-1 text-xs font-bold text-red-700">
                               DNC
                             </span>
@@ -615,72 +771,75 @@ export default function CompaniesPage() {
                         </td>
 
                         <td className="px-4 py-3">
-                          {isEditing && draft ? (
+                          <span className="rounded-full bg-stone-100 px-2 py-1 text-xs font-bold text-stone-700">
+                            {contactCount}
+                          </span>
+                        </td>
+
+                        <td className="px-4 py-3">
+                          <div className="flex flex-col gap-1">
+                            <span className="w-fit rounded-full bg-stone-100 px-2 py-1 text-xs font-bold text-stone-700">
+                              {campaignCount}
+                            </span>
+
+                            {latestCampaign ? (
+                              <span className="text-xs text-stone-500">
+                                Latest:{' '}
+                                {getString(latestCampaign.campaign || {}, [
+                                  'name',
+                                ]) || 'Campaign'}
+                              </span>
+                            ) : null}
+                          </div>
+                        </td>
+
+                        <td className="px-4 py-3">
+                          {isEditing && editDraft ? (
                             <TableInput
-                              value={draft.industry ?? ''}
+                              value={editDraft.industry}
                               onChange={(value) =>
                                 updateDraft('industry', value)
                               }
                               placeholder="Industry"
                             />
                           ) : (
-                            company.industry || '-'
+                            getCompanyIndustry(company.raw) || '-'
                           )}
                         </td>
 
                         <td className="px-4 py-3">
-                          {isEditing && draft ? (
+                          {isEditing && editDraft ? (
                             <TableInput
-                              value={draft.location ?? ''}
+                              value={editDraft.location}
                               onChange={(value) =>
                                 updateDraft('location', value)
                               }
                               placeholder="Location"
                             />
                           ) : (
-                            company.location || '-'
+                            getCompanyLocation(company.raw) || '-'
                           )}
                         </td>
 
                         <td className="px-4 py-3">
-                          {isEditing && draft ? (
-                            <select
-                              value={draft.size_band ?? ''}
-                              onChange={(event) =>
-                                updateDraft('size_band', event.target.value)
-                              }
-                              className="w-36 rounded-lg border border-stone-300 bg-white px-2 py-2 text-sm font-semibold outline-none focus:border-red-500 focus:ring-4 focus:ring-red-50"
-                            >
-                              {sizeBandOptions.map((option) => (
-                                <option key={option} value={option}>
-                                  {option || 'Unknown'}
-                                </option>
-                              ))}
-                            </select>
-                          ) : (
-                            <span className="rounded-full bg-stone-100 px-2 py-1 text-xs font-bold text-stone-600">
-                              {company.size_band || 'unknown'}
-                            </span>
-                          )}
-                        </td>
-
-                        <td className="px-4 py-3">
-                          {isEditing && draft ? (
+                          {isEditing && editDraft ? (
                             <TableInput
-                              value={draft.domain ?? ''}
+                              value={editDraft.domain}
                               onChange={(value) =>
                                 updateDraft('domain', value)
                               }
                               placeholder="Domain"
                             />
-                          ) : company.domain ? (
+                          ) : getCompanyDomain(company.raw) ? (
                             <a
-                              href={normaliseWebsiteUrl(company.domain)}
+                              href={normaliseWebsiteUrl(
+                                getCompanyDomain(company.raw),
+                              )}
                               target="_blank"
                               rel="noreferrer"
                               className="font-semibold text-red-600 hover:underline"
                             >
-                              {company.domain}
+                              {getCompanyDomain(company.raw)}
                             </a>
                           ) : (
                             '-'
@@ -688,24 +847,20 @@ export default function CompaniesPage() {
                         </td>
 
                         <td className="px-4 py-3">
-                          {isEditing && draft ? (
+                          {isEditing && editDraft ? (
                             <input
                               type="date"
-                              value={draft.last_contact_date ?? ''}
+                              value={editDraft.lastContactDate}
                               onChange={(event) =>
                                 updateDraft(
-                                  'last_contact_date',
+                                  'lastContactDate',
                                   event.target.value,
                                 )
                               }
                               className="w-40 rounded-lg border border-stone-300 bg-white px-2 py-2 text-sm font-semibold outline-none focus:border-red-500 focus:ring-4 focus:ring-red-50"
                             />
-                          ) : company.last_contact_date ? (
-                            new Date(
-                              company.last_contact_date,
-                            ).toLocaleDateString('en-GB')
                           ) : (
-                            '-'
+                            formatDate(getCompanyLastContactDate(company.raw))
                           )}
                         </td>
 
@@ -713,7 +868,8 @@ export default function CompaniesPage() {
                           {isEditing ? (
                             <div className="flex flex-col gap-2">
                               <button
-                                onClick={saveCompany}
+                                type="button"
+                                onClick={() => saveCompany(company)}
                                 disabled={savingId === company.id}
                                 className="rounded-lg bg-red-600 px-3 py-2 text-xs font-bold text-white transition hover:bg-red-700 disabled:opacity-50"
                               >
@@ -721,6 +877,7 @@ export default function CompaniesPage() {
                               </button>
 
                               <button
+                                type="button"
                                 onClick={cancelEdit}
                                 disabled={savingId === company.id}
                                 className="rounded-lg border border-stone-300 bg-white px-3 py-2 text-xs font-bold text-stone-700 transition hover:bg-stone-50 disabled:opacity-50"
@@ -729,12 +886,22 @@ export default function CompaniesPage() {
                               </button>
                             </div>
                           ) : (
-                            <button
-                              onClick={() => startEdit(company)}
-                              className="rounded-lg border border-stone-300 bg-white px-3 py-2 text-xs font-bold text-stone-700 transition hover:bg-stone-50"
-                            >
-                              Edit
-                            </button>
+                            <div className="flex flex-col gap-2">
+                              <Link
+                                href={`/companies/${company.id}`}
+                                className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-center text-xs font-bold text-red-700 transition hover:bg-red-100"
+                              >
+                                Open
+                              </Link>
+
+                              <button
+                                type="button"
+                                onClick={() => startEdit(company)}
+                                className="rounded-lg border border-stone-300 bg-white px-3 py-2 text-xs font-bold text-stone-700 transition hover:bg-stone-50"
+                              >
+                                Edit
+                              </button>
+                            </div>
                           )}
                         </td>
                       </tr>
@@ -750,26 +917,225 @@ export default function CompaniesPage() {
   )
 }
 
-function getRelationshipStatus(outcome: string | null): RelationshipStatus {
-  const cleaned = outcome?.trim().toLowerCase() || ''
-
-  if (cleaned === 'customer' || cleaned === 'won') return 'customer'
-
-  if (cleaned === 'quote sent' || cleaned === 'negotiating') return 'quoted'
-
-  if (cleaned === 'bounced') return 'bounced'
-
-  if (cleaned === 'negative') return 'negative'
-
-  if (cleaned === 'no answer') return 'no-answer'
-
-  if (!cleaned || cleaned === 'null') return 'prospect'
-
-  return 'other'
+function isRowWithId(value: DbRow): value is DbRow & { id: string } {
+  return typeof value.id === 'string' && value.id.length > 0
 }
 
-function cleanText(value: string | null | undefined) {
-  return value?.trim() || null
+function getString(row: DbRow, keys: string[]) {
+  for (const key of keys) {
+    const value = row[key]
+
+    if (typeof value === 'string' && value.trim()) {
+      return value.trim()
+    }
+
+    if (typeof value === 'number') {
+      return String(value)
+    }
+  }
+
+  return ''
+}
+
+function getBoolean(row: DbRow, keys: string[]) {
+  for (const key of keys) {
+    const value = row[key]
+
+    if (typeof value === 'boolean') return value
+
+    if (typeof value === 'string') {
+      const cleaned = value.trim().toLowerCase()
+      if (['true', 'yes', 'y', '1'].includes(cleaned)) return true
+      if (['false', 'no', 'n', '0'].includes(cleaned)) return false
+    }
+
+    if (typeof value === 'number') {
+      return value === 1
+    }
+  }
+
+  return false
+}
+
+function getCompanyName(company: DbRow) {
+  return getString(company, ['company_name', 'business_name', 'name'])
+}
+
+function getCompanyIndustry(company: DbRow) {
+  return getString(company, ['industry'])
+}
+
+function getCompanyLocation(company: DbRow) {
+  return getString(company, ['location', 'town', 'postcode'])
+}
+
+function getCompanySizeBand(company: DbRow) {
+  return getString(company, ['size_band'])
+}
+
+function getCompanyDomain(company: DbRow) {
+  return getString(company, ['domain', 'website'])
+}
+
+function getCompanyLastContactDate(company: DbRow) {
+  return getString(company, ['last_contact_date'])
+}
+
+function getCompanyCreatedAt(company: DbRow) {
+  return getString(company, ['created_at'])
+}
+
+function getCompanyDnc(company: DbRow) {
+  return getBoolean(company, ['dnc', 'is_dnc', 'do_not_contact'])
+}
+
+function getContactName(contact: DbRow) {
+  return [getString(contact, ['first_name']), getString(contact, ['last_name'])]
+    .filter(Boolean)
+    .join(' ')
+    .trim()
+}
+
+function getContactEmail(contact: DbRow) {
+  return getString(contact, ['email', 'email_address'])
+}
+
+function getContactRole(contact: DbRow) {
+  return getString(contact, ['role', 'job_title', 'position'])
+}
+
+function getContactOutcome(contact: DbRow) {
+  return getString(contact, ['outcome', 'status'])
+}
+
+function getRelationshipStatus(company: CompanyView): RelationshipStatus {
+  const contactOutcomes = company.contacts.map((contact) =>
+    cleanOutcome(getContactOutcome(contact)),
+  )
+
+  const campaignEmailStatuses = company.campaignHistory.map((history) =>
+    cleanOutcome(getString(history, ['email_status'])),
+  )
+
+  const campaignOutcomes = company.campaignHistory.map((history) =>
+    cleanOutcome(getString(history, ['outcome'])),
+  )
+
+  const allOutcomes = [
+    ...contactOutcomes,
+    ...campaignEmailStatuses,
+    ...campaignOutcomes,
+  ]
+
+  if (allOutcomes.includes('customer') || allOutcomes.includes('won')) {
+    return 'customer'
+  }
+
+  if (
+    allOutcomes.includes('quoted') ||
+    allOutcomes.includes('quote sent') ||
+    allOutcomes.includes('negotiating')
+  ) {
+    return 'quoted'
+  }
+
+  if (allOutcomes.includes('bounced') || allOutcomes.includes('bounce')) {
+    return 'bounced'
+  }
+
+  if (allOutcomes.includes('negative')) {
+    return 'negative'
+  }
+
+  if (allOutcomes.includes('no answer')) {
+    return 'no-answer'
+  }
+
+  const meaningfulOutcomes = allOutcomes.filter(
+    (value) =>
+      value &&
+      value !== 'none' &&
+      value !== 'selected' &&
+      value !== 'sent' &&
+      value !== 'no response' &&
+      value !== 'out of office',
+  )
+
+  if (meaningfulOutcomes.length > 0) {
+    return 'other'
+  }
+
+  return 'prospect'
+}
+
+function getRelationshipSummary(company: CompanyView) {
+  const status = getRelationshipStatus(company)
+
+  if (status === 'customer') return 'Customer / won'
+  if (status === 'quoted') return 'Quoted / negotiating'
+  if (status === 'bounced') return 'Email bounced'
+  if (status === 'negative') return 'Negative response'
+  if (status === 'no-answer') return 'No answer'
+  if (status === 'other') return 'Other activity'
+
+  const campaignCount = company.campaignHistory.length
+
+  if (campaignCount > 0) {
+    return `${campaignCount} campaign${campaignCount === 1 ? '' : 's'}`
+  }
+
+  return 'No campaign activity'
+}
+
+function getLatestCampaign(company: CompanyView) {
+  return [...company.campaignHistory].sort((a, b) => {
+    const aDate =
+      getString(a.campaign || {}, ['created_at']) ||
+      getString(a, ['created_at'])
+    const bDate =
+      getString(b.campaign || {}, ['created_at']) ||
+      getString(b, ['created_at'])
+
+    return bDate.localeCompare(aDate)
+  })[0]
+}
+
+function cleanOutcome(value: string) {
+  return value.trim().toLowerCase().replaceAll('_', ' ')
+}
+
+function cleanText(value: string) {
+  return value.trim() || null
+}
+
+function findFirstExistingKey(row: DbRow, keys: string[]) {
+  return keys.find((key) => key in row)
+}
+
+function setPayloadIfColumnExists(
+  payload: DbRow,
+  row: DbRow,
+  keys: string[],
+  value: string,
+) {
+  const key = findFirstExistingKey(row, keys)
+
+  if (key) {
+    payload[key] = cleanText(value)
+  }
+}
+
+function setBooleanPayloadIfColumnExists(
+  payload: DbRow,
+  row: DbRow,
+  keys: string[],
+  value: boolean,
+) {
+  const key = findFirstExistingKey(row, keys)
+
+  if (key) {
+    payload[key] = value
+  }
 }
 
 function normaliseWebsiteUrl(value: string) {
@@ -780,6 +1146,30 @@ function normaliseWebsiteUrl(value: string) {
   }
 
   return `https://${cleaned}`
+}
+
+function toDateInputValue(value: string) {
+  if (!value) return ''
+
+  const parsed = new Date(value)
+
+  if (Number.isNaN(parsed.getTime())) {
+    return value.slice(0, 10)
+  }
+
+  return parsed.toISOString().slice(0, 10)
+}
+
+function formatDate(value: string) {
+  if (!value) return '-'
+
+  const parsed = new Date(value)
+
+  if (Number.isNaN(parsed.getTime())) {
+    return value
+  }
+
+  return parsed.toLocaleDateString('en-GB')
 }
 
 function TableInput({
@@ -848,7 +1238,7 @@ function MultiSelectDropdown({
         </summary>
 
         <div className="absolute z-20 mt-2 max-h-72 w-full overflow-y-auto rounded-xl border border-stone-200 bg-white p-2 shadow-xl">
-          {selectedValues.length > 0 && (
+          {selectedValues.length > 0 ? (
             <button
               type="button"
               onClick={clearValues}
@@ -856,7 +1246,7 @@ function MultiSelectDropdown({
             >
               Clear selection
             </button>
-          )}
+          ) : null}
 
           {options.length === 0 ? (
             <p className="px-3 py-2 text-sm text-stone-500">
@@ -897,8 +1287,7 @@ function RelationshipBadge({ status }: { status: RelationshipStatus }) {
             ? 'bg-red-100 text-red-800'
             : 'bg-stone-100 text-stone-700'
 
-  const label =
-    status === 'no-answer' ? 'no answer' : status.replaceAll('-', ' ')
+  const label = status === 'no-answer' ? 'no answer' : status
 
   return (
     <span

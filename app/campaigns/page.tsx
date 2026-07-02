@@ -7,7 +7,8 @@ import { isRoleAddress, isValidEmail } from '@/lib/marketingImportHelpers'
 import AppHeader from '@/app/components/AppHeader'
 
 type ExportRow = {
-  contact_id: string
+  contact_id: string | null
+  company_id?: string | null
   first_name: string | null
   last_name: string | null
   company_name: string | null
@@ -22,6 +23,11 @@ type ExportRow = {
   outcome: string | null
 }
 
+type ContactCompanyLookup = {
+  id: string
+  company_id: string | null
+}
+
 type CampaignEmailStatus =
   | 'deliverable'
   | 'risky'
@@ -31,6 +37,7 @@ type CampaignEmailStatus =
 type CampaignRelationshipStatus = 'prospect' | 'customer' | 'quoted'
 
 type CampaignRow = ExportRow & {
+  company_id: string | null
   campaign_email_status: CampaignEmailStatus
   campaign_email_note: string
   campaign_relationship_status: CampaignRelationshipStatus
@@ -40,6 +47,29 @@ type CampaignRow = ExportRow & {
 type MultiSelectOption = {
   value: string
   label: string
+}
+
+type SavedCampaign = {
+  id: string
+  name: string
+  description: string | null
+  created_at: string | null
+  updated_at: string | null
+}
+
+type CampaignCompanyLite = {
+  id: string
+  campaign_id: string
+  email_status: string | null
+  outcome: string | null
+}
+
+type SavedCampaignSummary = SavedCampaign & {
+  selected_count: number
+  bounced_count: number
+  out_of_office_count: number
+  quoted_count: number
+  customer_count: number
 }
 
 const sizeBandOptions: MultiSelectOption[] = [
@@ -57,6 +87,7 @@ const sizeBandOptions: MultiSelectOption[] = [
 
 export default function CampaignsPage() {
   const [rows, setRows] = useState<CampaignRow[]>([])
+  const [campaigns, setCampaigns] = useState<SavedCampaignSummary[]>([])
   const [campaignName, setCampaignName] = useState('')
   const [selectedSizeBands, setSelectedSizeBands] = useState<string[]>([])
   const [selectedIndustries, setSelectedIndustries] = useState<string[]>([])
@@ -67,13 +98,19 @@ export default function CampaignsPage() {
   const [excludeCustomers, setExcludeCustomers] = useState(true)
   const [excludeQuotedCompanies, setExcludeQuotedCompanies] = useState(true)
   const [loading, setLoading] = useState(true)
+  const [historyLoading, setHistoryLoading] = useState(true)
+  const [savingCampaign, setSavingCampaign] = useState(false)
   const [message, setMessage] = useState('')
   const [errorMessage, setErrorMessage] = useState('')
+  const [lastSavedCampaignId, setLastSavedCampaignId] = useState<string | null>(
+    null,
+  )
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search)
     setDue90Only(params.get('due90') === 'true')
     loadRows()
+    loadCampaignHistory()
   }, [])
 
   const industryOptions = useMemo(() => {
@@ -186,6 +223,24 @@ export default function CampaignsPage() {
     excludeQuotedCompanies,
   ])
 
+  const selectedCompanyRows = useMemo(() => {
+    const rowsByCompany: Record<string, CampaignRow> = {}
+
+    filteredRows.forEach((row) => {
+      if (!row.company_id) return
+
+      if (!rowsByCompany[row.company_id]) {
+        rowsByCompany[row.company_id] = row
+      }
+    })
+
+    return Object.values(rowsByCompany)
+  }, [filteredRows])
+
+  const rowsWithoutCompanyId = useMemo(() => {
+    return filteredRows.filter((row) => !row.company_id).length
+  }, [filteredRows])
+
   const excludedCount = useMemo(() => {
     return rows.length - filteredRows.length
   }, [rows.length, filteredRows.length])
@@ -207,11 +262,118 @@ export default function CampaignsPage() {
 
     if (error) {
       setErrorMessage(error.message)
-    } else {
-      setRows(((data ?? []) as ExportRow[]).map(addCampaignStatuses))
+      setLoading(false)
+      return
     }
 
+    const exportRows = (data ?? []) as ExportRow[]
+
+    const contactIds = Array.from(
+      new Set(
+        exportRows
+          .map((row) => row.contact_id)
+          .filter((value): value is string => Boolean(value)),
+      ),
+    )
+
+    const contactCompanyMap = new Map<string, string | null>()
+
+    if (contactIds.length > 0) {
+      const chunks = chunkArray(contactIds, 500)
+
+      for (const chunk of chunks) {
+        const { data: contactRows, error: contactError } = await supabase
+          .from('contacts')
+          .select('id, company_id')
+          .in('id', chunk)
+
+        if (contactError) {
+          setErrorMessage(contactError.message)
+          break
+        }
+
+        ;((contactRows ?? []) as ContactCompanyLookup[]).forEach((contact) => {
+          contactCompanyMap.set(contact.id, contact.company_id)
+        })
+      }
+    }
+
+    const enrichedRows = exportRows.map((row) => ({
+      ...row,
+      company_id:
+        row.company_id ||
+        (row.contact_id ? contactCompanyMap.get(row.contact_id) || null : null),
+    }))
+
+    setRows(enrichedRows.map(addCampaignStatuses))
     setLoading(false)
+  }
+
+  async function loadCampaignHistory() {
+    setHistoryLoading(true)
+
+    const { data: campaignData, error: campaignError } = await supabase
+      .from('campaigns')
+      .select('id, name, description, created_at, updated_at')
+      .order('created_at', { ascending: false })
+
+    if (campaignError) {
+      setErrorMessage(campaignError.message)
+      setHistoryLoading(false)
+      return
+    }
+
+    const savedCampaigns = (campaignData ?? []) as SavedCampaign[]
+
+    if (savedCampaigns.length === 0) {
+      setCampaigns([])
+      setHistoryLoading(false)
+      return
+    }
+
+    const campaignIds = savedCampaigns.map((campaign) => campaign.id)
+    const campaignCompanyRows: CampaignCompanyLite[] = []
+
+    const chunks = chunkArray(campaignIds, 500)
+
+    for (const chunk of chunks) {
+      const { data: historyData, error: historyError } = await supabase
+        .from('campaign_companies')
+        .select('id, campaign_id, email_status, outcome')
+        .in('campaign_id', chunk)
+
+      if (historyError) {
+        setErrorMessage(historyError.message)
+        setHistoryLoading(false)
+        return
+      }
+
+      campaignCompanyRows.push(...((historyData ?? []) as CampaignCompanyLite[]))
+    }
+
+    const summaries = savedCampaigns.map((campaign) => {
+      const historyRows = campaignCompanyRows.filter(
+        (row) => row.campaign_id === campaign.id,
+      )
+
+      return {
+        ...campaign,
+        selected_count: historyRows.length,
+        bounced_count: historyRows.filter(
+          (row) => row.email_status === 'bounced',
+        ).length,
+        out_of_office_count: historyRows.filter(
+          (row) => row.email_status === 'out_of_office',
+        ).length,
+        quoted_count: historyRows.filter((row) => row.outcome === 'quoted')
+          .length,
+        customer_count: historyRows.filter((row) => row.outcome === 'customer')
+          .length,
+      }
+    })
+
+    setCampaigns(summaries)
+    setHistoryLoading(false)
   }
 
   function resetFilters() {
@@ -225,9 +387,10 @@ export default function CampaignsPage() {
     setExcludeQuotedCompanies(true)
     setMessage('')
     setErrorMessage('')
+    setLastSavedCampaignId(null)
   }
 
-  function downloadCsv() {
+  function downloadOnly() {
     const cleanedCampaignName = campaignName.trim()
 
     if (!cleanedCampaignName) {
@@ -242,67 +405,97 @@ export default function CampaignsPage() {
 
     setMessage('')
     setErrorMessage('')
-
-    const headers = [
-      'Campaign Name',
-      'First Name',
-      'Last Name',
-      'Company Name',
-      'Email Address',
-      'Email Status',
-      'Email Note',
-      'Relationship Status',
-      'Relationship Note',
-      'Role',
-      'Industry',
-      'Location',
-      'Size Band',
-      'Days Since Last Contact',
-      'Next Contact Opportunity',
-      'Outcome',
-    ]
-
-    const lines = filteredRows.map((row) =>
-      [
-        cleanedCampaignName,
-        row.first_name,
-        row.last_name,
-        row.company_name,
-        row.email,
-        row.campaign_email_status,
-        row.campaign_email_note,
-        row.campaign_relationship_status,
-        row.campaign_relationship_note,
-        row.role,
-        row.industry,
-        row.location,
-        row.size_band,
-        row.days_since_last_contact,
-        row.next_contact_opportunity,
-        row.outcome,
-      ]
-        .map(csvEscape)
-        .join(','),
-    )
-
-    const csv = [headers.join(','), ...lines].join('\n')
-    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' })
-    const url = URL.createObjectURL(blob)
-
-    const link = document.createElement('a')
-    link.href = url
-    link.download = `${slugifyCampaignName(cleanedCampaignName)}-${new Date()
-      .toISOString()
-      .slice(0, 10)}.csv`
-    link.click()
-
-    URL.revokeObjectURL(url)
+    downloadCsvRows(cleanedCampaignName, filteredRows)
 
     setMessage(
       `Downloaded "${cleanedCampaignName}" with ${filteredRows.length} contact${
         filteredRows.length === 1 ? '' : 's'
-      }.`,
+      }. This was not saved to campaign history.`,
     )
+  }
+
+  async function saveCampaignAndMaybeDownload(shouldDownload: boolean) {
+    const cleanedCampaignName = campaignName.trim()
+
+    if (!cleanedCampaignName) {
+      setErrorMessage('Give this campaign a name before saving.')
+      return
+    }
+
+    if (filteredRows.length === 0) {
+      setErrorMessage('There are no contacts to save.')
+      return
+    }
+
+    if (selectedCompanyRows.length === 0) {
+      setErrorMessage(
+        'No selected rows have a company ID, so this campaign cannot be saved. Check that contacts are linked to companies.',
+      )
+      return
+    }
+
+    setSavingCampaign(true)
+    setMessage('')
+    setErrorMessage('')
+    setLastSavedCampaignId(null)
+
+    const { data: campaignData, error: campaignError } = await supabase
+      .from('campaigns')
+      .insert({
+        name: cleanedCampaignName,
+        description: `Created from campaign builder with ${filteredRows.length} exported contact${
+          filteredRows.length === 1 ? '' : 's'
+        } and ${selectedCompanyRows.length} selected compan${
+          selectedCompanyRows.length === 1 ? 'y' : 'ies'
+        }.`,
+      })
+      .select('id, name')
+      .single()
+
+    if (campaignError || !campaignData) {
+      setErrorMessage(campaignError?.message || 'Could not create campaign.')
+      setSavingCampaign(false)
+      return
+    }
+
+    const campaignCompanyPayload = selectedCompanyRows.map((row) => ({
+      campaign_id: campaignData.id,
+      company_id: row.company_id,
+      contact_id: row.contact_id || null,
+      email_address_used: row.email || null,
+      email_status: 'selected',
+      outcome: 'none',
+      notes:
+        row.campaign_email_status === 'deliverable'
+          ? null
+          : row.campaign_email_note,
+    }))
+
+    const { error: campaignCompaniesError } = await supabase
+      .from('campaign_companies')
+      .insert(campaignCompanyPayload)
+
+    if (campaignCompaniesError) {
+      setErrorMessage(campaignCompaniesError.message)
+      setSavingCampaign(false)
+      return
+    }
+
+    if (shouldDownload) {
+      downloadCsvRows(cleanedCampaignName, filteredRows)
+    }
+
+    setLastSavedCampaignId(campaignData.id)
+    setMessage(
+      `Saved "${cleanedCampaignName}" with ${selectedCompanyRows.length} compan${
+        selectedCompanyRows.length === 1 ? 'y' : 'ies'
+      } and ${filteredRows.length} exported contact${
+        filteredRows.length === 1 ? '' : 's'
+      }${shouldDownload ? ', then downloaded the CSV' : ''}.`,
+    )
+
+    await loadCampaignHistory()
+    setSavingCampaign(false)
   }
 
   return (
@@ -321,13 +514,13 @@ export default function CampaignsPage() {
             </p>
 
             <h1 className="mt-5 text-4xl font-black tracking-tight text-stone-950 md:text-5xl">
-              Build and export campaign lists.
+              Build, save and export campaign lists.
             </h1>
 
             <p className="mt-5 text-base leading-7 text-stone-600">
               Name your campaign, select one or more business sizes, industries
-              and locations, then download a cleaner CSV for mail merge. Existing
-              customers and quoted companies are excluded by default.
+              and locations, then save the selected companies to campaign
+              history and download a clean CSV for mail merge.
             </p>
           </div>
         </div>
@@ -340,6 +533,11 @@ export default function CampaignsPage() {
           <SummaryCard label="Campaign contacts" value={filteredRows.length} />
 
           <SummaryCard
+            label="Selected companies"
+            value={selectedCompanyRows.length}
+          />
+
+          <SummaryCard
             label="Customers"
             value={customerCount}
             urgent={customerCount > 0}
@@ -350,15 +548,9 @@ export default function CampaignsPage() {
             value={quotedCount}
             urgent={quotedCount > 0}
           />
-
-          <SummaryCard
-            label="Invalid/missing"
-            value={emailCounts.invalid_format + emailCounts.missing}
-            urgent={emailCounts.invalid_format + emailCounts.missing > 0}
-          />
         </div>
 
-        <div className="mt-6 grid gap-4 md:grid-cols-3">
+        <div className="mt-6 grid gap-4 md:grid-cols-4">
           <SummaryCard
             label="90+ days since contact"
             value={due90Count}
@@ -369,6 +561,12 @@ export default function CampaignsPage() {
             label="Risky emails"
             value={emailCounts.risky}
             urgent={emailCounts.risky > 0}
+          />
+
+          <SummaryCard
+            label="Invalid/missing"
+            value={emailCounts.invalid_format + emailCounts.missing}
+            urgent={emailCounts.invalid_format + emailCounts.missing > 0}
           />
 
           <SummaryCard
@@ -387,12 +585,14 @@ export default function CampaignsPage() {
 
               <p className="mt-1 text-sm text-stone-500">
                 Leave a dropdown empty to include everything in that category,
-                or tick multiple options to narrow the campaign.
+                or tick multiple options to narrow the campaign. Customers and
+                quoted companies are excluded by default.
               </p>
             </div>
 
             <div className="flex flex-wrap gap-2">
               <button
+                type="button"
                 onClick={resetFilters}
                 className="rounded-xl border border-stone-300 bg-white px-4 py-2 text-sm font-bold transition hover:bg-stone-50"
               >
@@ -400,11 +600,40 @@ export default function CampaignsPage() {
               </button>
 
               <button
-                onClick={downloadCsv}
+                type="button"
+                onClick={downloadOnly}
                 disabled={filteredRows.length === 0 || !campaignName.trim()}
+                className="rounded-xl border border-stone-300 bg-white px-4 py-2 text-sm font-bold transition hover:bg-stone-50 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                Download only
+              </button>
+
+              <button
+                type="button"
+                onClick={() => saveCampaignAndMaybeDownload(false)}
+                disabled={
+                  savingCampaign ||
+                  filteredRows.length === 0 ||
+                  selectedCompanyRows.length === 0 ||
+                  !campaignName.trim()
+                }
+                className="rounded-xl border border-red-200 bg-red-50 px-4 py-2 text-sm font-bold text-red-700 transition hover:bg-red-100 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {savingCampaign ? 'Saving...' : 'Save campaign'}
+              </button>
+
+              <button
+                type="button"
+                onClick={() => saveCampaignAndMaybeDownload(true)}
+                disabled={
+                  savingCampaign ||
+                  filteredRows.length === 0 ||
+                  selectedCompanyRows.length === 0 ||
+                  !campaignName.trim()
+                }
                 className="rounded-xl bg-red-600 px-4 py-2 text-sm font-bold text-white shadow-sm transition hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-50"
               >
-                Download campaign
+                {savingCampaign ? 'Saving...' : 'Save & download'}
               </button>
             </div>
           </div>
@@ -523,38 +752,168 @@ export default function CampaignsPage() {
               your filters, email rules, customer rules, or quoted-company
               rules.
             </p>
+
+            {rowsWithoutCompanyId > 0 ? (
+              <p className="mt-2 text-sm font-semibold text-amber-700">
+                {rowsWithoutCompanyId} selected contact
+                {rowsWithoutCompanyId === 1 ? '' : 's'} cannot be saved to
+                campaign history because they are not linked to a company. They
+                can still be downloaded in the CSV.
+              </p>
+            ) : null}
           </div>
 
-          {campaignName.trim() && (
+          {campaignName.trim() ? (
             <div className="mt-5 rounded-2xl border border-stone-200 bg-stone-50 p-4">
               <p className="text-xs font-black uppercase tracking-wide text-stone-500">
                 Current campaign
               </p>
 
               <div className="mt-2 flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
-                <p className="text-lg font-black text-stone-950">
-                  {campaignName.trim()}
-                </p>
+                <div>
+                  <p className="text-lg font-black text-stone-950">
+                    {campaignName.trim()}
+                  </p>
 
-                <p className="text-sm font-semibold text-stone-600">
-                  {filteredRows.length} contact
-                  {filteredRows.length === 1 ? '' : 's'} ready to download
-                </p>
+                  <p className="text-sm font-semibold text-stone-600">
+                    {filteredRows.length} contact
+                    {filteredRows.length === 1 ? '' : 's'} ready to download,{' '}
+                    {selectedCompanyRows.length} compan
+                    {selectedCompanyRows.length === 1 ? 'y' : 'ies'} ready to
+                    save.
+                  </p>
+                </div>
+
+                {lastSavedCampaignId ? (
+                  <Link
+                    href={`/campaigns/${lastSavedCampaignId}`}
+                    className="w-fit rounded-xl border border-red-200 bg-white px-4 py-2 text-sm font-bold text-red-700 transition hover:bg-red-50"
+                  >
+                    Open saved campaign
+                  </Link>
+                ) : null}
               </div>
             </div>
-          )}
+          ) : null}
 
-          {message && (
+          {message ? (
             <p className="mt-4 rounded-xl bg-green-50 p-3 text-sm font-semibold text-green-700">
               {message}
             </p>
-          )}
+          ) : null}
 
-          {errorMessage && (
+          {errorMessage ? (
             <p className="mt-4 rounded-xl bg-red-50 p-3 text-sm font-semibold text-red-700">
               {errorMessage}
             </p>
-          )}
+          ) : null}
+        </div>
+
+        <div className="mt-6 overflow-hidden rounded-2xl border border-stone-200 bg-white shadow-sm">
+          <div className="flex flex-col gap-3 border-b border-stone-200 p-5 md:flex-row md:items-center md:justify-between">
+            <div>
+              <h2 className="text-xl font-black text-stone-950">
+                Saved campaign history
+              </h2>
+
+              <p className="mt-1 text-sm text-stone-500">
+                Open a campaign to review selected companies, bounced emails,
+                out-of-office replies and success rates.
+              </p>
+            </div>
+          </div>
+
+          <div className="overflow-x-auto">
+            <table className="min-w-full text-left text-sm">
+              <thead className="bg-stone-50 text-xs uppercase tracking-wide text-stone-500">
+                <tr>
+                  <th className="px-4 py-3">Campaign</th>
+                  <th className="px-4 py-3">Selected</th>
+                  <th className="px-4 py-3">Bounced</th>
+                  <th className="px-4 py-3">Out of office</th>
+                  <th className="px-4 py-3">Quoted</th>
+                  <th className="px-4 py-3">Customers</th>
+                  <th className="px-4 py-3">Success rate</th>
+                  <th className="px-4 py-3">Created</th>
+                  <th className="px-4 py-3">Action</th>
+                </tr>
+              </thead>
+
+              <tbody>
+                {historyLoading ? (
+                  <tr>
+                    <td className="px-4 py-5 text-stone-500" colSpan={9}>
+                      Loading saved campaigns...
+                    </td>
+                  </tr>
+                ) : campaigns.length === 0 ? (
+                  <tr>
+                    <td className="px-4 py-5 text-stone-500" colSpan={9}>
+                      No campaigns have been saved yet.
+                    </td>
+                  </tr>
+                ) : (
+                  campaigns.map((campaign) => (
+                    <tr
+                      key={campaign.id}
+                      className="border-t border-stone-100"
+                    >
+                      <td className="px-4 py-3">
+                        <Link
+                          href={`/campaigns/${campaign.id}`}
+                          className="font-black text-stone-950 hover:text-red-600"
+                        >
+                          {campaign.name}
+                        </Link>
+
+                        {campaign.description ? (
+                          <p className="mt-1 max-w-md text-xs text-stone-500">
+                            {campaign.description}
+                          </p>
+                        ) : null}
+                      </td>
+
+                      <td className="px-4 py-3 font-bold">
+                        {campaign.selected_count}
+                      </td>
+
+                      <td className="px-4 py-3">
+                        {campaign.bounced_count}
+                      </td>
+
+                      <td className="px-4 py-3">
+                        {campaign.out_of_office_count}
+                      </td>
+
+                      <td className="px-4 py-3">{campaign.quoted_count}</td>
+
+                      <td className="px-4 py-3">{campaign.customer_count}</td>
+
+                      <td className="px-4 py-3 font-bold">
+                        {percent(
+                          campaign.quoted_count + campaign.customer_count,
+                          campaign.selected_count,
+                        )}
+                      </td>
+
+                      <td className="px-4 py-3">
+                        {formatDate(campaign.created_at)}
+                      </td>
+
+                      <td className="px-4 py-3">
+                        <Link
+                          href={`/campaigns/${campaign.id}`}
+                          className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs font-bold text-red-700 transition hover:bg-red-100"
+                        >
+                          Open campaign
+                        </Link>
+                      </td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
         </div>
 
         <div className="mt-6 overflow-hidden rounded-2xl border border-stone-200 bg-white shadow-sm">
@@ -565,7 +924,8 @@ export default function CampaignsPage() {
 
             <p className="mt-1 text-sm text-stone-500">
               Showing the first 100 matching contacts. The CSV download includes
-              all matching contacts.
+              all matching contacts. Campaign history saves selected companies,
+              not every duplicate contact row.
             </p>
           </div>
 
@@ -582,26 +942,29 @@ export default function CampaignsPage() {
                   <th className="px-4 py-3">Industry</th>
                   <th className="px-4 py-3">Location</th>
                   <th className="px-4 py-3">Days since contact</th>
+                  <th className="px-4 py-3">Company record</th>
                 </tr>
               </thead>
 
               <tbody>
                 {loading ? (
                   <tr>
-                    <td className="px-4 py-5 text-stone-500" colSpan={9}>
+                    <td className="px-4 py-5 text-stone-500" colSpan={10}>
                       Loading contacts...
                     </td>
                   </tr>
                 ) : filteredRows.length === 0 ? (
                   <tr>
-                    <td className="px-4 py-5 text-stone-500" colSpan={9}>
+                    <td className="px-4 py-5 text-stone-500" colSpan={10}>
                       No contacts match this campaign.
                     </td>
                   </tr>
                 ) : (
-                  filteredRows.slice(0, 100).map((row) => (
+                  filteredRows.slice(0, 100).map((row, index) => (
                     <tr
-                      key={row.contact_id}
+                      key={`${row.company_id || 'no-company'}-${
+                        row.contact_id || index
+                      }`}
                       className="border-t border-stone-100"
                     >
                       <td className="px-4 py-3 font-semibold text-stone-900">
@@ -657,6 +1020,21 @@ export default function CampaignsPage() {
                       >
                         {row.days_since_last_contact ?? '-'}
                       </td>
+
+                      <td className="px-4 py-3">
+                        {row.company_id ? (
+                          <Link
+                            href={`/companies/${row.company_id}`}
+                            className="rounded-lg border border-stone-300 bg-white px-3 py-2 text-xs font-bold text-stone-700 transition hover:bg-stone-50"
+                          >
+                            Open
+                          </Link>
+                        ) : (
+                          <span className="text-xs font-semibold text-amber-700">
+                            Not linked
+                          </span>
+                        )}
+                      </td>
                     </tr>
                   ))
                 )}
@@ -664,12 +1042,12 @@ export default function CampaignsPage() {
             </table>
           </div>
 
-          {filteredRows.length > 100 && (
+          {filteredRows.length > 100 ? (
             <div className="border-t border-stone-200 p-4 text-sm text-stone-500">
               Showing first 100 rows only. The CSV download includes all{' '}
               {filteredRows.length} matching contacts.
             </div>
-          )}
+          ) : null}
         </div>
       </section>
     </main>
@@ -682,6 +1060,7 @@ function addCampaignStatuses(row: ExportRow): CampaignRow {
 
   return {
     ...row,
+    company_id: row.company_id || null,
     ...emailStatus,
     ...relationshipStatus,
   }
@@ -746,6 +1125,63 @@ function getCampaignRelationshipStatus(outcome: string | null): {
   }
 }
 
+function downloadCsvRows(campaignName: string, rows: CampaignRow[]) {
+  const headers = [
+    'Campaign Name',
+    'First Name',
+    'Last Name',
+    'Company Name',
+    'Email Address',
+    'Email Status',
+    'Email Note',
+    'Relationship Status',
+    'Relationship Note',
+    'Role',
+    'Industry',
+    'Location',
+    'Size Band',
+    'Days Since Last Contact',
+    'Next Contact Opportunity',
+    'Outcome',
+  ]
+
+  const lines = rows.map((row) =>
+    [
+      campaignName,
+      row.first_name,
+      row.last_name,
+      row.company_name,
+      row.email,
+      row.campaign_email_status,
+      row.campaign_email_note,
+      row.campaign_relationship_status,
+      row.campaign_relationship_note,
+      row.role,
+      row.industry,
+      row.location,
+      row.size_band,
+      row.days_since_last_contact,
+      row.next_contact_opportunity,
+      row.outcome,
+    ]
+      .map(csvEscape)
+      .join(','),
+  )
+
+  const csv = [headers.join(','), ...lines].join('\n')
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' })
+  const url = URL.createObjectURL(blob)
+
+  const link = document.createElement('a')
+  link.href = url
+  link.download = `${slugifyCampaignName(campaignName)}-${new Date()
+    .toISOString()
+    .slice(0, 10)}.csv`
+  link.click()
+
+  URL.revokeObjectURL(url)
+}
+
 function MultiSelectDropdown({
   label,
   emptyLabel,
@@ -793,7 +1229,7 @@ function MultiSelectDropdown({
         </summary>
 
         <div className="absolute z-20 mt-2 max-h-72 w-full overflow-y-auto rounded-xl border border-stone-200 bg-white p-2 shadow-xl">
-          {selectedValues.length > 0 && (
+          {selectedValues.length > 0 ? (
             <button
               type="button"
               onClick={clearValues}
@@ -801,7 +1237,7 @@ function MultiSelectDropdown({
             >
               Clear selection
             </button>
-          )}
+          ) : null}
 
           {options.length === 0 ? (
             <p className="px-3 py-2 text-sm text-stone-500">
@@ -937,6 +1373,26 @@ function csvEscape(value: unknown) {
   }
 
   return stringValue
+}
+
+function percent(part: number, total: number) {
+  if (!total) return '0%'
+  return `${((part / total) * 100).toFixed(1)}%`
+}
+
+function formatDate(value: string | null) {
+  if (!value) return '-'
+  return new Date(value).toLocaleDateString('en-GB')
+}
+
+function chunkArray<T>(items: T[], chunkSize: number) {
+  const chunks: T[][] = []
+
+  for (let index = 0; index < items.length; index += chunkSize) {
+    chunks.push(items.slice(index, index + chunkSize))
+  }
+
+  return chunks
 }
 
 function SummaryCard({
