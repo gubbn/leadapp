@@ -27,16 +27,6 @@ type CompanyView = {
   campaignHistory: CampaignHistoryRow[]
 }
 
-type CompanyEditDraft = {
-  companyName: string
-  industry: string
-  location: string
-  sizeBand: string
-  domain: string
-  lastContactDate: string
-  dnc: boolean
-}
-
 type RelationshipStatus =
   | 'prospect'
   | 'customer'
@@ -45,6 +35,17 @@ type RelationshipStatus =
   | 'negative'
   | 'no-answer'
   | 'other'
+
+type CompanyEditDraft = {
+  companyName: string
+  industry: string
+  location: string
+  sizeBand: string
+  domain: string
+  lastContactDate: string
+  dnc: boolean
+  relationshipStatus: RelationshipStatus
+}
 
 type RelationshipFilter =
   | 'all'
@@ -57,20 +58,6 @@ type RelationshipFilter =
   | 'other'
 
 type DncFilter = 'all' | 'dnc' | 'not-dnc'
-
-const sizeBandOptions = [
-  '',
-  'micro',
-  'small',
-  'medium',
-  'large',
-  'enterprise',
-  'unknown',
-  '1-10',
-  '11-50',
-  '51-250',
-  '250+',
-]
 
 export default function CompaniesPage() {
   const [companies, setCompanies] = useState<CompanyView[]>([])
@@ -149,7 +136,7 @@ export default function CompaniesPage() {
           [
             getString(history, ['email_status']),
             getString(history, ['outcome']),
-            getString(history.campaign || {}, ['name']),
+            getString(history.campaign || {}, ['name', 'campaign_name']),
           ]
             .filter(Boolean)
             .join(' '),
@@ -163,6 +150,7 @@ export default function CompaniesPage() {
           getCompanyIndustry(company.raw),
           getCompanyLocation(company.raw),
           getCompanyDomain(company.raw),
+          getManualRelationshipLabel(company.raw),
           contactSearchText,
           campaignSearchText,
         ]
@@ -248,7 +236,9 @@ export default function CompaniesPage() {
       .select('*')
 
     if (campaignsError) {
-      warnings.push(`Campaign names could not be loaded: ${campaignsError.message}`)
+      warnings.push(
+        `Campaign names could not be loaded: ${campaignsError.message}`,
+      )
     } else {
       campaignRows = (campaignsData ?? []) as DbRow[]
     }
@@ -337,6 +327,7 @@ export default function CompaniesPage() {
       domain: getCompanyDomain(company.raw),
       lastContactDate: toDateInputValue(getCompanyLastContactDate(company.raw)),
       dnc: getCompanyDnc(company.raw),
+      relationshipStatus: getRelationshipStatus(company),
     })
     setMessage('')
     setErrorMessage('')
@@ -350,7 +341,10 @@ export default function CompaniesPage() {
     setErrorMessage('')
   }
 
-  function updateDraft(field: keyof CompanyEditDraft, value: string | boolean) {
+  function updateDraft(
+    field: keyof CompanyEditDraft,
+    value: string | boolean | RelationshipStatus,
+  ) {
     setEditDraft((current) => {
       if (!current) return current
 
@@ -396,6 +390,11 @@ export default function CompaniesPage() {
       ['last_contact_date'],
       editDraft.lastContactDate,
     )
+
+    payload.relationship_status = toDbRelationshipStatus(
+      editDraft.relationshipStatus,
+    )
+
     setBooleanPayloadIfColumnExists(
       payload,
       company.raw,
@@ -472,7 +471,7 @@ export default function CompaniesPage() {
             </h1>
 
             <p className="mt-5 text-base leading-7 text-stone-600">
-              Search companies, filter by relationship, open full company
+              Search companies, update relationship status, open full company
               records, review contacts and see which campaigns each company has
               been selected for.
             </p>
@@ -516,8 +515,8 @@ export default function CompaniesPage() {
               </h2>
 
               <p className="mt-1 text-sm text-stone-500">
-                Relationship is calculated from contacts and campaign history,
-                not from the companies table.
+                Relationship can now be updated directly. If no manual value is
+                present, the page falls back to contact and campaign history.
               </p>
             </div>
 
@@ -731,20 +730,46 @@ export default function CompaniesPage() {
                               </Link>
 
                               <div className="mt-1 text-xs text-stone-500">
-                                Created {formatDate(getCompanyCreatedAt(company.raw))}
+                                Created{' '}
+                                {formatDate(getCompanyCreatedAt(company.raw))}
                               </div>
                             </div>
                           )}
                         </td>
 
                         <td className="px-4 py-3">
-                          <div className="flex flex-col gap-1">
-                            <RelationshipBadge status={relationshipStatus} />
+                          {isEditing && editDraft ? (
+                            <select
+                              value={editDraft.relationshipStatus}
+                              onChange={(event) =>
+                                updateDraft(
+                                  'relationshipStatus',
+                                  event.target.value as RelationshipStatus,
+                                )
+                              }
+                              className="w-full rounded-lg border border-stone-300 bg-white px-2 py-2 text-sm font-semibold outline-none focus:border-red-500 focus:ring-4 focus:ring-red-50"
+                            >
+                              <option value="prospect">Prospect</option>
+                              <option value="quoted">
+                                Quoted / negotiating
+                              </option>
+                              <option value="customer">Customer / won</option>
+                              <option value="bounced">Bounced</option>
+                              <option value="negative">Negative</option>
+                              <option value="no-answer">No answer</option>
+                              <option value="other">Other</option>
+                            </select>
+                          ) : (
+                            <div className="flex flex-col gap-1">
+                              <RelationshipBadge
+                                status={relationshipStatus}
+                              />
 
-                            <span className="text-xs text-stone-500">
-                              {getRelationshipSummary(company)}
-                            </span>
-                          </div>
+                              <span className="text-xs text-stone-500">
+                                {getRelationshipSummary(company)}
+                              </span>
+                            </div>
+                          )}
                         </td>
 
                         <td className="px-4 py-3">
@@ -787,6 +812,7 @@ export default function CompaniesPage() {
                                 Latest:{' '}
                                 {getString(latestCampaign.campaign || {}, [
                                   'name',
+                                  'campaign_name',
                                 ]) || 'Campaign'}
                               </span>
                             ) : null}
@@ -1008,7 +1034,41 @@ function getContactOutcome(contact: DbRow) {
   return getString(contact, ['outcome', 'status'])
 }
 
+function getManualRelationshipStatus(company: DbRow): RelationshipStatus | null {
+  const value = cleanOutcome(getString(company, ['relationship_status']))
+
+  if (!value) return null
+
+  if (value === 'prospect') return 'prospect'
+  if (value === 'customer' || value === 'won') return 'customer'
+  if (
+    value === 'quoted' ||
+    value === 'quote sent' ||
+    value === 'negotiating'
+  ) {
+    return 'quoted'
+  }
+  if (value === 'bounced' || value === 'bounce') return 'bounced'
+  if (value === 'negative') return 'negative'
+  if (value === 'no answer') return 'no-answer'
+  if (value === 'no-answer') return 'no-answer'
+  if (value === 'other') return 'other'
+
+  return null
+}
+
+function getManualRelationshipLabel(company: DbRow) {
+  const status = getManualRelationshipStatus(company)
+  return status ? relationshipLabel(status) : ''
+}
+
 function getRelationshipStatus(company: CompanyView): RelationshipStatus {
+  const manualStatus = getManualRelationshipStatus(company.raw)
+
+  if (manualStatus) {
+    return manualStatus
+  }
+
   const contactOutcomes = company.contacts.map((contact) =>
     cleanOutcome(getContactOutcome(contact)),
   )
@@ -1069,6 +1129,12 @@ function getRelationshipStatus(company: CompanyView): RelationshipStatus {
 }
 
 function getRelationshipSummary(company: CompanyView) {
+  const manualStatus = getManualRelationshipStatus(company.raw)
+
+  if (manualStatus) {
+    return 'Manually set'
+  }
+
   const status = getRelationshipStatus(company)
 
   if (status === 'customer') return 'Customer / won'
@@ -1085,6 +1151,21 @@ function getRelationshipSummary(company: CompanyView) {
   }
 
   return 'No campaign activity'
+}
+
+function relationshipLabel(status: RelationshipStatus) {
+  if (status === 'prospect') return 'Prospect'
+  if (status === 'customer') return 'Customer / won'
+  if (status === 'quoted') return 'Quoted / negotiating'
+  if (status === 'bounced') return 'Bounced'
+  if (status === 'negative') return 'Negative'
+  if (status === 'no-answer') return 'No answer'
+  return 'Other'
+}
+
+function toDbRelationshipStatus(status: RelationshipStatus) {
+  if (status === 'no-answer') return 'no_answer'
+  return status
 }
 
 function getLatestCampaign(company: CompanyView) {
@@ -1213,10 +1294,6 @@ function MultiSelectDropdown({
     onChange([...selectedValues, value])
   }
 
-  function clearValues() {
-    onChange([])
-  }
-
   const selectedLabel =
     selectedValues.length === 0
       ? emptyLabel
@@ -1241,7 +1318,7 @@ function MultiSelectDropdown({
           {selectedValues.length > 0 ? (
             <button
               type="button"
-              onClick={clearValues}
+              onClick={() => onChange([])}
               className="mb-2 w-full rounded-lg bg-stone-100 px-3 py-2 text-left text-xs font-bold text-stone-600 transition hover:bg-stone-200"
             >
               Clear selection
@@ -1287,13 +1364,11 @@ function RelationshipBadge({ status }: { status: RelationshipStatus }) {
             ? 'bg-red-100 text-red-800'
             : 'bg-stone-100 text-stone-700'
 
-  const label = status === 'no-answer' ? 'no answer' : status
-
   return (
     <span
       className={`w-fit rounded-full px-2 py-1 text-xs font-bold ${classes}`}
     >
-      {label}
+      {relationshipLabel(status)}
     </span>
   )
 }
