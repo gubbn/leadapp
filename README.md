@@ -1,6 +1,39 @@
 This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
 
-## Getting Started
+## Run with Docker Desktop (development)
+
+Make sure Docker Desktop is running, then open a terminal in this project folder
+and run:
+
+```bash
+docker compose up --build
+```
+
+Open [http://localhost:3000](http://localhost:3000). Changes made to the source
+files on your computer are mounted into the container, so the Next.js development
+server can reload them without rebuilding the image.
+
+The application reads its existing credentials from `.env.local`. If you change
+the environment file or either package lock file, recreate the container:
+
+```bash
+docker compose up --build --force-recreate
+```
+
+To stop the application, press `Ctrl+C`. To stop it when it was started in the
+background, run:
+
+```bash
+docker compose down
+```
+
+To also reset the container-only dependency and Next.js cache volumes, run:
+
+```bash
+docker compose down --volumes
+```
+
+## Run without Docker
 
 First, run the development server:
 
@@ -34,6 +67,21 @@ The Azure app registration needs Microsoft Graph `Mail.Send` application
 permission with admin consent. Open `/automation` in the app to check setup and
 send a controlled test email. The Supabase service role key is only used on the
 server to write tracking events from email opens and clicks.
+
+## AI social content
+
+The social planner sends its five weekly briefs to the server, which generates
+structured post drafts with the Gemini API. Create a free API key in Google AI
+Studio, then add these server-only values to `.env.local`:
+
+```env
+GEMINI_API_KEY=
+GEMINI_MODEL=gemini-2.5-flash-lite
+```
+
+Open `/social`, complete the five content notes, and select **Generate with AI**.
+The API key is never sent to the browser. Generated copy should be reviewed and
+edited before publishing.
 
 You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
 

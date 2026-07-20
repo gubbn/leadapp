@@ -1,6 +1,6 @@
 'use client'
 
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import AppHeader from '@/app/components/AppHeader'
 
@@ -20,6 +20,13 @@ type GeneratedPost = {
   date: Date
   theme: Theme
   content: string
+}
+
+type FacebookGroup = {
+  id: string
+  name: string
+  lastPosted: string
+  lastScript: string
 }
 
 const weekdays = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday']
@@ -71,6 +78,16 @@ const defaultInputs: PlannerInputs = {
 
 const platformOptions = ['LinkedIn', 'Facebook', 'Instagram']
 const toneOptions = ['Helpful', 'Plain English', 'Warm', 'Direct']
+const facebookGroupsStorageKey = 'social-planner-facebook-groups'
+
+function createFacebookGroup(): FacebookGroup {
+  return {
+    id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+    name: '',
+    lastPosted: '',
+    lastScript: '',
+  }
+}
 
 export default function SocialPlannerPage() {
   const [weekStart, setWeekStart] = useState(getMonday(new Date()))
@@ -84,6 +101,49 @@ export default function SocialPlannerPage() {
   )
   const [inputs, setInputs] = useState<PlannerInputs>(defaultInputs)
   const [copiedIndex, setCopiedIndex] = useState<number | null>(null)
+  const [generatedContent, setGeneratedContent] = useState<Record<string, string>>({})
+  const [isGenerating, setIsGenerating] = useState(false)
+  const [generationError, setGenerationError] = useState('')
+  const [facebookGroups, setFacebookGroups] = useState<FacebookGroup[]>([])
+  const [groupsLoaded, setGroupsLoaded] = useState(false)
+  const [copiedGroupId, setCopiedGroupId] = useState<string | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+
+    queueMicrotask(() => {
+      if (cancelled) return
+
+      try {
+        const savedGroups = window.localStorage.getItem(facebookGroupsStorageKey)
+        const parsedGroups: unknown = savedGroups ? JSON.parse(savedGroups) : []
+
+        if (Array.isArray(parsedGroups)) {
+          const validGroups = parsedGroups.filter(isFacebookGroup)
+          setFacebookGroups((current) => current.length ? current : validGroups)
+        }
+      } catch {
+        // Keep the tracker usable if saved browser data is unavailable or invalid.
+      } finally {
+        setGroupsLoaded(true)
+      }
+    })
+
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!groupsLoaded) return
+
+    try {
+      window.localStorage.setItem(facebookGroupsStorageKey, JSON.stringify(facebookGroups))
+    } catch {
+      // Chrome can block storage through privacy settings or extensions.
+      // Keep the in-memory tracker working for the current visit regardless.
+    }
+  }, [facebookGroups, groupsLoaded])
 
   const weekDate = useMemo(() => parseDateInput(weekStart), [weekStart])
 
@@ -103,7 +163,7 @@ export default function SocialPlannerPage() {
         day: weekdays[index],
         date,
         theme,
-        content: generatePost({
+        content: generatedContent[toDateInput(date)] || generatePost({
           theme,
           platform,
           tone,
@@ -113,7 +173,7 @@ export default function SocialPlannerPage() {
         }),
       }
     })
-  }, [audience, cta, inputs, platform, rotatedThemes, tone, weekDate])
+  }, [audience, cta, generatedContent, inputs, platform, rotatedThemes, tone, weekDate])
 
   function updateInput(key: ThemeKey, value: string) {
     setInputs((current) => ({
@@ -126,6 +186,82 @@ export default function SocialPlannerPage() {
     await navigator.clipboard.writeText(post.content)
     setCopiedIndex(index)
     window.setTimeout(() => setCopiedIndex(null), 1800)
+  }
+
+  async function generateWithAI() {
+    setIsGenerating(true)
+    setGenerationError('')
+
+    try {
+      const response = await fetch('/api/social/generate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          platform,
+          tone,
+          audience,
+          callToAction: cta,
+          posts: posts.map((post) => ({
+            day: post.day,
+            date: post.date.toISOString().slice(0, 10),
+            theme: post.theme.label,
+            notes: inputs[post.theme.key],
+          })),
+        }),
+      })
+      const result = await response.json().catch(() => null) as {
+        posts?: Array<{ day: string; content: string }>
+        error?: string
+      } | null
+
+      if (!response.ok || !result?.posts) {
+        throw new Error(result?.error || 'The posts could not be generated.')
+      }
+
+      setGeneratedContent(Object.fromEntries(
+        result.posts.map((post, index) => [
+          toDateInput(posts[index].date),
+          post.content,
+        ]),
+      ))
+    } catch (error) {
+      setGenerationError(
+        error instanceof Error ? error.message : 'The posts could not be generated.',
+      )
+    } finally {
+      setIsGenerating(false)
+    }
+  }
+
+  function updateGeneratedPost(date: Date, content: string) {
+    setGeneratedContent((current) => ({
+      ...current,
+      [toDateInput(date)]: content,
+    }))
+  }
+
+  function updateFacebookGroup(
+    id: string,
+    field: keyof Omit<FacebookGroup, 'id'>,
+    value: string,
+  ) {
+    setFacebookGroups((current) => current.map((group) => (
+      group.id === id ? { ...group, [field]: value } : group
+    )))
+  }
+
+  function addFacebookGroup() {
+    setFacebookGroups((current) => [
+      ...(Array.isArray(current) ? current : []),
+      createFacebookGroup(),
+    ])
+  }
+
+  async function copyGroupScript(group: FacebookGroup) {
+    if (!group.lastScript.trim()) return
+    await navigator.clipboard.writeText(group.lastScript)
+    setCopiedGroupId(group.id)
+    window.setTimeout(() => setCopiedGroupId(null), 1800)
   }
 
   return (
@@ -255,14 +391,139 @@ export default function SocialPlannerPage() {
         </div>
 
         <section className="mt-6 rounded-2xl border border-stone-200 bg-white shadow-sm">
+          <div className="flex flex-col gap-4 border-b border-stone-200 p-5 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <p className="text-xs font-black uppercase tracking-wide text-blue-700">
+                Facebook outreach
+              </p>
+              <h2 className="mt-1 text-xl font-black text-stone-950">
+                Groups we&apos;re members of
+              </h2>
+              <p className="mt-1 text-sm text-stone-500">
+                Keep track of where you post, when you last posted and the script you used.
+              </p>
+            </div>
+
+            <button
+              type="button"
+              onClick={addFacebookGroup}
+              className="shrink-0 rounded-xl bg-blue-700 px-5 py-3 text-sm font-bold text-white transition hover:bg-blue-800"
+            >
+              Add Facebook group
+            </button>
+          </div>
+
+          <div className="p-5">
+            {facebookGroups.length ? (
+              <div className="grid gap-4 lg:grid-cols-2">
+                {facebookGroups.map((group, index) => (
+                  <article
+                    key={group.id}
+                    className="rounded-2xl border border-stone-200 bg-stone-50 p-4"
+                  >
+                    <div className="flex items-center justify-between gap-3">
+                      <h3 className="font-black text-stone-950">
+                        Facebook group {index + 1}
+                      </h3>
+                      <button
+                        type="button"
+                        onClick={() => setFacebookGroups((current) => current.filter((item) => item.id !== group.id))}
+                        className="text-sm font-bold text-stone-500 transition hover:text-red-700"
+                        aria-label={`Remove ${group.name || `Facebook group ${index + 1}`}`}
+                      >
+                        Remove
+                      </button>
+                    </div>
+
+                    <div className="mt-4 grid gap-4 sm:grid-cols-[1fr_12rem]">
+                      <label className="block">
+                        <span className="text-xs font-black uppercase tracking-wide text-stone-500">
+                          Group name
+                        </span>
+                        <input
+                          type="text"
+                          value={group.name}
+                          onChange={(event) => updateFacebookGroup(group.id, 'name', event.target.value)}
+                          placeholder="e.g. Local Business Network"
+                          className="mt-1 w-full rounded-xl border border-stone-300 bg-white px-3 py-2 text-sm outline-none focus:border-blue-600 focus:ring-4 focus:ring-blue-50"
+                        />
+                      </label>
+
+                      <label className="block">
+                        <span className="text-xs font-black uppercase tracking-wide text-stone-500">
+                          Last posted
+                        </span>
+                        <input
+                          type="date"
+                          value={group.lastPosted}
+                          onChange={(event) => updateFacebookGroup(group.id, 'lastPosted', event.target.value)}
+                          className="mt-1 w-full rounded-xl border border-stone-300 bg-white px-3 py-2 text-sm outline-none focus:border-blue-600 focus:ring-4 focus:ring-blue-50"
+                        />
+                      </label>
+                    </div>
+
+                    <label className="mt-4 block">
+                      <span className="text-xs font-black uppercase tracking-wide text-stone-500">
+                        Last used script
+                      </span>
+                      <textarea
+                        value={group.lastScript}
+                        onChange={(event) => updateFacebookGroup(group.id, 'lastScript', event.target.value)}
+                        rows={6}
+                        placeholder="Paste the last script you posted in this group…"
+                        className="mt-1 w-full resize-y rounded-xl border border-stone-300 bg-white px-3 py-2 text-sm leading-6 outline-none focus:border-blue-600 focus:ring-4 focus:ring-blue-50"
+                      />
+                    </label>
+
+                    <button
+                      type="button"
+                      onClick={() => copyGroupScript(group)}
+                      disabled={!group.lastScript.trim()}
+                      className="mt-3 rounded-xl bg-stone-950 px-4 py-2 text-sm font-bold text-white transition hover:bg-stone-800 disabled:cursor-not-allowed disabled:opacity-40"
+                    >
+                      {copiedGroupId === group.id ? 'Copied' : 'Copy last script'}
+                    </button>
+                  </article>
+                ))}
+              </div>
+            ) : (
+              <div className="rounded-2xl border border-dashed border-stone-300 bg-stone-50 px-5 py-10 text-center">
+                <p className="font-bold text-stone-700">No Facebook groups added yet.</p>
+                <p className="mt-1 text-sm text-stone-500">
+                  Add your first group to start tracking your posts.
+                </p>
+              </div>
+            )}
+          </div>
+        </section>
+
+        <section className="mt-6 rounded-2xl border border-stone-200 bg-white shadow-sm">
           <div className="border-b border-stone-200 p-5">
-            <h2 className="text-xl font-black text-stone-950">
-              Generated posts
-            </h2>
-            <p className="mt-1 text-sm text-stone-500">
-              Use these as first drafts, then add any client-specific detail
-              before posting.
-            </p>
+            <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <h2 className="text-xl font-black text-stone-950">
+                  Generated posts
+                </h2>
+                <p className="mt-1 text-sm text-stone-500">
+                  Generate with AI, then review and edit every post before publishing.
+                </p>
+              </div>
+
+              <button
+                type="button"
+                onClick={generateWithAI}
+                disabled={isGenerating}
+                className="rounded-xl bg-stone-950 px-5 py-3 text-sm font-bold text-white transition hover:bg-stone-800 disabled:cursor-wait disabled:opacity-60"
+              >
+                {isGenerating ? 'Generating five posts…' : 'Generate with AI'}
+              </button>
+            </div>
+
+            {generationError ? (
+              <p role="alert" className="mt-4 rounded-xl bg-red-50 px-4 py-3 text-sm font-semibold text-red-700">
+                {generationError}
+              </p>
+            ) : null}
           </div>
 
           <div className="grid gap-4 p-5 lg:grid-cols-5">
@@ -282,7 +543,7 @@ export default function SocialPlannerPage() {
 
                 <textarea
                   value={post.content}
-                  readOnly
+                  onChange={(event) => updateGeneratedPost(post.date, event.target.value)}
                   rows={13}
                   className="mt-4 min-h-80 w-full flex-1 resize-none rounded-xl border border-stone-200 bg-white px-3 py-3 text-sm leading-6 text-stone-800 outline-none"
                 />
@@ -301,6 +562,16 @@ export default function SocialPlannerPage() {
       </section>
     </main>
   )
+}
+
+function isFacebookGroup(value: unknown): value is FacebookGroup {
+  if (!value || typeof value !== 'object') return false
+
+  const group = value as Record<string, unknown>
+  return typeof group.id === 'string'
+    && typeof group.name === 'string'
+    && typeof group.lastPosted === 'string'
+    && typeof group.lastScript === 'string'
 }
 
 function generatePost({
