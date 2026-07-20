@@ -10,6 +10,13 @@ export type M365ConfigStatus = {
   senderUser: string
 }
 
+export type InlineMailAttachment = {
+  name: string
+  contentType: string
+  contentBytes: string
+  contentId: string
+}
+
 const requiredEnv = [
   'M365_TENANT_ID',
   'M365_CLIENT_ID',
@@ -74,11 +81,13 @@ export async function sendM365Mail({
   subject,
   html,
   text,
+  inlineAttachments = [],
 }: {
   to: string
   subject: string
   html: string
   text?: string
+  inlineAttachments?: InlineMailAttachment[]
 }) {
   const token = await getGraphAccessToken()
   const senderUser = process.env.M365_SENDER_USER?.trim()
@@ -117,6 +126,14 @@ export async function sendM365Mail({
               value: 'marketing-dashboard',
             },
           ],
+          attachments: inlineAttachments.map((attachment) => ({
+            '@odata.type': '#microsoft.graph.fileAttachment',
+            name: attachment.name,
+            contentType: attachment.contentType,
+            contentBytes: attachment.contentBytes,
+            contentId: attachment.contentId,
+            isInline: true,
+          })),
         },
         saveToSentItems: true,
       }),
