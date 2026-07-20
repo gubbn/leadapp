@@ -596,7 +596,7 @@ export function SocialWorkspace({ view }: { view: SocialView }) {
                   >
                     <div className="flex items-center justify-between gap-3">
                       <h3 className="font-black text-stone-950">
-                        Facebook group {index + 1}
+                        {group.name.trim() || 'Untitled Facebook group'}
                       </h3>
                       <button
                         type="button"
