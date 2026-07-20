@@ -76,7 +76,7 @@ Studio, then add these server-only values to `.env.local`:
 
 ```env
 GEMINI_API_KEY=
-GEMINI_MODEL=gemini-2.5-flash-lite
+GEMINI_MODEL=gemini-3.1-flash-lite
 ```
 
 Open `/social`, complete the five content notes, and select **Generate with AI**.

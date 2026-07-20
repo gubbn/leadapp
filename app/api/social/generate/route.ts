@@ -154,7 +154,7 @@ export async function POST(request: Request) {
     )
   }
 
-  const model = process.env.GEMINI_MODEL || 'gemini-2.5-flash-lite'
+  const model = process.env.GEMINI_MODEL || 'gemini-3.1-flash-lite'
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS)
 
