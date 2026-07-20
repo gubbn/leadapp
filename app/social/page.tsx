@@ -16,6 +16,17 @@ type Theme = {
 
 type PlannerInputs = Record<ThemeKey, string>
 
+type SocialView = 'posts' | 'planner' | 'facebook'
+
+type StoredPlanner = {
+  weekStart: string
+  platform: string
+  tone: string
+  audience: string
+  cta: string
+  inputs: PlannerInputs
+}
+
 type GeneratedPost = {
   day: string
   date: Date
@@ -80,8 +91,13 @@ const defaultInputs: PlannerInputs = {
 const platformOptions = ['LinkedIn', 'Facebook', 'Instagram']
 const toneOptions = ['Helpful', 'Plain English', 'Warm', 'Direct']
 const facebookGroupsStorageKey = 'social-planner-facebook-groups'
+const plannerStorageKey = 'social-planner-settings'
 
-export default function SocialPlannerPage() {
+export default function SocialPage() {
+  return <SocialWorkspace view="posts" />
+}
+
+export function SocialWorkspace({ view }: { view: SocialView }) {
   const [weekStart, setWeekStart] = useState(getMonday(new Date()))
   const [platform, setPlatform] = useState(platformOptions[0])
   const [tone, setTone] = useState(toneOptions[1])
@@ -97,12 +113,62 @@ export default function SocialPlannerPage() {
   const [isGenerating, setIsGenerating] = useState(false)
   const [generationError, setGenerationError] = useState('')
   const [facebookGroups, setFacebookGroups] = useState<FacebookGroup[]>([])
-  const [facebookGroupsLoading, setFacebookGroupsLoading] = useState(true)
+  const [facebookGroupsLoading, setFacebookGroupsLoading] = useState(view === 'facebook')
   const [facebookGroupsError, setFacebookGroupsError] = useState('')
   const [savingGroupId, setSavingGroupId] = useState<string | null>(null)
   const [copiedGroupId, setCopiedGroupId] = useState<string | null>(null)
+  const [plannerLoaded, setPlannerLoaded] = useState(false)
 
   useEffect(() => {
+    let cancelled = false
+
+    async function loadPlanner() {
+      await Promise.resolve()
+      if (cancelled) return
+
+      try {
+        const stored: unknown = JSON.parse(window.localStorage.getItem(plannerStorageKey) || 'null')
+        if (isStoredPlanner(stored)) {
+          setWeekStart(stored.weekStart)
+          setPlatform(stored.platform)
+          setTone(stored.tone)
+          setAudience(stored.audience)
+          setCta(stored.cta)
+          setInputs(stored.inputs)
+        }
+      } catch {
+        // Use the defaults when saved planner settings are unavailable.
+      } finally {
+        setPlannerLoaded(true)
+      }
+    }
+
+    void loadPlanner()
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!plannerLoaded) return
+
+    try {
+      window.localStorage.setItem(plannerStorageKey, JSON.stringify({
+        weekStart,
+        platform,
+        tone,
+        audience,
+        cta,
+        inputs,
+      } satisfies StoredPlanner))
+    } catch {
+      // Keep the planner usable when browser storage is unavailable.
+    }
+  }, [audience, cta, inputs, plannerLoaded, platform, tone, weekStart])
+
+  useEffect(() => {
+    if (view !== 'facebook') return
+
     let cancelled = false
 
     async function loadFacebookGroups() {
@@ -170,7 +236,7 @@ export default function SocialPlannerPage() {
     return () => {
       cancelled = true
     }
-  }, [])
+  }, [view])
 
   const weekDate = useMemo(() => parseDateInput(weekStart), [weekStart])
 
@@ -340,6 +406,24 @@ export default function SocialPlannerPage() {
     window.setTimeout(() => setCopiedGroupId(null), 1800)
   }
 
+  const pageCopy = {
+    posts: {
+      eyebrow: 'Social',
+      title: 'Generate and review social posts.',
+      description: 'Create this week\'s drafts from the notes and preferences saved in Planner Setup.',
+    },
+    planner: {
+      eyebrow: 'Planner setup',
+      title: 'Set up the week and content themes.',
+      description: 'Choose the platform, tone and audience, then add the notes used to build each post.',
+    },
+    facebook: {
+      eyebrow: 'Facebook groups',
+      title: 'Manage Facebook group outreach.',
+      description: 'Track the groups you belong to, when you last posted and the script you used.',
+    },
+  }[view]
+
   return (
     <main className="min-h-screen bg-stone-100 text-stone-900">
       <AppHeader />
@@ -352,23 +436,23 @@ export default function SocialPlannerPage() {
 
           <div className="mt-6 max-w-4xl">
             <p className="inline-flex rounded-full bg-red-100 px-3 py-1 text-xs font-bold uppercase tracking-wide text-red-700">
-              Social planner
+              {pageCopy.eyebrow}
             </p>
 
             <h1 className="mt-5 text-4xl font-black tracking-tight text-stone-950 md:text-5xl">
-              Plan the week and generate post drafts.
+              {pageCopy.title}
             </h1>
 
             <p className="mt-5 text-base leading-7 text-stone-600">
-              Rotate your five social themes by one weekday each week, then turn
-              simple notes into ready-to-edit posts.
+              {pageCopy.description}
             </p>
           </div>
         </div>
       </section>
 
       <section className="mx-auto max-w-7xl px-4 py-8">
-        <div className="grid gap-6 lg:grid-cols-[0.75fr_1.25fr]">
+        {view === 'planner' ? (
+          <div className="grid gap-6 lg:grid-cols-[0.75fr_1.25fr]">
           <section className="rounded-2xl border border-stone-200 bg-white p-6 shadow-sm">
             <h2 className="text-xl font-black text-stone-950">
               Planner setup
@@ -464,9 +548,11 @@ export default function SocialPlannerPage() {
               ))}
             </div>
           </section>
-        </div>
+          </div>
+        ) : null}
 
-        <section className="mt-6 rounded-2xl border border-stone-200 bg-white shadow-sm">
+        {view === 'facebook' ? (
+          <section className="rounded-2xl border border-stone-200 bg-white shadow-sm">
           <div className="flex flex-col gap-4 border-b border-stone-200 p-5 sm:flex-row sm:items-center sm:justify-between">
             <div>
               <p className="text-xs font-black uppercase tracking-wide text-blue-700">
@@ -586,9 +672,11 @@ export default function SocialPlannerPage() {
               </div>
             )}
           </div>
-        </section>
+          </section>
+        ) : null}
 
-        <section className="mt-6 rounded-2xl border border-stone-200 bg-white shadow-sm">
+        {view === 'posts' ? (
+          <section className="rounded-2xl border border-stone-200 bg-white shadow-sm">
           <div className="border-b border-stone-200 p-5">
             <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
               <div>
@@ -649,7 +737,8 @@ export default function SocialPlannerPage() {
               </article>
             ))}
           </div>
-        </section>
+          </section>
+        ) : null}
       </section>
     </main>
   )
@@ -663,6 +752,24 @@ function isFacebookGroup(value: unknown): value is FacebookGroup {
     && typeof group.name === 'string'
     && typeof group.lastPosted === 'string'
     && typeof group.lastScript === 'string'
+}
+
+function isStoredPlanner(value: unknown): value is StoredPlanner {
+  if (!value || typeof value !== 'object') return false
+
+  const planner = value as Record<string, unknown>
+  const storedInputs = planner.inputs
+
+  return typeof planner.weekStart === 'string'
+    && typeof planner.platform === 'string'
+    && typeof planner.tone === 'string'
+    && typeof planner.audience === 'string'
+    && typeof planner.cta === 'string'
+    && !!storedInputs
+    && typeof storedInputs === 'object'
+    && baseThemes.every((theme) => (
+      typeof (storedInputs as Record<string, unknown>)[theme.key] === 'string'
+    ))
 }
 
 function generatePost({

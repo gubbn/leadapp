@@ -22,10 +22,18 @@ const campaignSubItems = [
   { href: '/campaigns/history', label: 'History' },
 ]
 
+const socialSubItems = [
+  { href: '/social', label: 'Generated posts' },
+  { href: '/social/planner', label: 'Planner setup' },
+  { href: '/social/facebook-groups', label: 'Facebook groups' },
+]
+
 export default function AppHeader() {
   const pathname = usePathname()
   const isCampaignSection =
     pathname === '/campaigns' || pathname.startsWith('/campaigns/')
+  const isSocialSection =
+    pathname === '/social' || pathname.startsWith('/social/')
 
   return (
     <header className="border-b border-stone-200 bg-white">
@@ -82,6 +90,34 @@ export default function AppHeader() {
             </span>
 
             {campaignSubItems.map((item) => {
+              const isActive = pathname === item.href
+
+              return (
+                <Link
+                  key={item.href}
+                  href={item.href}
+                  className={`rounded-lg px-3 py-2 transition ${
+                    isActive
+                      ? 'bg-red-600 text-white'
+                      : 'bg-white text-stone-700 hover:bg-red-50 hover:text-red-600'
+                  }`}
+                >
+                  {item.label}
+                </Link>
+              )
+            })}
+          </div>
+        </div>
+      ) : null}
+
+      {isSocialSection ? (
+        <div className="border-t border-stone-100 bg-stone-50">
+          <div className="mx-auto flex max-w-7xl flex-wrap items-center gap-2 px-4 py-3 text-sm font-semibold">
+            <span className="mr-1 text-xs font-black uppercase tracking-wide text-stone-400">
+              Social
+            </span>
+
+            {socialSubItems.map((item) => {
               const isActive = pathname === item.href
 
               return (
