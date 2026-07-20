@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import AppHeader from '@/app/components/AppHeader'
+import { supabase } from '@/lib/supabaseClient'
 
 type ThemeKey = 'work' | 'personal' | 'testimonial' | 'it-now' | 'recap'
 
@@ -80,15 +81,6 @@ const platformOptions = ['LinkedIn', 'Facebook', 'Instagram']
 const toneOptions = ['Helpful', 'Plain English', 'Warm', 'Direct']
 const facebookGroupsStorageKey = 'social-planner-facebook-groups'
 
-function createFacebookGroup(): FacebookGroup {
-  return {
-    id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
-    name: '',
-    lastPosted: '',
-    lastScript: '',
-  }
-}
-
 export default function SocialPlannerPage() {
   const [weekStart, setWeekStart] = useState(getMonday(new Date()))
   const [platform, setPlatform] = useState(platformOptions[0])
@@ -105,45 +97,80 @@ export default function SocialPlannerPage() {
   const [isGenerating, setIsGenerating] = useState(false)
   const [generationError, setGenerationError] = useState('')
   const [facebookGroups, setFacebookGroups] = useState<FacebookGroup[]>([])
-  const [groupsLoaded, setGroupsLoaded] = useState(false)
+  const [facebookGroupsLoading, setFacebookGroupsLoading] = useState(true)
+  const [facebookGroupsError, setFacebookGroupsError] = useState('')
+  const [savingGroupId, setSavingGroupId] = useState<string | null>(null)
   const [copiedGroupId, setCopiedGroupId] = useState<string | null>(null)
 
   useEffect(() => {
     let cancelled = false
 
-    queueMicrotask(() => {
-      if (cancelled) return
-
+    async function loadFacebookGroups() {
       try {
+        const { data, error } = await supabase
+          .from('facebook_groups')
+          .select('id, group_name, last_posted, last_script')
+          .order('created_at', { ascending: true })
+
+        if (error) throw error
+        if (cancelled) return
+
+        const groups = (data || []).map((group) => ({
+          id: group.id,
+          name: group.group_name,
+          lastPosted: group.last_posted || '',
+          lastScript: group.last_script,
+        }))
+
+        if (groups.length) {
+          setFacebookGroups(groups)
+          window.localStorage.removeItem(facebookGroupsStorageKey)
+          return
+        }
+
         const savedGroups = window.localStorage.getItem(facebookGroupsStorageKey)
         const parsedGroups: unknown = savedGroups ? JSON.parse(savedGroups) : []
-
         if (Array.isArray(parsedGroups)) {
           const validGroups = parsedGroups.filter(isFacebookGroup)
-          setFacebookGroups((current) => current.length ? current : validGroups)
+          if (validGroups.length) {
+            const { data: migrated, error: migrationError } = await supabase
+              .from('facebook_groups')
+              .insert(validGroups.map((group) => ({
+                group_name: group.name,
+                last_posted: group.lastPosted || null,
+                last_script: group.lastScript,
+              })))
+              .select('id, group_name, last_posted, last_script')
+
+            if (migrationError) throw migrationError
+            if (cancelled) return
+
+            setFacebookGroups((migrated || []).map((group) => ({
+              id: group.id,
+              name: group.group_name,
+              lastPosted: group.last_posted || '',
+              lastScript: group.last_script,
+            })))
+            window.localStorage.removeItem(facebookGroupsStorageKey)
+          }
         }
-      } catch {
-        // Keep the tracker usable if saved browser data is unavailable or invalid.
+      } catch (error) {
+        if (!cancelled) {
+          setFacebookGroupsError(
+            error instanceof Error ? error.message : 'Facebook groups could not be loaded.',
+          )
+        }
       } finally {
-        setGroupsLoaded(true)
+        if (!cancelled) setFacebookGroupsLoading(false)
       }
-    })
+    }
+
+    void loadFacebookGroups()
 
     return () => {
       cancelled = true
     }
   }, [])
-
-  useEffect(() => {
-    if (!groupsLoaded) return
-
-    try {
-      window.localStorage.setItem(facebookGroupsStorageKey, JSON.stringify(facebookGroups))
-    } catch {
-      // Chrome can block storage through privacy settings or extensions.
-      // Keep the in-memory tracker working for the current visit regardless.
-    }
-  }, [facebookGroups, groupsLoaded])
 
   const weekDate = useMemo(() => parseDateInput(weekStart), [weekStart])
 
@@ -250,11 +277,60 @@ export default function SocialPlannerPage() {
     )))
   }
 
-  function addFacebookGroup() {
-    setFacebookGroups((current) => [
-      ...(Array.isArray(current) ? current : []),
-      createFacebookGroup(),
-    ])
+  async function addFacebookGroup() {
+    setFacebookGroupsError('')
+    const { data, error } = await supabase
+      .from('facebook_groups')
+      .insert({ group_name: '', last_script: '' })
+      .select('id, group_name, last_posted, last_script')
+      .single()
+
+    if (error) {
+      setFacebookGroupsError(error.message)
+      return
+    }
+
+    setFacebookGroups((current) => [...current, {
+      id: data.id,
+      name: data.group_name,
+      lastPosted: data.last_posted || '',
+      lastScript: data.last_script,
+    }])
+  }
+
+  async function saveFacebookGroup(group: FacebookGroup) {
+    setSavingGroupId(group.id)
+    setFacebookGroupsError('')
+    const { error } = await supabase
+      .from('facebook_groups')
+      .update({
+        group_name: group.name,
+        last_posted: group.lastPosted || null,
+        last_script: group.lastScript,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', group.id)
+
+    if (error) setFacebookGroupsError(error.message)
+    setSavingGroupId(null)
+  }
+
+  async function removeFacebookGroup(group: FacebookGroup) {
+    setSavingGroupId(group.id)
+    setFacebookGroupsError('')
+    const { error } = await supabase
+      .from('facebook_groups')
+      .delete()
+      .eq('id', group.id)
+
+    if (error) {
+      setFacebookGroupsError(error.message)
+      setSavingGroupId(null)
+      return
+    }
+
+    setFacebookGroups((current) => current.filter((item) => item.id !== group.id))
+    setSavingGroupId(null)
   }
 
   async function copyGroupScript(group: FacebookGroup) {
@@ -407,14 +483,25 @@ export default function SocialPlannerPage() {
             <button
               type="button"
               onClick={addFacebookGroup}
-              className="shrink-0 rounded-xl bg-blue-700 px-5 py-3 text-sm font-bold text-white transition hover:bg-blue-800"
+              disabled={facebookGroupsLoading}
+              className="shrink-0 rounded-xl bg-blue-700 px-5 py-3 text-sm font-bold text-white transition hover:bg-blue-800 disabled:cursor-wait disabled:opacity-50"
             >
               Add Facebook group
             </button>
           </div>
 
           <div className="p-5">
-            {facebookGroups.length ? (
+            {facebookGroupsError ? (
+              <p role="alert" className="mb-4 rounded-xl bg-red-50 px-4 py-3 text-sm font-semibold text-red-700">
+                {facebookGroupsError}
+              </p>
+            ) : null}
+
+            {facebookGroupsLoading ? (
+              <div className="rounded-2xl border border-dashed border-stone-300 bg-stone-50 px-5 py-10 text-center">
+                <p className="font-bold text-stone-700">Loading Facebook groups…</p>
+              </div>
+            ) : facebookGroups.length ? (
               <div className="grid gap-4 lg:grid-cols-2">
                 {facebookGroups.map((group, index) => (
                   <article
@@ -427,11 +514,12 @@ export default function SocialPlannerPage() {
                       </h3>
                       <button
                         type="button"
-                        onClick={() => setFacebookGroups((current) => current.filter((item) => item.id !== group.id))}
+                        onClick={() => removeFacebookGroup(group)}
+                        disabled={savingGroupId === group.id}
                         className="text-sm font-bold text-stone-500 transition hover:text-red-700"
                         aria-label={`Remove ${group.name || `Facebook group ${index + 1}`}`}
                       >
-                        Remove
+                        {savingGroupId === group.id ? 'Saving…' : 'Remove'}
                       </button>
                     </div>
 
@@ -444,6 +532,7 @@ export default function SocialPlannerPage() {
                           type="text"
                           value={group.name}
                           onChange={(event) => updateFacebookGroup(group.id, 'name', event.target.value)}
+                          onBlur={() => saveFacebookGroup(group)}
                           placeholder="e.g. Local Business Network"
                           className="mt-1 w-full rounded-xl border border-stone-300 bg-white px-3 py-2 text-sm outline-none focus:border-blue-600 focus:ring-4 focus:ring-blue-50"
                         />
@@ -457,6 +546,7 @@ export default function SocialPlannerPage() {
                           type="date"
                           value={group.lastPosted}
                           onChange={(event) => updateFacebookGroup(group.id, 'lastPosted', event.target.value)}
+                          onBlur={() => saveFacebookGroup(group)}
                           className="mt-1 w-full rounded-xl border border-stone-300 bg-white px-3 py-2 text-sm outline-none focus:border-blue-600 focus:ring-4 focus:ring-blue-50"
                         />
                       </label>
@@ -469,6 +559,7 @@ export default function SocialPlannerPage() {
                       <textarea
                         value={group.lastScript}
                         onChange={(event) => updateFacebookGroup(group.id, 'lastScript', event.target.value)}
+                        onBlur={() => saveFacebookGroup(group)}
                         rows={6}
                         placeholder="Paste the last script you posted in this group…"
                         className="mt-1 w-full resize-y rounded-xl border border-stone-300 bg-white px-3 py-2 text-sm leading-6 outline-none focus:border-blue-600 focus:ring-4 focus:ring-blue-50"
