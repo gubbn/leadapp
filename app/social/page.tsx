@@ -1,428 +1,348 @@
 'use client'
 
-import { useEffect, useMemo, useState } from 'react'
-import Link from 'next/link'
+import { FormEvent, useCallback, useEffect, useMemo, useState } from 'react'
 import AppHeader from '@/app/components/AppHeader'
 import { supabase } from '@/lib/supabaseClient'
 
-type ThemeKey = 'work' | 'personal' | 'testimonial' | 'it-now' | 'recap'
+type SourceKey =
+  | 'support_ticket'
+  | 'site_visit'
+  | 'repeated_question'
+  | 'team_chat'
+  | 'renewal_review'
+  | 'client_onboarding'
+  | 'industry_news'
+  | 'team_moment'
 
-type Theme = {
-  key: ThemeKey
-  label: string
-  shortLabel: string
-  helper: string
-}
+type PillarKey = 'save' | 'explainer' | 'local_face' | 'proof'
+type Permission = 'yes' | 'no' | 'not_asked'
+type ContentStatus = 'idea' | 'review' | 'ready' | 'used'
 
-type PlannerInputs = Record<ThemeKey, string>
-
-type SocialView = 'posts' | 'planner' | 'facebook'
-
-type StoredPlanner = {
-  weekStart: string
-  platform: string
-  tone: string
-  audience: string
-  cta: string
-  inputs: PlannerInputs
-}
-
-type GeneratedPost = {
-  day: string
-  date: Date
-  theme: Theme
-  content: string
-}
-
-type FacebookGroup = {
+type ContentIdea = {
   id: string
-  name: string
-  lastPosted: string
-  lastScript: string
+  title: string | null
+  source: SourceKey
+  contact_permission: Permission
+  contact_name: string | null
+  what_happened: string
+  pillar: PillarKey | null
+  status: ContentStatus
+  captured_on: string
+  created_at: string
+  updated_at: string
 }
 
-const weekdays = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday']
+type ContentForm = {
+  title: string
+  source: SourceKey
+  contactPermission: Permission
+  contactName: string
+  whatHappened: string
+  pillar: '' | PillarKey
+  status: ContentStatus
+  capturedOn: string
+}
 
-const baseThemes: Theme[] = [
+type SourceDefinition = {
+  key: SourceKey
+  label: string
+  shortPrompt: string
+  description: string
+  example: string
+  suggestedPillar: PillarKey
+}
+
+const sources: SourceDefinition[] = [
   {
-    key: 'work',
-    label: "Something we're working on this week",
-    shortLabel: 'This week',
-    helper: 'Show useful work in progress, without oversharing client details.',
+    key: 'support_ticket',
+    label: 'Support ticket',
+    shortPrompt: 'A routine call revealed something bigger.',
+    description:
+      'Look for closed tickets where the team prevented a risk, found a hidden cause, or produced a useful lesson—not ordinary password resets.',
+    example:
+      'A slow laptop turned out to have a failing drive with three years of data at risk.',
+    suggestedPillar: 'save',
   },
   {
-    key: 'personal',
-    label: 'Personal post',
-    shortLabel: 'Personal',
-    helper: 'A human post that helps people know, like and trust you.',
+    key: 'site_visit',
+    label: 'Site visit',
+    shortPrompt: 'Show useful work happening locally.',
+    description:
+      'A photo and one line from the engineer is enough. Network audits, installations, or even the van outside a client site build familiarity.',
+    example: 'On site today checking Wi-Fi coverage before a team expansion.',
+    suggestedPillar: 'local_face',
   },
   {
-    key: 'testimonial',
-    label: 'Customer testimonial',
-    shortLabel: 'Testimonial',
-    helper: 'Turn proof into a short story about the problem and result.',
+    key: 'repeated_question',
+    label: 'Repeated client question',
+    shortPrompt: 'Publish the answer you keep giving.',
+    description:
+      'When several clients ask the same thing, capture the question and the plain-English answer. Repetition proves the topic is relevant.',
+    example: 'Do we really need MFA if everyone already has a strong password?',
+    suggestedPillar: 'explainer',
   },
   {
-    key: 'it-now',
-    label: 'Something happening in IT right now',
-    shortLabel: 'IT now',
-    helper: 'Make a current IT issue understandable and relevant.',
+    key: 'team_chat',
+    label: 'Team chat / Teams',
+    shortPrompt: 'Lift a useful win from the team conversation.',
+    description:
+      'Scan internal wins or interesting fixes once a week. The engineers already produced the insight; the bank simply captures it.',
+    example: 'The team spotted an unusual login rule before it became an incident.',
+    suggestedPillar: 'save',
   },
   {
-    key: 'recap',
-    label: 'Recap',
-    shortLabel: 'Recap',
-    helper: 'Summarise the week and give people a simple next step.',
+    key: 'renewal_review',
+    label: 'Renewal or quarterly review',
+    shortPrompt: 'Turn review outcomes into evidence.',
+    description:
+      'Capture savings, risks removed, improvements made, or the next strategic step. Anonymise the client when permission is unavailable.',
+    example: 'Removed unused licences and reduced annual software spend by 20%.',
+    suggestedPillar: 'proof',
+  },
+  {
+    key: 'client_onboarding',
+    label: 'New client onboarding',
+    shortPrompt: 'Capture the before and after.',
+    description:
+      'Record what was broken or risky when the client arrived, what changed, and what the new situation means for their team.',
+    example: 'From shared passwords and no tested backup to managed access and recovery.',
+    suggestedPillar: 'proof',
+  },
+  {
+    key: 'industry_news',
+    label: 'Industry news reaction',
+    shortPrompt: 'Explain what today’s news means locally.',
+    description:
+      'React to a breach, outage, scam, or technology change with a practical explanation for businesses, charities, or schools of your audience’s size.',
+    example: 'What the cloud outage means—and the continuity checks worth doing today.',
+    suggestedPillar: 'explainer',
+  },
+  {
+    key: 'team_moment',
+    label: 'Team moment',
+    shortPrompt: 'Show the humans behind the service.',
+    description:
+      'Birthdays, anniversaries, new starters, charity days, learning, or the office dog all make the brand more familiar and approachable.',
+    example: 'Celebrating five years with the engineer clients know by name.',
+    suggestedPillar: 'local_face',
   },
 ]
 
-const defaultInputs: PlannerInputs = {
-  work:
-    'Improving response time for a client and reviewing where their systems slow the team down.',
-  personal: 'A small lesson from running a business this week.',
-  testimonial:
-    'A client said they finally feel confident that their IT is being looked after properly.',
-  'it-now':
-    'Cyber security, backups, Microsoft 365, AI tools, or common scams affecting small businesses.',
-  recap:
-    'The main thing we helped clients with this week, plus one useful reminder.',
+const pillars: Record<
+  PillarKey,
+  { label: string; promise: string; description: string; test: string; style: string }
+> = {
+  save: {
+    label: 'Save',
+    promise: 'Useful enough to keep',
+    description:
+      'A practical lesson, warning, checklist, or real incident that helps someone avoid a problem later.',
+    test: 'Would a reader save this so they can act on it?',
+    style: 'bg-blue-100 text-blue-700',
+  },
+  explainer: {
+    label: 'Explainer',
+    promise: 'Makes IT easier to understand',
+    description:
+      'Answer a common question in plain English: what it is, why it matters, and what a sensible next step looks like.',
+    test: 'Does this remove confusion without drowning people in jargon?',
+    style: 'bg-violet-100 text-violet-700',
+  },
+  local_face: {
+    label: 'Local Face',
+    promise: 'Shows the people doing the work',
+    description:
+      'Human, local, behind-the-scenes content that builds recognition and trust before a prospect needs help.',
+    test: 'Does this make Fixing IT feel familiar and approachable?',
+    style: 'bg-amber-100 text-amber-800',
+  },
+  proof: {
+    label: 'Proof',
+    promise: 'Shows a credible result',
+    description:
+      'A before-and-after story, measurable improvement, testimonial, or outcome that demonstrates the value of the work.',
+    test: 'Does this give evidence rather than simply claiming we are good?',
+    style: 'bg-emerald-100 text-emerald-700',
+  },
 }
 
-const platformOptions = ['LinkedIn', 'Facebook', 'Instagram']
-const toneOptions = ['Helpful', 'Plain English', 'Warm', 'Direct']
-const facebookGroupsStorageKey = 'social-planner-facebook-groups'
-const plannerStorageKey = 'social-planner-settings'
-
-export default function SocialPage() {
-  return <SocialWorkspace view="posts" />
+const statusLabels: Record<ContentStatus, string> = {
+  idea: 'Idea',
+  review: 'Needs review',
+  ready: 'Ready to write',
+  used: 'Used',
 }
 
-export function SocialWorkspace({ view }: { view: SocialView }) {
-  const [weekStart, setWeekStart] = useState(getMonday(new Date()))
-  const [platform, setPlatform] = useState(platformOptions[0])
-  const [tone, setTone] = useState(toneOptions[1])
-  const [audience, setAudience] = useState(
-    'owners and managers of small businesses who want IT to be simpler and safer',
-  )
-  const [cta, setCta] = useState(
-    'If this sounds familiar, message us and we can point you in the right direction.',
-  )
-  const [inputs, setInputs] = useState<PlannerInputs>(defaultInputs)
-  const [copiedIndex, setCopiedIndex] = useState<number | null>(null)
-  const [generatedContent, setGeneratedContent] = useState<Record<string, string>>({})
-  const [isGenerating, setIsGenerating] = useState(false)
-  const [generationError, setGenerationError] = useState('')
-  const [facebookGroups, setFacebookGroups] = useState<FacebookGroup[]>([])
-  const [facebookGroupsLoading, setFacebookGroupsLoading] = useState(view === 'facebook')
-  const [facebookGroupsError, setFacebookGroupsError] = useState('')
-  const [savingGroupId, setSavingGroupId] = useState<string | null>(null)
-  const [copiedGroupId, setCopiedGroupId] = useState<string | null>(null)
-  const [plannerLoaded, setPlannerLoaded] = useState(false)
+function today() {
+  const date = new Date()
+  date.setMinutes(date.getMinutes() - date.getTimezoneOffset())
+  return date.toISOString().slice(0, 10)
+}
 
-  useEffect(() => {
-    let cancelled = false
+const emptyForm: ContentForm = {
+  title: '',
+  source: 'support_ticket',
+  contactPermission: 'not_asked',
+  contactName: '',
+  whatHappened: '',
+  pillar: '',
+  status: 'idea',
+  capturedOn: today(),
+}
 
-    async function loadPlanner() {
-      await Promise.resolve()
-      if (cancelled) return
+export default function ContentBankPage() {
+  const [ideas, setIdeas] = useState<ContentIdea[]>([])
+  const [form, setForm] = useState<ContentForm>(emptyForm)
+  const [editingId, setEditingId] = useState<string | null>(null)
+  const [showForm, setShowForm] = useState(false)
+  const [loading, setLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
+  const [errorMessage, setErrorMessage] = useState('')
+  const [successMessage, setSuccessMessage] = useState('')
+  const [statusFilter, setStatusFilter] = useState<'all' | ContentStatus>('all')
+  const [pillarFilter, setPillarFilter] = useState<'all' | 'unassigned' | PillarKey>('all')
+  const [sourceFilter, setSourceFilter] = useState<'all' | SourceKey>('all')
+  const [search, setSearch] = useState('')
 
-      try {
-        const stored: unknown = JSON.parse(window.localStorage.getItem(plannerStorageKey) || 'null')
-        if (isStoredPlanner(stored)) {
-          setWeekStart(stored.weekStart)
-          setPlatform(stored.platform)
-          setTone(stored.tone)
-          setAudience(stored.audience)
-          setCta(stored.cta)
-          setInputs(stored.inputs)
-        }
-      } catch {
-        // Use the defaults when saved planner settings are unavailable.
-      } finally {
-        setPlannerLoaded(true)
-      }
-    }
+  const loadIdeas = useCallback(async () => {
+    setLoading(true)
+    const { data, error } = await supabase
+      .from('social_content_bank')
+      .select('*')
+      .order('captured_on', { ascending: false })
+      .order('created_at', { ascending: false })
 
-    void loadPlanner()
-    return () => {
-      cancelled = true
-    }
+    if (error) setErrorMessage(error.message)
+    else setIdeas((data ?? []) as ContentIdea[])
+    setLoading(false)
   }, [])
 
   useEffect(() => {
-    if (!plannerLoaded) return
+    // Supabase is the external data source synchronized by this effect.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    void loadIdeas()
+  }, [loadIdeas])
 
-    try {
-      window.localStorage.setItem(plannerStorageKey, JSON.stringify({
-        weekStart,
-        platform,
-        tone,
-        audience,
-        cta,
-        inputs,
-      } satisfies StoredPlanner))
-    } catch {
-      // Keep the planner usable when browser storage is unavailable.
-    }
-  }, [audience, cta, inputs, plannerLoaded, platform, tone, weekStart])
-
-  useEffect(() => {
-    if (view !== 'facebook') return
-
-    let cancelled = false
-
-    async function loadFacebookGroups() {
-      try {
-        const { data, error } = await supabase
-          .from('facebook_groups')
-          .select('id, group_name, last_posted, last_script')
-          .order('created_at', { ascending: true })
-
-        if (error) throw error
-        if (cancelled) return
-
-        const groups = (data || []).map((group) => ({
-          id: group.id,
-          name: group.group_name,
-          lastPosted: group.last_posted || '',
-          lastScript: group.last_script,
-        }))
-
-        if (groups.length) {
-          setFacebookGroups(groups)
-          window.localStorage.removeItem(facebookGroupsStorageKey)
-          return
-        }
-
-        const savedGroups = window.localStorage.getItem(facebookGroupsStorageKey)
-        const parsedGroups: unknown = savedGroups ? JSON.parse(savedGroups) : []
-        if (Array.isArray(parsedGroups)) {
-          const validGroups = parsedGroups.filter(isFacebookGroup)
-          if (validGroups.length) {
-            const { data: migrated, error: migrationError } = await supabase
-              .from('facebook_groups')
-              .insert(validGroups.map((group) => ({
-                group_name: group.name,
-                last_posted: group.lastPosted || null,
-                last_script: group.lastScript,
-              })))
-              .select('id, group_name, last_posted, last_script')
-
-            if (migrationError) throw migrationError
-            if (cancelled) return
-
-            setFacebookGroups((migrated || []).map((group) => ({
-              id: group.id,
-              name: group.group_name,
-              lastPosted: group.last_posted || '',
-              lastScript: group.last_script,
-            })))
-            window.localStorage.removeItem(facebookGroupsStorageKey)
-          }
-        }
-      } catch (error) {
-        if (!cancelled) {
-          setFacebookGroupsError(
-            error instanceof Error ? error.message : 'Facebook groups could not be loaded.',
-          )
-        }
-      } finally {
-        if (!cancelled) setFacebookGroupsLoading(false)
-      }
-    }
-
-    void loadFacebookGroups()
-
-    return () => {
-      cancelled = true
-    }
-  }, [view])
-
-  const weekDate = useMemo(() => parseDateInput(weekStart), [weekStart])
-
-  const rotatedThemes = useMemo(() => {
-    const offset = getWeekRotationOffset(weekDate)
-    return weekdays.map(
-      (_, index) =>
-        baseThemes[(index - offset + baseThemes.length) % baseThemes.length],
-    )
-  }, [weekDate])
-
-  const posts = useMemo(() => {
-    return rotatedThemes.map((theme, index) => {
-      const date = addDays(weekDate, index)
-
-      return {
-        day: weekdays[index],
-        date,
-        theme,
-        content: generatedContent[toDateInput(date)] || generatePost({
-          theme,
-          platform,
-          tone,
-          audience,
-          cta,
-          input: inputs[theme.key],
-        }),
-      }
+  const filteredIdeas = useMemo(() => {
+    const query = search.trim().toLowerCase()
+    return ideas.filter((idea) => {
+      const matchesStatus = statusFilter === 'all' || idea.status === statusFilter
+      const matchesPillar =
+        pillarFilter === 'all' ||
+        (pillarFilter === 'unassigned' && idea.pillar === null) ||
+        idea.pillar === pillarFilter
+      const matchesSource = sourceFilter === 'all' || idea.source === sourceFilter
+      const matchesSearch =
+        !query ||
+        [idea.title, idea.what_happened, idea.contact_name, sourceFor(idea.source).label]
+          .filter(Boolean)
+          .join(' ')
+          .toLowerCase()
+          .includes(query)
+      return matchesStatus && matchesPillar && matchesSource && matchesSearch
     })
-  }, [audience, cta, generatedContent, inputs, platform, rotatedThemes, tone, weekDate])
+  }, [ideas, pillarFilter, search, sourceFilter, statusFilter])
 
-  function updateInput(key: ThemeKey, value: string) {
-    setInputs((current) => ({
+  const unassignedCount = ideas.filter((idea) => !idea.pillar).length
+  const readyCount = ideas.filter((idea) => idea.status === 'ready').length
+  const unusedCount = ideas.filter((idea) => idea.status !== 'used').length
+
+  function openCreate() {
+    setEditingId(null)
+    setForm({ ...emptyForm, capturedOn: today() })
+    setShowForm(true)
+    setErrorMessage('')
+    setSuccessMessage('')
+  }
+
+  function openEdit(idea: ContentIdea) {
+    setEditingId(idea.id)
+    setForm({
+      title: idea.title ?? '',
+      source: idea.source,
+      contactPermission: idea.contact_permission,
+      contactName: idea.contact_name ?? '',
+      whatHappened: idea.what_happened,
+      pillar: idea.pillar ?? '',
+      status: idea.status,
+      capturedOn: idea.captured_on,
+    })
+    setShowForm(true)
+    setErrorMessage('')
+    setSuccessMessage('')
+    window.scrollTo({ top: 0, behavior: 'smooth' })
+  }
+
+  function changeSource(source: SourceKey) {
+    setForm((current) => ({
       ...current,
-      [key]: value,
+      source,
+      pillar: current.pillar || sourceFor(source).suggestedPillar,
     }))
   }
 
-  async function copyPost(post: GeneratedPost, index: number) {
-    await navigator.clipboard.writeText(post.content)
-    setCopiedIndex(index)
-    window.setTimeout(() => setCopiedIndex(null), 1800)
-  }
-
-  async function generateWithAI() {
-    setIsGenerating(true)
-    setGenerationError('')
-
-    try {
-      const response = await fetch('/api/social/generate', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          platform,
-          tone,
-          audience,
-          callToAction: cta,
-          posts: posts.map((post) => ({
-            day: post.day,
-            date: post.date.toISOString().slice(0, 10),
-            theme: post.theme.label,
-            notes: inputs[post.theme.key],
-          })),
-        }),
-      })
-      const result = await response.json().catch(() => null) as {
-        posts?: Array<{ day: string; content: string }>
-        error?: string
-      } | null
-
-      if (!response.ok || !result?.posts) {
-        throw new Error(result?.error || 'The posts could not be generated.')
-      }
-
-      setGeneratedContent(Object.fromEntries(
-        result.posts.map((post, index) => [
-          toDateInput(posts[index].date),
-          post.content,
-        ]),
-      ))
-    } catch (error) {
-      setGenerationError(
-        error instanceof Error ? error.message : 'The posts could not be generated.',
-      )
-    } finally {
-      setIsGenerating(false)
+  async function saveIdea(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (!form.whatHappened.trim()) {
+      setErrorMessage('Describe what happened before saving the idea.')
+      return
     }
-  }
-
-  function updateGeneratedPost(date: Date, content: string) {
-    setGeneratedContent((current) => ({
-      ...current,
-      [toDateInput(date)]: content,
-    }))
-  }
-
-  function updateFacebookGroup(
-    id: string,
-    field: keyof Omit<FacebookGroup, 'id'>,
-    value: string,
-  ) {
-    setFacebookGroups((current) => current.map((group) => (
-      group.id === id ? { ...group, [field]: value } : group
-    )))
-  }
-
-  async function addFacebookGroup() {
-    setFacebookGroupsError('')
-    const { data, error } = await supabase
-      .from('facebook_groups')
-      .insert({ group_name: '', last_script: '' })
-      .select('id, group_name, last_posted, last_script')
-      .single()
-
-    if (error) {
-      setFacebookGroupsError(error.message)
+    if (form.contactPermission === 'yes' && !form.contactName.trim()) {
+      setErrorMessage('Add the contact name, or change the naming permission.')
       return
     }
 
-    setFacebookGroups((current) => [...current, {
-      id: data.id,
-      name: data.group_name,
-      lastPosted: data.last_posted || '',
-      lastScript: data.last_script,
-    }])
-  }
+    setSaving(true)
+    setErrorMessage('')
+    const payload = {
+      title: form.title.trim() || null,
+      source: form.source,
+      contact_permission: form.contactPermission,
+      contact_name:
+        form.contactPermission === 'yes' ? form.contactName.trim() : null,
+      what_happened: form.whatHappened.trim(),
+      pillar: form.pillar || null,
+      status: form.status,
+      captured_on: form.capturedOn,
+      updated_at: new Date().toISOString(),
+    }
+    const result = editingId
+      ? await supabase.from('social_content_bank').update(payload).eq('id', editingId)
+      : await supabase.from('social_content_bank').insert(payload)
 
-  async function saveFacebookGroup(group: FacebookGroup) {
-    setSavingGroupId(group.id)
-    setFacebookGroupsError('')
-    const { error } = await supabase
-      .from('facebook_groups')
-      .update({
-        group_name: group.name,
-        last_posted: group.lastPosted || null,
-        last_script: group.lastScript,
-        updated_at: new Date().toISOString(),
-      })
-      .eq('id', group.id)
-
-    if (error) setFacebookGroupsError(error.message)
-    setSavingGroupId(null)
-  }
-
-  async function removeFacebookGroup(group: FacebookGroup) {
-    setSavingGroupId(group.id)
-    setFacebookGroupsError('')
-    const { error } = await supabase
-      .from('facebook_groups')
-      .delete()
-      .eq('id', group.id)
-
-    if (error) {
-      setFacebookGroupsError(error.message)
-      setSavingGroupId(null)
+    if (result.error) {
+      setErrorMessage(result.error.message)
+      setSaving(false)
       return
     }
 
-    setFacebookGroups((current) => current.filter((item) => item.id !== group.id))
-    setSavingGroupId(null)
+    setSuccessMessage(editingId ? 'Content idea updated.' : 'Content idea added.')
+    setShowForm(false)
+    setEditingId(null)
+    setForm(emptyForm)
+    await loadIdeas()
+    setSaving(false)
   }
 
-  async function copyGroupScript(group: FacebookGroup) {
-    if (!group.lastScript.trim()) return
-    await navigator.clipboard.writeText(group.lastScript)
-    setCopiedGroupId(group.id)
-    window.setTimeout(() => setCopiedGroupId(null), 1800)
+  async function changeStatus(idea: ContentIdea, status: ContentStatus) {
+    setErrorMessage('')
+    const { error } = await supabase
+      .from('social_content_bank')
+      .update({ status, updated_at: new Date().toISOString() })
+      .eq('id', idea.id)
+    if (error) setErrorMessage(error.message)
+    else await loadIdeas()
   }
 
-  const pageCopy = {
-    posts: {
-      eyebrow: 'Social',
-      title: 'Generate and review social posts.',
-      description: 'Create this week\'s drafts from the notes and preferences saved in Planner Setup.',
-    },
-    planner: {
-      eyebrow: 'Planner setup',
-      title: 'Set up the week and content themes.',
-      description: 'Choose the platform, tone and audience, then add the notes used to build each post.',
-    },
-    facebook: {
-      eyebrow: 'Facebook groups',
-      title: 'Manage Facebook group outreach.',
-      description: 'Track the groups you belong to, when you last posted and the script you used.',
-    },
-  }[view]
+  async function deleteIdea(idea: ContentIdea) {
+    if (!window.confirm(`Delete “${displayTitle(idea)}”?`)) return
+    const { error } = await supabase.from('social_content_bank').delete().eq('id', idea.id)
+    if (error) setErrorMessage(error.message)
+    else {
+      setSuccessMessage('Content idea deleted.')
+      await loadIdeas()
+    }
+  }
 
   return (
     <main className="min-h-screen bg-stone-100 text-stone-900">
@@ -430,601 +350,281 @@ export function SocialWorkspace({ view }: { view: SocialView }) {
 
       <section className="border-b border-stone-200 bg-gradient-to-br from-white via-stone-50 to-red-50">
         <div className="mx-auto max-w-7xl px-4 py-10">
-          <Link href="/" className="text-sm font-bold text-red-600">
-            Back to dashboard
-          </Link>
-
-          <div className="mt-6 max-w-4xl">
-            <p className="inline-flex rounded-full bg-red-100 px-3 py-1 text-xs font-bold uppercase tracking-wide text-red-700">
-              {pageCopy.eyebrow}
-            </p>
-
-            <h1 className="mt-5 text-4xl font-black tracking-tight text-stone-950 md:text-5xl">
-              {pageCopy.title}
-            </h1>
-
-            <p className="mt-5 text-base leading-7 text-stone-600">
-              {pageCopy.description}
-            </p>
+          <div className="flex flex-col justify-between gap-6 md:flex-row md:items-end">
+            <div className="max-w-3xl">
+              <p className="inline-flex rounded-full bg-red-100 px-3 py-1 text-xs font-black uppercase tracking-wide text-red-700">
+                Social content bank
+              </p>
+              <h1 className="mt-5 text-4xl font-black tracking-tight text-stone-950 md:text-5xl">
+                Capture real stories while they are fresh.
+              </h1>
+              <p className="mt-5 text-base leading-7 text-stone-600">
+                Turn work already happening across Fixing IT into useful,
+                credible social content. Capture the raw story now; a director
+                can review the permissions and pillar later.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={openCreate}
+              className="rounded-xl bg-red-600 px-5 py-3 text-sm font-black text-white shadow-sm transition hover:bg-red-700"
+            >
+              + Capture an idea
+            </button>
           </div>
+
+          {showForm ? (
+            <form onSubmit={saveIdea} className="mt-8 rounded-2xl border border-stone-200 bg-white p-6 shadow-lg">
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <p className="text-xs font-black uppercase tracking-wide text-red-600">
+                    {editingId ? 'Edit idea' : 'New content idea'}
+                  </p>
+                  <h2 className="mt-1 text-2xl font-black text-stone-950">
+                    Capture the story, not the finished post.
+                  </h2>
+                </div>
+                <button type="button" onClick={() => setShowForm(false)} className="rounded-lg px-3 py-2 text-sm font-bold text-stone-500 hover:bg-stone-100">
+                  Close
+                </button>
+              </div>
+
+              <div className="mt-6 grid gap-6 lg:grid-cols-[0.9fr_1.1fr]">
+                <div className="space-y-5">
+                  <Field label="Source" required>
+                    <select value={form.source} onChange={(event) => changeSource(event.target.value as SourceKey)} className="form-input">
+                      {sources.map((source) => (
+                        <option key={source.key} value={source.key}>{source.label}</option>
+                      ))}
+                    </select>
+                  </Field>
+
+                  <div className="rounded-xl border border-red-100 bg-red-50 p-4">
+                    <p className="text-sm font-black text-red-800">{sourceFor(form.source).shortPrompt}</p>
+                    <p className="mt-2 text-sm leading-6 text-red-700">{sourceFor(form.source).description}</p>
+                    <p className="mt-3 text-xs font-semibold italic text-red-500">Example: {sourceFor(form.source).example}</p>
+                  </div>
+
+                  <Field label="Working title">
+                    <input value={form.title} onChange={(event) => setForm({ ...form, title: event.target.value })} className="form-input" placeholder="A short label to find this idea later" />
+                  </Field>
+
+                  <Field label="Captured on" required>
+                    <input required type="date" value={form.capturedOn} onChange={(event) => setForm({ ...form, capturedOn: event.target.value })} className="form-input" />
+                  </Field>
+                </div>
+
+                <div className="space-y-5">
+                  <Field label="What happened?" required>
+                    <textarea required rows={7} maxLength={10000} value={form.whatHappened} onChange={(event) => setForm({ ...form, whatHappened: event.target.value })} className="form-input resize-y" placeholder="What was the situation? What did we notice or do? What changed, and why would a client care?" />
+                  </Field>
+
+                  <div className="grid gap-4 sm:grid-cols-2">
+                    <Field label="Can we name the contact?" required>
+                      <select value={form.contactPermission} onChange={(event) => setForm({ ...form, contactPermission: event.target.value as Permission, contactName: event.target.value === 'yes' ? form.contactName : '' })} className="form-input">
+                        <option value="not_asked">Not asked yet</option>
+                        <option value="yes">Yes — permission confirmed</option>
+                        <option value="no">No — anonymise this</option>
+                      </select>
+                    </Field>
+                    {form.contactPermission === 'yes' ? (
+                      <Field label="Contact name" required>
+                        <input required value={form.contactName} onChange={(event) => setForm({ ...form, contactName: event.target.value })} className="form-input" placeholder="Name or approved business name" />
+                      </Field>
+                    ) : (
+                      <div className="rounded-xl bg-stone-50 p-4 text-sm text-stone-500">
+                        {form.contactPermission === 'no'
+                          ? 'The story will be treated as anonymous.'
+                          : 'A director can confirm permission during review.'}
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="grid gap-4 sm:grid-cols-2">
+                    <Field label="Content pillar">
+                      <select value={form.pillar} onChange={(event) => setForm({ ...form, pillar: event.target.value as '' | PillarKey })} className="form-input">
+                        <option value="">Leave for director to review</option>
+                        {(Object.keys(pillars) as PillarKey[]).map((pillar) => (
+                          <option key={pillar} value={pillar}>{pillars[pillar].label}</option>
+                        ))}
+                      </select>
+                    </Field>
+                    <Field label="Workflow status">
+                      <select value={form.status} onChange={(event) => setForm({ ...form, status: event.target.value as ContentStatus })} className="form-input">
+                        {(Object.keys(statusLabels) as ContentStatus[]).map((status) => (
+                          <option key={status} value={status}>{statusLabels[status]}</option>
+                        ))}
+                      </select>
+                    </Field>
+                  </div>
+                </div>
+              </div>
+
+              <div className="mt-6 flex justify-end gap-3 border-t border-stone-100 pt-5">
+                <button type="button" onClick={() => setShowForm(false)} className="rounded-xl border border-stone-200 px-5 py-3 text-sm font-bold text-stone-700 hover:bg-stone-50">Cancel</button>
+                <button disabled={saving} className="rounded-xl bg-red-600 px-5 py-3 text-sm font-black text-white hover:bg-red-700 disabled:opacity-50">
+                  {saving ? 'Saving...' : editingId ? 'Save changes' : 'Add to content bank'}
+                </button>
+              </div>
+            </form>
+          ) : null}
         </div>
       </section>
 
       <section className="mx-auto max-w-7xl px-4 py-8">
-        {view === 'planner' ? (
-          <div className="grid gap-6 lg:grid-cols-[0.75fr_1.25fr]">
-          <section className="rounded-2xl border border-stone-200 bg-white p-6 shadow-sm">
-            <h2 className="text-xl font-black text-stone-950">
-              Planner setup
-            </h2>
+        {errorMessage ? <p className="mb-5 rounded-xl bg-red-50 p-4 text-sm font-semibold text-red-700">{errorMessage}</p> : null}
+        {successMessage ? <p className="mb-5 rounded-xl bg-emerald-50 p-4 text-sm font-semibold text-emerald-700">{successMessage}</p> : null}
 
-            <div className="mt-5 grid gap-4">
-              <label className="block">
-                <span className="text-xs font-black uppercase tracking-wide text-stone-500">
-                  Week starting
-                </span>
-                <input
-                  type="date"
-                  value={weekStart}
-                  onChange={(event) => setWeekStart(event.target.value)}
-                  className="mt-1 w-full rounded-xl border border-stone-300 bg-white px-3 py-2 text-sm outline-none focus:border-red-500 focus:ring-4 focus:ring-red-50"
-                />
-              </label>
+        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+          <Summary label="All ideas" value={ideas.length} />
+          <Summary label="Unused ideas" value={unusedCount} />
+          <Summary label="Ready to write" value={readyCount} accent />
+          <Summary label="Pillar not assigned" value={unassignedCount} warning={unassignedCount > 0} />
+        </div>
 
-              <div className="grid gap-4 sm:grid-cols-2">
-                <Select
-                  label="Platform"
-                  value={platform}
-                  options={platformOptions}
-                  onChange={setPlatform}
-                />
+        <PillarGuide />
+        <SourceGuide />
 
-                <Select
-                  label="Tone"
-                  value={tone}
-                  options={toneOptions}
-                  onChange={setTone}
-                />
-              </div>
+        <div className="mt-8 rounded-2xl border border-stone-200 bg-white p-4 shadow-sm">
+          <div className="grid gap-3 lg:grid-cols-[1fr_auto_auto_auto]">
+            <input value={search} onChange={(event) => setSearch(event.target.value)} className="form-input" placeholder="Search stories, contacts or titles..." />
+            <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value as 'all' | ContentStatus)} className="form-input lg:w-44">
+              <option value="all">All statuses</option>
+              {(Object.keys(statusLabels) as ContentStatus[]).map((status) => <option key={status} value={status}>{statusLabels[status]}</option>)}
+            </select>
+            <select value={pillarFilter} onChange={(event) => setPillarFilter(event.target.value as 'all' | 'unassigned' | PillarKey)} className="form-input lg:w-44">
+              <option value="all">All pillars</option>
+              <option value="unassigned">Not assigned</option>
+              {(Object.keys(pillars) as PillarKey[]).map((pillar) => <option key={pillar} value={pillar}>{pillars[pillar].label}</option>)}
+            </select>
+            <select value={sourceFilter} onChange={(event) => setSourceFilter(event.target.value as 'all' | SourceKey)} className="form-input lg:w-56">
+              <option value="all">All sources</option>
+              {sources.map((source) => <option key={source.key} value={source.key}>{source.label}</option>)}
+            </select>
+          </div>
+        </div>
 
-              <Textarea
-                label="Audience"
-                value={audience}
-                onChange={setAudience}
-                rows={3}
-              />
-
-              <Textarea
-                label="Default call to action"
-                value={cta}
-                onChange={setCta}
-                rows={3}
-              />
-            </div>
-
-            <div className="mt-6 rounded-2xl border border-stone-200 bg-stone-50 p-4">
-              <p className="text-xs font-black uppercase tracking-wide text-stone-500">
-                This week&apos;s rotation
-              </p>
-
-              <div className="mt-3 space-y-2">
-                {rotatedThemes.map((theme, index) => (
-                  <div
-                    key={`${theme.key}-${weekdays[index]}`}
-                    className="flex items-center justify-between gap-3 rounded-xl bg-white px-3 py-2 text-sm"
-                  >
-                    <span className="font-black text-stone-950">
-                      {weekdays[index]}
-                    </span>
-                    <span className="text-right font-semibold text-stone-600">
-                      {theme.shortLabel}
-                    </span>
-                  </div>
-                ))}
-              </div>
-            </div>
-          </section>
-
-          <section className="rounded-2xl border border-stone-200 bg-white p-6 shadow-sm">
-            <h2 className="text-xl font-black text-stone-950">
-              Content notes
-            </h2>
-
-            <p className="mt-1 text-sm text-stone-500">
-              Add the subject and any useful details for each content type.
-              Each post is rebuilt around your notes as you type.
+        {loading ? (
+          <div className="mt-6 rounded-2xl border border-stone-200 bg-white p-8 text-sm text-stone-500">Loading content bank...</div>
+        ) : filteredIdeas.length === 0 ? (
+          <div className="mt-6 rounded-2xl border border-dashed border-stone-300 bg-white px-6 py-14 text-center">
+            <h2 className="text-xl font-black text-stone-900">{ideas.length ? 'No ideas match these filters.' : 'The content bank is ready.'}</h2>
+            <p className="mx-auto mt-2 max-w-lg text-sm leading-6 text-stone-500">
+              {ideas.length ? 'Try clearing a filter.' : 'Start with one useful support ticket, repeated client question, or team win from this week.'}
             </p>
-
-            <div className="mt-5 grid gap-4">
-              {baseThemes.map((theme) => (
-                <Textarea
-                  key={theme.key}
-                  label={theme.label}
-                  helper={theme.helper}
-                  value={inputs[theme.key]}
-                  onChange={(value) => updateInput(theme.key, value)}
-                  rows={3}
-                />
-              ))}
-            </div>
-          </section>
+            {!ideas.length ? <button type="button" onClick={openCreate} className="mt-5 rounded-xl bg-red-600 px-5 py-3 text-sm font-black text-white">Capture the first idea</button> : null}
           </div>
-        ) : null}
-
-        {view === 'facebook' ? (
-          <section className="rounded-2xl border border-stone-200 bg-white shadow-sm">
-          <div className="flex flex-col gap-4 border-b border-stone-200 p-5 sm:flex-row sm:items-center sm:justify-between">
-            <div>
-              <p className="text-xs font-black uppercase tracking-wide text-blue-700">
-                Facebook outreach
-              </p>
-              <h2 className="mt-1 text-xl font-black text-stone-950">
-                Groups we&apos;re members of
-              </h2>
-              <p className="mt-1 text-sm text-stone-500">
-                Keep track of where you post, when you last posted and the script you used.
-              </p>
-            </div>
-
-            <button
-              type="button"
-              onClick={addFacebookGroup}
-              disabled={facebookGroupsLoading}
-              className="shrink-0 rounded-xl bg-blue-700 px-5 py-3 text-sm font-bold text-white transition hover:bg-blue-800 disabled:cursor-wait disabled:opacity-50"
-            >
-              Add Facebook group
-            </button>
-          </div>
-
-          <div className="p-5">
-            {facebookGroupsError ? (
-              <p role="alert" className="mb-4 rounded-xl bg-red-50 px-4 py-3 text-sm font-semibold text-red-700">
-                {facebookGroupsError}
-              </p>
-            ) : null}
-
-            {facebookGroupsLoading ? (
-              <div className="rounded-2xl border border-dashed border-stone-300 bg-stone-50 px-5 py-10 text-center">
-                <p className="font-bold text-stone-700">Loading Facebook groups…</p>
-              </div>
-            ) : facebookGroups.length ? (
-              <div className="grid gap-4 lg:grid-cols-2">
-                {facebookGroups.map((group, index) => (
-                  <article
-                    key={group.id}
-                    className="rounded-2xl border border-stone-200 bg-stone-50 p-4"
-                  >
-                    <div className="flex items-center justify-between gap-3">
-                      <h3 className="font-black text-stone-950">
-                        {group.name.trim() || 'Untitled Facebook group'}
-                      </h3>
-                      <button
-                        type="button"
-                        onClick={() => removeFacebookGroup(group)}
-                        disabled={savingGroupId === group.id}
-                        className="text-sm font-bold text-stone-500 transition hover:text-red-700"
-                        aria-label={`Remove ${group.name || `Facebook group ${index + 1}`}`}
-                      >
-                        {savingGroupId === group.id ? 'Saving…' : 'Remove'}
-                      </button>
-                    </div>
-
-                    <div className="mt-4 grid gap-4 sm:grid-cols-[1fr_12rem]">
-                      <label className="block">
-                        <span className="text-xs font-black uppercase tracking-wide text-stone-500">
-                          Group name
-                        </span>
-                        <input
-                          type="text"
-                          value={group.name}
-                          onChange={(event) => updateFacebookGroup(group.id, 'name', event.target.value)}
-                          onBlur={() => saveFacebookGroup(group)}
-                          placeholder="e.g. Local Business Network"
-                          className="mt-1 w-full rounded-xl border border-stone-300 bg-white px-3 py-2 text-sm outline-none focus:border-blue-600 focus:ring-4 focus:ring-blue-50"
-                        />
-                      </label>
-
-                      <label className="block">
-                        <span className="text-xs font-black uppercase tracking-wide text-stone-500">
-                          Last posted
-                        </span>
-                        <input
-                          type="date"
-                          value={group.lastPosted}
-                          onChange={(event) => updateFacebookGroup(group.id, 'lastPosted', event.target.value)}
-                          onBlur={() => saveFacebookGroup(group)}
-                          className="mt-1 w-full rounded-xl border border-stone-300 bg-white px-3 py-2 text-sm outline-none focus:border-blue-600 focus:ring-4 focus:ring-blue-50"
-                        />
-                      </label>
-                    </div>
-
-                    <label className="mt-4 block">
-                      <span className="text-xs font-black uppercase tracking-wide text-stone-500">
-                        Last used script
-                      </span>
-                      <textarea
-                        value={group.lastScript}
-                        onChange={(event) => updateFacebookGroup(group.id, 'lastScript', event.target.value)}
-                        onBlur={() => saveFacebookGroup(group)}
-                        rows={6}
-                        placeholder="Paste the last script you posted in this group…"
-                        className="mt-1 w-full resize-y rounded-xl border border-stone-300 bg-white px-3 py-2 text-sm leading-6 outline-none focus:border-blue-600 focus:ring-4 focus:ring-blue-50"
-                      />
-                    </label>
-
-                    <button
-                      type="button"
-                      onClick={() => copyGroupScript(group)}
-                      disabled={!group.lastScript.trim()}
-                      className="mt-3 rounded-xl bg-stone-950 px-4 py-2 text-sm font-bold text-white transition hover:bg-stone-800 disabled:cursor-not-allowed disabled:opacity-40"
-                    >
-                      {copiedGroupId === group.id ? 'Copied' : 'Copy last script'}
-                    </button>
-                  </article>
-                ))}
-              </div>
-            ) : (
-              <div className="rounded-2xl border border-dashed border-stone-300 bg-stone-50 px-5 py-10 text-center">
-                <p className="font-bold text-stone-700">No Facebook groups added yet.</p>
-                <p className="mt-1 text-sm text-stone-500">
-                  Add your first group to start tracking your posts.
-                </p>
-              </div>
-            )}
-          </div>
-          </section>
-        ) : null}
-
-        {view === 'posts' ? (
-          <section className="rounded-2xl border border-stone-200 bg-white shadow-sm">
-          <div className="border-b border-stone-200 p-5">
-            <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-              <div>
-                <h2 className="text-xl font-black text-stone-950">
-                  Generated posts
-                </h2>
-                <p className="mt-1 text-sm text-stone-500">
-                  Generate with AI, then review and edit every post before publishing.
-                </p>
-              </div>
-
-              <button
-                type="button"
-                onClick={generateWithAI}
-                disabled={isGenerating}
-                className="rounded-xl bg-stone-950 px-5 py-3 text-sm font-bold text-white transition hover:bg-stone-800 disabled:cursor-wait disabled:opacity-60"
-              >
-                {isGenerating ? 'Generating five posts…' : 'Generate with AI'}
-              </button>
-            </div>
-
-            {generationError ? (
-              <p role="alert" className="mt-4 rounded-xl bg-red-50 px-4 py-3 text-sm font-semibold text-red-700">
-                {generationError}
-              </p>
-            ) : null}
-          </div>
-
-          <div className="grid gap-4 p-5 lg:grid-cols-5">
-            {posts.map((post, index) => (
-              <article
-                key={`${post.day}-${post.theme.key}`}
-                className="flex min-h-full flex-col rounded-2xl border border-stone-200 bg-stone-50 p-4"
-              >
-                <div>
-                  <p className="text-xs font-black uppercase tracking-wide text-red-600">
-                    {post.day} · {formatDate(post.date)}
-                  </p>
-                  <h3 className="mt-2 text-lg font-black text-stone-950">
-                    {post.theme.shortLabel}
-                  </h3>
-                </div>
-
-                <textarea
-                  value={post.content}
-                  onChange={(event) => updateGeneratedPost(post.date, event.target.value)}
-                  rows={13}
-                  className="mt-4 min-h-80 w-full flex-1 resize-none rounded-xl border border-stone-200 bg-white px-3 py-3 text-sm leading-6 text-stone-800 outline-none"
-                />
-
-                <button
-                  type="button"
-                  onClick={() => copyPost(post, index)}
-                  className="mt-4 rounded-xl bg-red-600 px-4 py-2 text-sm font-bold text-white transition hover:bg-red-700"
-                >
-                  {copiedIndex === index ? 'Copied' : 'Copy post'}
-                </button>
-              </article>
+        ) : (
+          <div className="mt-6 grid gap-5 lg:grid-cols-2">
+            {filteredIdeas.map((idea) => (
+              <IdeaCard key={idea.id} idea={idea} onEdit={() => openEdit(idea)} onDelete={() => void deleteIdea(idea)} onStatus={(status) => void changeStatus(idea, status)} />
             ))}
           </div>
-          </section>
-        ) : null}
+        )}
       </section>
     </main>
   )
 }
 
-function isFacebookGroup(value: unknown): value is FacebookGroup {
-  if (!value || typeof value !== 'object') return false
-
-  const group = value as Record<string, unknown>
-  return typeof group.id === 'string'
-    && typeof group.name === 'string'
-    && typeof group.lastPosted === 'string'
-    && typeof group.lastScript === 'string'
-}
-
-function isStoredPlanner(value: unknown): value is StoredPlanner {
-  if (!value || typeof value !== 'object') return false
-
-  const planner = value as Record<string, unknown>
-  const storedInputs = planner.inputs
-
-  return typeof planner.weekStart === 'string'
-    && typeof planner.platform === 'string'
-    && typeof planner.tone === 'string'
-    && typeof planner.audience === 'string'
-    && typeof planner.cta === 'string'
-    && !!storedInputs
-    && typeof storedInputs === 'object'
-    && baseThemes.every((theme) => (
-      typeof (storedInputs as Record<string, unknown>)[theme.key] === 'string'
-    ))
-}
-
-function generatePost({
-  theme,
-  platform,
-  tone,
-  audience,
-  cta,
-  input,
-}: {
-  theme: Theme
-  platform: string
-  tone: string
-  audience: string
-  cta: string
-  input: string
-}) {
-  const note = formatNotes(input)
-  const audienceLine = audience.trim() || 'small business owners and managers'
-  const ctaLine = cta.trim()
-
-  if (!note) {
-    return 'Add your content notes above and this post will be recreated around that subject.'
-  }
-
-  const opening = getOpening(theme.key, tone)
-  const subject = buildSubject(note)
-  const insight = getKeywordInsight(note, theme.key)
-  const callToAction = ctaLine ? `\n\n${ctaLine}` : ''
-  const platformTail = platform === 'Instagram'
-    ? `\n\n${buildHashtags(note)}`
-    : ''
-
-  if (theme.key === 'work') {
-    return `${opening}\n\n${subject}\n\n${insight}\n\nFor ${audienceLine}, this kind of work can make the day-to-day experience simpler, more reliable and less frustrating.\n\nCould the same issue be quietly costing your team time or confidence?${callToAction}${platformTail}`
-  }
-
-  if (theme.key === 'personal') {
-    return `${opening}\n\n${subject}\n\n${insight}\n\nIt has been a useful reminder that the way we work matters just as much as the tools we use. For ${audienceLine}, a clear and practical approach can make a complicated situation feel much more manageable.${callToAction}${platformTail}`
-  }
-
-  if (theme.key === 'testimonial') {
-    return `${opening}\n\n“${note}”\n\n${insight}\n\nFeedback like this matters because it shows the difference the right support can make. The result is not only a solved problem; it is more clarity, confidence and breathing room for the people running the business.${callToAction}${platformTail}`
-  }
-
-  if (theme.key === 'it-now') {
-    return `${opening}\n\n${subject}\n\n${insight}\n\nFor ${audienceLine}, the important thing is not to treat this as background noise. Understanding how it could affect the business makes it much easier to decide what needs attention now and what can wait.\n\nA sensible next step is to review how this applies to your own systems and team.${callToAction}${platformTail}`
-  }
-
-  return `${opening}\n\n${subject}\n\n${insight}\n\nThe thread running through it all is that small, well-chosen improvements can make work feel safer, smoother and easier to manage. That is a useful thought for ${audienceLine} to carry into next week.${callToAction}${platformTail}`
-}
-
-function buildSubject(note: string) {
-  const compact = note.replace(/\s+/g, ' ').trim()
-
-  if (compact.split(/\s+/).length > 8 || /[.!?]$/.test(compact)) {
-    return compact
-  }
-
-  const topics = compact
-    .split(/\s*(?:,|;|\/|\||\band\b)\s*/i)
-    .map((topic) => topic.trim())
-    .filter(Boolean)
-
-  if (topics.length === 1) return `The focus is ${lowerFirst(topics[0])}.`
-
-  const last = lowerFirst(topics.at(-1) || '')
-  return `The focus is ${topics.slice(0, -1).map(lowerFirst).join(', ')} and ${last}.`
-}
-
-function lowerFirst(value: string) {
-  return value.charAt(0).toLocaleLowerCase('en-GB') + value.slice(1)
-}
-
-function getKeywordInsight(note: string, theme: ThemeKey) {
-  const insights: Array<[RegExp, string]> = [
-    [/\b(cyber(?:security| security)?|security|ransomware)\b/i, 'Good cyber security is built from protected accounts, updated devices, reliable backups and a team that knows what to look out for.'],
-    [/\b(phishing|scam|fraud|suspicious email)\b/i, 'A quick pause before clicking, sharing details or approving a payment can prevent a convincing message from becoming a costly incident.'],
-    [/\b(backup|backups|business continuity|disaster recovery)\b/i, 'A backup only provides peace of mind when it is protected, checked regularly and can be restored quickly.'],
-    [/\b(microsoft 365|m365|teams|sharepoint|onedrive)\b/i, 'The biggest gains from Microsoft 365 come from configuring everyday tools properly and helping the team use them consistently.'],
-    [/\b(ai|artificial intelligence|copilot|automation)\b/i, 'AI is most useful when it solves a clear problem and includes sensible checks around data and accuracy.'],
-    [/\b(password|passwords|mfa|2fa|multi-factor|multifactor)\b/i, 'Strong, unique passwords and multi-factor authentication are two simple ways to reduce account risk.'],
-    [/\b(slow|speed|performance|response time|downtime|reliability)\b/i, 'Small delays add up across a team, so finding the cause can recover useful time and reduce frustration.'],
-    [/\b(cloud|cloud migration|remote work|hybrid work)\b/i, 'Cloud tools work best when access, security and day-to-day usability are planned together.'],
-  ]
-  const matched = insights.filter(([pattern]) => pattern.test(note)).slice(0, 2)
-  if (matched.length) return matched.map(([, insight]) => insight).join(' ')
-
-  const fallbacks: Record<ThemeKey, string> = {
-    work: 'The aim is to understand the real cause, make a practical improvement and leave things easier to manage afterwards.',
-    personal: 'The useful lessons are often simple: be clear about the goal, listen carefully and keep the next step practical.',
-    testimonial: 'The strongest results are the ones people notice: less uncertainty, less interruption and more confidence.',
-    'it-now': 'The useful question is what this means in practice and whether the business needs to act.',
-    recap: 'Looking back helps turn a busy week into a useful lesson and a clear priority for what comes next.',
-  }
-  return fallbacks[theme]
-}
-
-function buildHashtags(note: string) {
-  const tags: Array<[RegExp, string]> = [
-    [/\b(cyber|security|ransomware)\b/i, '#CyberSecurity'],
-    [/\b(phishing|scam|fraud)\b/i, '#PhishingAwareness'],
-    [/\b(backup|continuity|recovery)\b/i, '#BusinessContinuity'],
-    [/\b(microsoft 365|m365|teams|sharepoint|onedrive)\b/i, '#Microsoft365'],
-    [/\b(ai|copilot|automation)\b/i, '#BusinessAI'],
-    [/\b(cloud|remote work|hybrid work)\b/i, '#CloudComputing'],
-  ]
-  const topicTags = tags
-    .filter(([pattern]) => pattern.test(note))
-    .map(([, tag]) => tag)
-    .slice(0, 2)
-  return [...topicTags, '#SmallBusinessIT', '#BusinessSupport'].join(' ')
-}
-function getOpening(theme: ThemeKey, tone: string) {
-  const openings: Record<ThemeKey, Record<string, string>> = {
-    work: {
-      Helpful: 'Here is a look at something we are working on this week.',
-      'Plain English': 'This week, we are working on something practical.',
-      Warm: 'A little look behind the scenes at what we are working on this week.',
-      Direct: 'This is what we are working on this week.',
-    },
-    personal: {
-      Helpful: 'A lesson from behind the scenes this week.',
-      'Plain English': 'A thought from running the business this week.',
-      Warm: 'A small behind-the-scenes thought from this week.',
-      Direct: 'One thing stood out to me this week.',
-    },
-    testimonial: {
-      Helpful: 'This customer feedback captures the result we aim for.',
-      'Plain English': 'A customer shared this with us.',
-      Warm: 'It is always lovely to receive feedback like this.',
-      Direct: 'This is what good support should deliver.',
-    },
-    'it-now': {
-      Helpful: 'Here is something worth knowing about in IT right now.',
-      'Plain English': 'Something important is happening in IT right now.',
-      Warm: 'A friendly heads-up about something happening in IT right now.',
-      Direct: 'This IT issue deserves attention now.',
-    },
-    recap: {
-      Helpful: 'A useful recap from this week.',
-      'Plain English': 'Here is what stood out this week.',
-      Warm: 'A quick Friday look back at the week.',
-      Direct: 'This week in brief.',
-    },
-  }
-
-  return openings[theme][tone] || openings[theme]['Plain English']
-}
-
-function formatNotes(value: string) {
-  return value
-    .trim()
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .join('\n\n')
-}
-
-function Select({
-  label,
-  value,
-  options,
-  onChange,
-}: {
-  label: string
-  value: string
-  options: string[]
-  onChange: (value: string) => void
-}) {
+function PillarGuide() {
   return (
-    <label className="block">
-      <span className="text-xs font-black uppercase tracking-wide text-stone-500">
-        {label}
-      </span>
-      <select
-        value={value}
-        onChange={(event) => onChange(event.target.value)}
-        className="mt-1 w-full rounded-xl border border-stone-300 bg-white px-3 py-2 text-sm font-semibold outline-none focus:border-red-500 focus:ring-4 focus:ring-red-50"
-      >
-        {options.map((option) => (
-          <option key={option} value={option}>
-            {option}
-          </option>
+    <section className="mt-8 rounded-2xl border border-stone-200 bg-white p-6 shadow-sm">
+      <div>
+        <p className="text-xs font-black uppercase tracking-[0.18em] text-red-600">What the pillars mean</p>
+        <h2 className="mt-1 text-2xl font-black text-stone-950">Choose the job the post needs to do.</h2>
+        <p className="mt-2 max-w-3xl text-sm leading-6 text-stone-500">The pillar is not the topic. It is the reason the post deserves to exist for the reader. If the answer is unclear, leave it unassigned for a director to review.</p>
+      </div>
+      <div className="mt-5 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+        {(Object.keys(pillars) as PillarKey[]).map((key) => {
+          const pillar = pillars[key]
+          return (
+            <article key={key} className="rounded-xl border border-stone-200 p-4">
+              <span className={`inline-flex rounded-full px-2.5 py-1 text-xs font-black ${pillar.style}`}>{pillar.label}</span>
+              <h3 className="mt-3 font-black text-stone-900">{pillar.promise}</h3>
+              <p className="mt-2 text-sm leading-6 text-stone-600">{pillar.description}</p>
+              <p className="mt-3 border-t border-stone-100 pt-3 text-xs font-bold leading-5 text-stone-500">{pillar.test}</p>
+            </article>
+          )
+        })}
+      </div>
+    </section>
+  )
+}
+
+function SourceGuide() {
+  return (
+    <details className="mt-5 rounded-2xl border border-stone-200 bg-white shadow-sm">
+      <summary className="cursor-pointer list-none px-6 py-5 [&::-webkit-details-marker]:hidden">
+        <div className="flex items-center justify-between gap-4">
+          <div>
+            <p className="text-xs font-black uppercase tracking-[0.18em] text-red-600">Idea prompts</p>
+            <h2 className="mt-1 text-xl font-black text-stone-950">Where content comes from</h2>
+          </div>
+          <span className="rounded-lg bg-stone-100 px-3 py-2 text-xs font-black text-stone-600">Show 8 sources ▾</span>
+        </div>
+      </summary>
+      <div className="grid gap-3 border-t border-stone-100 p-6 md:grid-cols-2">
+        {sources.map((source) => (
+          <div key={source.key} className="rounded-xl bg-stone-50 p-4">
+            <h3 className="font-black text-stone-900">{source.label}</h3>
+            <p className="mt-1 text-sm leading-6 text-stone-600">{source.description}</p>
+            <p className="mt-2 text-xs font-bold text-red-600">Often fits: {pillars[source.suggestedPillar].label}</p>
+          </div>
         ))}
-      </select>
-    </label>
+      </div>
+    </details>
   )
 }
 
-function Textarea({
-  label,
-  helper,
-  value,
-  onChange,
-  rows,
-}: {
-  label: string
-  helper?: string
-  value: string
-  onChange: (value: string) => void
-  rows: number
-}) {
+function IdeaCard({ idea, onEdit, onDelete, onStatus }: { idea: ContentIdea; onEdit: () => void; onDelete: () => void; onStatus: (status: ContentStatus) => void }) {
+  const source = sourceFor(idea.source)
   return (
-    <label className="block">
-      <span className="text-xs font-black uppercase tracking-wide text-stone-500">
-        {label}
-      </span>
-      <textarea
-        value={value}
-        onChange={(event) => onChange(event.target.value)}
-        rows={rows}
-        className="mt-1 w-full resize-y rounded-xl border border-stone-300 bg-white px-3 py-2 text-sm leading-6 outline-none focus:border-red-500 focus:ring-4 focus:ring-red-50"
-      />
-      {helper ? (
-        <span className="mt-1 block text-xs text-stone-500">{helper}</span>
-      ) : null}
-    </label>
+    <article className="rounded-2xl border border-stone-200 bg-white p-5 shadow-sm">
+      <div className="flex items-start justify-between gap-4">
+        <div className="min-w-0">
+          <div className="flex flex-wrap gap-2">
+            <span className="rounded-full bg-stone-100 px-2.5 py-1 text-xs font-black text-stone-600">{source.label}</span>
+            {idea.pillar ? <span className={`rounded-full px-2.5 py-1 text-xs font-black ${pillars[idea.pillar].style}`}>{pillars[idea.pillar].label}</span> : <span className="rounded-full bg-red-50 px-2.5 py-1 text-xs font-black text-red-600">Pillar needed</span>}
+          </div>
+          <h2 className="mt-3 text-xl font-black text-stone-950">{displayTitle(idea)}</h2>
+        </div>
+        <button type="button" onClick={onEdit} className="rounded-lg px-3 py-2 text-sm font-bold text-stone-500 hover:bg-stone-100">Edit</button>
+      </div>
+      <p className="mt-3 whitespace-pre-wrap text-sm leading-6 text-stone-600">{idea.what_happened}</p>
+      <div className="mt-4 grid gap-3 sm:grid-cols-2">
+        <Info label="Contact naming" value={idea.contact_permission === 'yes' ? `Approved: ${idea.contact_name}` : idea.contact_permission === 'no' ? 'Anonymise' : 'Permission not asked'} />
+        <Info label="Captured" value={formatDate(idea.captured_on)} />
+      </div>
+      <div className="mt-5 flex flex-wrap items-center justify-between gap-3 border-t border-stone-100 pt-4">
+        <select value={idea.status} onChange={(event) => onStatus(event.target.value as ContentStatus)} className="rounded-lg border border-stone-200 bg-stone-50 px-3 py-2 text-xs font-black text-stone-700">
+          {(Object.keys(statusLabels) as ContentStatus[]).map((status) => <option key={status} value={status}>{statusLabels[status]}</option>)}
+        </select>
+        <button type="button" onClick={onDelete} className="rounded-lg px-3 py-2 text-xs font-bold text-stone-400 hover:bg-red-50 hover:text-red-600">Delete</button>
+      </div>
+    </article>
   )
 }
 
-function getMonday(date: Date) {
-  const copy = new Date(date)
-  const day = copy.getDay()
-  const diff = day === 0 ? -6 : 1 - day
-  copy.setDate(copy.getDate() + diff)
-  return toDateInput(copy)
+function Field({ label, required = false, children }: { label: string; required?: boolean; children: React.ReactNode }) {
+  return <label className="block"><span className="mb-2 block text-sm font-black text-stone-700">{label}{required ? <span className="text-red-600"> *</span> : null}</span>{children}</label>
 }
 
-function parseDateInput(value: string) {
-  const parsed = new Date(`${value}T00:00:00`)
-  if (!Number.isNaN(parsed.getTime())) return parsed
-  return new Date()
+function Summary({ label, value, accent = false, warning = false }: { label: string; value: number; accent?: boolean; warning?: boolean }) {
+  return <div className={`rounded-2xl border bg-white p-5 shadow-sm ${accent ? 'border-emerald-200 ring-4 ring-emerald-50' : warning ? 'border-amber-200' : 'border-stone-200'}`}><p className="text-sm font-bold text-stone-500">{label}</p><p className={`mt-3 text-4xl font-black ${accent ? 'text-emerald-600' : warning ? 'text-amber-700' : 'text-stone-950'}`}>{value}</p></div>
 }
 
-function addDays(date: Date, days: number) {
-  const copy = new Date(date)
-  copy.setDate(copy.getDate() + days)
-  return copy
+function Info({ label, value }: { label: string; value: string }) {
+  return <div className="rounded-xl bg-stone-50 p-3"><p className="text-[10px] font-black uppercase tracking-wide text-stone-400">{label}</p><p className="mt-1 text-sm font-bold text-stone-700">{value}</p></div>
 }
 
-function getWeekRotationOffset(date: Date) {
-  const start = new Date(date.getFullYear(), 0, 1)
-  const diffMs = date.getTime() - start.getTime()
-  const weekNumber = Math.floor(diffMs / 1000 / 60 / 60 / 24 / 7)
-  return weekNumber % baseThemes.length
+function sourceFor(key: SourceKey) {
+  return sources.find((source) => source.key === key) ?? sources[0]
 }
 
-function toDateInput(date: Date) {
-  return date.toISOString().slice(0, 10)
+function displayTitle(idea: ContentIdea) {
+  return idea.title?.trim() || `${sourceFor(idea.source).label} idea`
 }
 
-function formatDate(date: Date) {
-  return date.toLocaleDateString('en-GB', {
-    day: '2-digit',
-    month: 'short',
-  })
+function formatDate(value: string) {
+  return new Intl.DateTimeFormat('en-GB', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' }).format(new Date(`${value}T00:00:00Z`))
 }
