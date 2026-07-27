@@ -108,6 +108,7 @@ const sections: GuideSection[] = [
         <GuideList items={[
           'Open a company to see contacts, campaign history, opportunities, tasks and the activity timeline.',
           'Use “Add contact” on an open company record to create a linked decision-maker. The addition is recorded in recent activity.',
+          'Add Lead checks a contact email against existing contacts before saving it to the standard contact email field.',
           'Use Edit on the company list or Edit details on the company record to update core information.',
           'Enable “Add to recent activity” when an edit is meaningful. The CRM records the old and new values.',
           'One-click research links open the website, Google, Maps, Companies House and focused address or telephone searches.',

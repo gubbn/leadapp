@@ -216,7 +216,7 @@ export default function AddLeadPage() {
         const { data: existingContact, error: duplicateError } = await supabase
           .from('contacts')
           .select('id')
-          .eq('email_address', cleanedEmail)
+          .eq('email', cleanedEmail)
           .maybeSingle()
 
         if (duplicateError) {
@@ -239,7 +239,7 @@ export default function AddLeadPage() {
         first_name: cleanText(contactForm.first_name),
         last_name: cleanText(contactForm.last_name),
         role: cleanText(contactForm.role),
-        email_address: cleanedEmail,
+        email: cleanedEmail,
         telephone: cleanText(contactForm.telephone),
         outcome: cleanText(contactForm.outcome || companyForm.outcome),
         dnc: Boolean(contactForm.dnc || companyForm.dnc),
