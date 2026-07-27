@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import Link from 'next/link'
 import { supabase } from '@/lib/supabaseClient'
 import AppHeader from '@/app/components/AppHeader'
@@ -70,19 +70,27 @@ export default function CompaniesPage() {
     useState<RelationshipFilter>('all')
   const [dncFilter, setDncFilter] = useState<DncFilter>('all')
   const [selectedIndustries, setSelectedIndustries] = useState<string[]>([])
+  const [selectedLocations, setSelectedLocations] = useState<string[]>([])
   const [editingId, setEditingId] = useState<string | null>(null)
   const [savingId, setSavingId] = useState<string | null>(null)
   const [editDraft, setEditDraft] = useState<CompanyEditDraft | null>(null)
-
-  useEffect(() => {
-    loadCompanies()
-  }, [])
+  const [logCompanyUpdate, setLogCompanyUpdate] = useState(true)
 
   const industryOptions = useMemo(() => {
     return Array.from(
       new Set(
         companies
           .map((company) => getCompanyIndustry(company.raw))
+          .filter((value): value is string => Boolean(value)),
+      ),
+    ).sort()
+  }, [companies])
+
+  const locationOptions = useMemo(() => {
+    return Array.from(
+      new Set(
+        companies
+          .map((company) => getCompanyLocation(company.raw))
           .filter((value): value is string => Boolean(value)),
       ),
     ).sort()
@@ -117,6 +125,7 @@ export default function CompaniesPage() {
     return companies.filter((company) => {
       const relationshipStatus = getRelationshipStatus(company)
       const industry = getCompanyIndustry(company.raw)
+      const location = getCompanyLocation(company.raw)
 
       const contactSearchText = company.contacts
         .map((contact) =>
@@ -182,8 +191,18 @@ export default function CompaniesPage() {
         selectedIndustries.length === 0 ||
         selectedIndustries.includes(industry || '')
 
+      const matchesLocation =
+        selectedLocations.length === 0 ||
+        (location
+          ? selectedLocations.includes(location)
+          : selectedLocations.includes('__unknown__'))
+
       return (
-        matchesSearch && matchesRelationship && matchesDnc && matchesIndustry
+        matchesSearch &&
+        matchesRelationship &&
+        matchesDnc &&
+        matchesIndustry &&
+        matchesLocation
       )
     })
   }, [
@@ -192,7 +211,12 @@ export default function CompaniesPage() {
     relationshipFilter,
     dncFilter,
     selectedIndustries,
+    selectedLocations,
   ])
+
+  const editingCompany = editingId
+    ? companies.find((company) => company.id === editingId) || null
+    : null
 
   async function loadCompanies() {
     setLoading(true)
@@ -308,11 +332,18 @@ export default function CompaniesPage() {
     setLoading(false)
   }
 
+  useEffect(() => {
+    // The initial company load only runs once when this page mounts.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    void loadCompanies()
+  }, [])
+
   function resetFilters() {
     setSearchTerm('')
     setRelationshipFilter('all')
     setDncFilter('all')
     setSelectedIndustries([])
+    setSelectedLocations([])
     setMessage('')
     setErrorMessage('')
   }
@@ -329,6 +360,7 @@ export default function CompaniesPage() {
       dnc: getCompanyDnc(company.raw),
       relationshipStatus: getRelationshipStatus(company),
     })
+    setLogCompanyUpdate(true)
     setMessage('')
     setErrorMessage('')
   }
@@ -358,6 +390,7 @@ export default function CompaniesPage() {
   async function saveCompany(company: CompanyView) {
     if (!editDraft) return
 
+    const changeSummary = describeCompanyChanges(company, editDraft)
     setSavingId(company.id)
     setMessage('')
     setErrorMessage('')
@@ -445,7 +478,30 @@ export default function CompaniesPage() {
         ),
     )
 
-    setMessage('Company updated.')
+    let activityLogged = false
+    if (logCompanyUpdate && changeSummary) {
+      const { error: activityError } = await supabase
+        .from('crm_activities')
+        .insert({
+          company_id: company.id,
+          activity_type: 'company_update',
+          summary: changeSummary,
+        })
+
+      if (activityError) {
+        setWarningMessage(
+          `Company saved, but its activity could not be logged: ${activityError.message}`,
+        )
+      } else {
+        activityLogged = true
+      }
+    }
+
+    setMessage(
+      activityLogged
+        ? 'Company updated and added to recent activity.'
+        : 'Company updated.',
+    )
     setSavingId(null)
     setEditingId(null)
     setEditDraft(null)
@@ -529,7 +585,7 @@ export default function CompaniesPage() {
             </button>
           </div>
 
-          <div className="mt-6 grid gap-4 lg:grid-cols-[1.1fr_0.9fr_0.8fr_1fr]">
+          <div className="mt-6 grid gap-4 md:grid-cols-2 xl:grid-cols-5">
             <label className="block">
               <span className="text-xs font-black uppercase tracking-wide text-stone-500">
                 Search
@@ -596,6 +652,20 @@ export default function CompaniesPage() {
               selectedValues={selectedIndustries}
               onChange={setSelectedIndustries}
             />
+
+            <MultiSelectDropdown
+              label="Location"
+              emptyLabel="All locations"
+              options={[
+                { value: '__unknown__', label: 'Unknown' },
+                ...locationOptions.map((location) => ({
+                  value: location,
+                  label: location,
+                })),
+              ]}
+              selectedValues={selectedLocations}
+              onChange={setSelectedLocations}
+            />
           </div>
 
           <div className="mt-5 flex flex-wrap gap-2">
@@ -655,6 +725,136 @@ export default function CompaniesPage() {
           ) : null}
         </div>
 
+        {editingCompany && editDraft ? (
+          <div
+            className="fixed inset-0 z-50 flex items-center justify-center bg-stone-950/45 p-4 backdrop-blur-sm"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="edit-company-title"
+            onMouseDown={(event) => {
+              if (event.target === event.currentTarget && !savingId) cancelEdit()
+            }}
+          >
+            <form
+              onSubmit={(event) => {
+                event.preventDefault()
+                void saveCompany(editingCompany)
+              }}
+              className="max-h-[calc(100vh-2rem)] w-full max-w-3xl overflow-y-auto rounded-3xl bg-white p-6 shadow-2xl sm:p-8"
+            >
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <p className="text-xs font-black uppercase tracking-[0.18em] text-red-600">
+                    Company details
+                  </p>
+                  <h2 id="edit-company-title" className="mt-2 text-2xl font-black text-stone-950">
+                    Edit {getCompanyName(editingCompany.raw) || 'company'}
+                  </h2>
+                  <p className="mt-1 text-sm text-stone-500">
+                    Update the main record in one focused form.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={cancelEdit}
+                  disabled={Boolean(savingId)}
+                  aria-label="Close editor"
+                  className="rounded-xl border border-stone-200 px-3 py-2 font-black text-stone-500 hover:bg-stone-50"
+                >
+                  ✕
+                </button>
+              </div>
+
+              <div className="mt-7 grid gap-5 sm:grid-cols-2">
+                <EditField label="Company name">
+                  <EditorInput value={editDraft.companyName} onChange={(value) => updateDraft('companyName', value)} />
+                </EditField>
+                <EditField label="Relationship">
+                  <select
+                    value={editDraft.relationshipStatus}
+                    onChange={(event) => updateDraft('relationshipStatus', event.target.value as RelationshipStatus)}
+                    className="w-full rounded-xl border border-stone-300 bg-white px-3 py-2.5 text-sm font-semibold outline-none focus:border-red-500 focus:ring-4 focus:ring-red-50"
+                  >
+                    <option value="prospect">Prospect</option>
+                    <option value="quoted">Quoted / negotiating</option>
+                    <option value="customer">Customer / won</option>
+                    <option value="bounced">Bounced</option>
+                    <option value="negative">Negative</option>
+                    <option value="no-answer">No answer</option>
+                    <option value="other">Other</option>
+                  </select>
+                </EditField>
+                <EditField label="Industry">
+                  <EditorInput value={editDraft.industry} onChange={(value) => updateDraft('industry', value)} />
+                </EditField>
+                <EditField label="Location">
+                  <EditorInput value={editDraft.location} onChange={(value) => updateDraft('location', value)} placeholder="Village, town or city" />
+                </EditField>
+                <EditField label="Size band">
+                  <EditorInput value={editDraft.sizeBand} onChange={(value) => updateDraft('sizeBand', value)} placeholder="For example, 15–49" />
+                </EditField>
+                <EditField label="Website or domain">
+                  <EditorInput value={editDraft.domain} onChange={(value) => updateDraft('domain', value)} placeholder="example.co.uk" />
+                </EditField>
+                <EditField label="Last contact">
+                  <input
+                    type="date"
+                    value={editDraft.lastContactDate}
+                    onChange={(event) => updateDraft('lastContactDate', event.target.value)}
+                    className="w-full rounded-xl border border-stone-300 bg-white px-3 py-2.5 text-sm font-semibold outline-none focus:border-red-500 focus:ring-4 focus:ring-red-50"
+                  />
+                </EditField>
+                <label className="flex min-h-20 items-center gap-3 rounded-xl border border-stone-200 bg-stone-50 px-4 py-3">
+                  <input
+                    type="checkbox"
+                    checked={editDraft.dnc}
+                    onChange={(event) => updateDraft('dnc', event.target.checked)}
+                    className="h-5 w-5 accent-red-600"
+                  />
+                  <span>
+                    <span className="block text-sm font-black text-stone-800">Do not contact</span>
+                    <span className="block text-xs text-stone-500">Exclude this company from outreach.</span>
+                  </span>
+                </label>
+                <label className="flex min-h-20 items-center gap-3 rounded-xl border border-red-100 bg-red-50 px-4 py-3">
+                  <input
+                    type="checkbox"
+                    checked={logCompanyUpdate}
+                    onChange={(event) => setLogCompanyUpdate(event.target.checked)}
+                    className="h-5 w-5 accent-red-600"
+                  />
+                  <span>
+                    <span className="block text-sm font-black text-stone-800">
+                      Add to recent activity
+                    </span>
+                    <span className="block text-xs text-stone-500">
+                      Record a summary of the fields that changed.
+                    </span>
+                  </span>
+                </label>
+              </div>
+
+              <div className="mt-8 flex flex-col-reverse gap-3 border-t border-stone-100 pt-5 sm:flex-row sm:justify-end">
+                <button
+                  type="button"
+                  onClick={cancelEdit}
+                  disabled={Boolean(savingId)}
+                  className="rounded-xl border border-stone-300 px-5 py-3 text-sm font-black text-stone-700 hover:bg-stone-50 disabled:opacity-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={Boolean(savingId) || !editDraft.companyName.trim()}
+                  className="rounded-xl bg-red-600 px-6 py-3 text-sm font-black text-white hover:bg-red-700 disabled:opacity-50"
+                >
+                  {savingId ? 'Saving changes…' : 'Save company'}
+                </button>
+              </div>
+            </form>
+          </div>
+        ) : null}
+
         <div className="mt-6 overflow-hidden rounded-2xl border border-stone-200 bg-white shadow-sm">
           <div className="border-b border-stone-200 p-5">
             <h2 className="text-xl font-black text-stone-950">
@@ -699,7 +899,7 @@ export default function CompaniesPage() {
                   </tr>
                 ) : (
                   filteredCompanies.map((company) => {
-                    const isEditing = editingId === company.id
+                    const isEditing = false
                     const relationshipStatus = getRelationshipStatus(company)
                     const latestCampaign = getLatestCampaign(company)
                     const contactCount = company.contacts.length
@@ -1285,6 +1485,24 @@ function MultiSelectDropdown({
   selectedValues: string[]
   onChange: (values: string[]) => void
 }) {
+  const [open, setOpen] = useState(false)
+  const dropdownRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    function dismiss(event: PointerEvent) {
+      if (!dropdownRef.current?.contains(event.target as Node)) setOpen(false)
+    }
+    function dismissWithKeyboard(event: KeyboardEvent) {
+      if (event.key === 'Escape') setOpen(false)
+    }
+    document.addEventListener('pointerdown', dismiss)
+    document.addEventListener('keydown', dismissWithKeyboard)
+    return () => {
+      document.removeEventListener('pointerdown', dismiss)
+      document.removeEventListener('keydown', dismissWithKeyboard)
+    }
+  }, [])
+
   function toggleValue(value: string) {
     if (selectedValues.includes(value)) {
       onChange(selectedValues.filter((item) => item !== value))
@@ -1303,13 +1521,19 @@ function MultiSelectDropdown({
         : `${selectedValues.length} selected`
 
   return (
-    <div className="relative block">
+    <div ref={dropdownRef} className="relative block">
       <span className="text-xs font-black uppercase tracking-wide text-stone-500">
         {label}
       </span>
 
-      <details className="group mt-1">
-        <summary className="flex cursor-pointer list-none items-center justify-between rounded-xl border border-stone-300 bg-white px-3 py-2 text-sm font-semibold text-stone-800 outline-none transition hover:bg-stone-50 group-open:border-red-500 group-open:ring-4 group-open:ring-red-50">
+      <details open={open} className="group mt-1">
+        <summary
+          onClick={(event) => {
+            event.preventDefault()
+            setOpen((current) => !current)
+          }}
+          className="flex cursor-pointer list-none items-center justify-between rounded-xl border border-stone-300 bg-white px-3 py-2 text-sm font-semibold text-stone-800 outline-none transition hover:bg-stone-50 group-open:border-red-500 group-open:ring-4 group-open:ring-red-50"
+        >
           <span className="truncate">{selectedLabel}</span>
           <span className="ml-2 text-xs text-stone-400">▼</span>
         </summary>
@@ -1398,6 +1622,72 @@ function CountPill({
       {label}: {value}
     </div>
   )
+}
+
+function EditField({
+  label,
+  children,
+}: {
+  label: string
+  children: React.ReactNode
+}) {
+  return (
+    <label className="block">
+      <span className="mb-1.5 block text-xs font-black uppercase tracking-wide text-stone-500">
+        {label}
+      </span>
+      {children}
+    </label>
+  )
+}
+
+function EditorInput({
+  value,
+  onChange,
+  placeholder = '',
+}: {
+  value: string
+  onChange: (value: string) => void
+  placeholder?: string
+}) {
+  return (
+    <input
+      value={value}
+      onChange={(event) => onChange(event.target.value)}
+      placeholder={placeholder}
+      className="w-full rounded-xl border border-stone-300 bg-white px-3 py-2.5 text-sm font-semibold outline-none focus:border-red-500 focus:ring-4 focus:ring-red-50"
+    />
+  )
+}
+
+function describeCompanyChanges(
+  company: CompanyView,
+  draft: CompanyEditDraft,
+) {
+  const fields: Array<[string, string | boolean, string | boolean]> = [
+    ['Name', getCompanyName(company.raw), draft.companyName.trim()],
+    ['Relationship', getRelationshipStatus(company), draft.relationshipStatus],
+    ['Industry', getCompanyIndustry(company.raw), draft.industry.trim()],
+    ['Location', getCompanyLocation(company.raw), draft.location.trim()],
+    ['Size band', getCompanySizeBand(company.raw), draft.sizeBand.trim()],
+    ['Domain', getCompanyDomain(company.raw), draft.domain.trim()],
+    [
+      'Last contact',
+      toDateInputValue(getCompanyLastContactDate(company.raw)),
+      draft.lastContactDate,
+    ],
+    ['DNC', getCompanyDnc(company.raw), draft.dnc],
+  ]
+
+  const changes = fields
+    .filter(([, before, after]) => before !== after)
+    .map(([label, before, after]) => {
+      const from = before === '' ? 'blank' : before === true ? 'Yes' : before === false ? 'No' : before
+      const to = after === '' ? 'blank' : after === true ? 'Yes' : after === false ? 'No' : after
+      return `${label}: ${from} → ${to}`
+    })
+
+  return changes.length ? `Company details updated — ${changes.join('; ')}.` : ''
 }
 
 function SummaryCard({

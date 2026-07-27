@@ -601,11 +601,15 @@ export default function CleanupPage() {
   }, [])
 
   useEffect(() => {
+    // Initial CRM cleanup data load.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     fetchData()
   }, [fetchData])
 
   useEffect(() => {
     if (page > totalPages - 1) {
+      // Keep pagination within range when filtering reduces the result set.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setPage(Math.max(0, totalPages - 1))
     }
   }, [page, totalPages])
@@ -1272,6 +1276,8 @@ const CleanupRowCard = memo(function CleanupRowCard({
   const [dirty, setDirty] = useState(false)
 
   useEffect(() => {
+    // Synchronise the editable copy when its source row is refreshed.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setDraft(row)
     setDirty(false)
   }, [row])
@@ -1297,6 +1303,20 @@ const CleanupRowCard = memo(function CleanupRowCard({
   const isSubmitted = rowIsSubmitted(draft)
   const isReady = rowIsReady(draft)
   const needsReview = rowNeedsApprovalReview(draft)
+  const existingCompanyContacts = existingInfo.company
+    ? contactsByCompany.get(existingInfo.company.id) ?? []
+    : []
+  const hasNoContacts =
+    contactDrafts.length === 0 && existingCompanyContacts.length === 0
+  const hasNamedContactWithoutEmail =
+    contactDrafts.length > 0 && !clean(draft.email_address)
+  const contactNames = contactDrafts.map(getContactDisplayName).join(', ')
+  const contactSearchQuery = hasNamedContactWithoutEmail
+    ? `${companyName}, ${contactNames} email address`
+    : `${companyName} manager email address`
+  const contactSearchUrl = `https://www.google.com/search?q=${encodeURIComponent(
+    contactSearchQuery
+  )}`
 
   function updateField(
     field:
@@ -1393,6 +1413,17 @@ const CleanupRowCard = memo(function CleanupRowCard({
           </div>
 
           <div className="flex flex-wrap gap-2">
+            {(hasNoContacts || hasNamedContactWithoutEmail) && !needsCompany ? (
+              <a
+                href={contactSearchUrl}
+                target="_blank"
+                rel="noreferrer"
+                className={`${buttonClass} border border-amber-300 bg-amber-50 text-amber-800 hover:bg-amber-100`}
+              >
+                Contact search ↗
+              </a>
+            ) : null}
+
             <button
               type="button"
               onClick={() => onSave(row.id, draft)}

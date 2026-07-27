@@ -1,11 +1,11 @@
 import AppHeader from '@/app/components/AppHeader'
-import TodayWorkspace from '@/app/TodayWorkspace'
+import OpportunityWorkspace from '@/app/sales/[id]/OpportunityWorkspace'
 
-export default function TodayPage() {
+export default function OpportunityPage() {
   return (
     <main className="min-h-screen bg-stone-100 text-stone-900">
       <AppHeader />
-      <TodayWorkspace />
+      <OpportunityWorkspace />
     </main>
   )
 }

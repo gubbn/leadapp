@@ -12,6 +12,7 @@ type CompanyRow = {
   company_name: string | null
   industry: string | null
   location: string | null
+  county: string | null
   size_band: string | null
   dnc: boolean | null
   outcome: string | null
@@ -59,16 +60,51 @@ type ChartRow = {
   value: number
 }
 
+type WeekActivity = {
+  id: string
+  activity_type: string
+  summary: string
+  occurred_at: string
+  companies:
+    | { company_name: string | null }
+    | { company_name: string | null }[]
+    | null
+}
+
+type WeekReport = {
+  companiesAdded: number
+  contactsAdded: number
+  qualified: number
+  opportunities: number
+  campaignTargets: number
+  tasksCompleted: number
+  activities: WeekActivity[]
+  healthChecks: number
+  proposals: number
+  wins: number
+}
+
+const emptyWeekReport: WeekReport = {
+  companiesAdded: 0,
+  contactsAdded: 0,
+  qualified: 0,
+  opportunities: 0,
+  campaignTargets: 0,
+  tasksCompleted: 0,
+  activities: [],
+  healthChecks: 0,
+  proposals: 0,
+  wins: 0,
+}
+
 export default function ReportsPage() {
   const [companies, setCompanies] = useState<CompanyRow[]>([])
   const [exportRows, setExportRows] = useState<ExportRow[]>([])
   const [importRows, setImportRows] = useState<ImportRow[]>([])
   const [loading, setLoading] = useState(true)
   const [errorMessage, setErrorMessage] = useState('')
-
-  useEffect(() => {
-    loadReports()
-  }, [])
+  const [weekReport, setWeekReport] = useState<WeekReport>(emptyWeekReport)
+  const weekRange = useMemo(() => getThisWeekRange(), [])
 
   const relationshipCounts = useMemo(() => {
     return companies.reduce(
@@ -177,6 +213,17 @@ export default function ReportsPage() {
     )
   }, [companies])
 
+  const countyCoverage = useMemo(() => {
+    return getTopCounts(
+      companies.map((company) => {
+        const county = company.county?.trim()
+        if (!county) return 'Unclassified'
+        return county.toLowerCase().includes('yorkshire') ? 'Yorkshire' : county
+      }),
+      12,
+    )
+  }, [companies])
+
   const sizeBands = useMemo(() => {
     return getTopCounts(
       companies.map((company) => company.size_band || 'unknown'),
@@ -225,6 +272,7 @@ export default function ReportsPage() {
           company_name,
           industry,
           location,
+          county,
           size_band,
           dnc,
           outcome,
@@ -279,6 +327,95 @@ export default function ReportsPage() {
     setLoading(false)
   }
 
+  async function loadWeekReport() {
+    const timestampStart = weekRange.start.toISOString()
+    const timestampEnd = weekRange.end.toISOString()
+    const dateStart = formatIsoDate(weekRange.start)
+    const dateEnd = formatIsoDate(weekRange.end)
+
+    const [
+      companiesResult,
+      contactsResult,
+      qualifiedResult,
+      opportunitiesResult,
+      campaignTargetsResult,
+      tasksResult,
+      activitiesResult,
+      healthChecksResult,
+      proposalsResult,
+      winsResult,
+    ] = await Promise.all([
+      countQuery('companies', 'created_at', timestampStart, timestampEnd),
+      countQuery('contacts', 'created_at', timestampStart, timestampEnd),
+      supabase
+        .from('companies')
+        .select('id', { count: 'exact', head: true })
+        .eq('prospecting_status', 'qualified')
+        .gte('prospecting_updated_at', timestampStart)
+        .lt('prospecting_updated_at', timestampEnd),
+      countQuery('deals', 'created_at', timestampStart, timestampEnd),
+      countQuery('campaign_companies', 'created_at', timestampStart, timestampEnd),
+      countQuery('crm_tasks', 'completed_at', timestampStart, timestampEnd),
+      supabase
+        .from('crm_activities')
+        .select('id,activity_type,summary,occurred_at,companies(company_name)')
+        .gte('occurred_at', timestampStart)
+        .lt('occurred_at', timestampEnd)
+        .order('occurred_at', { ascending: false }),
+      countQuery('it_health_checks', 'completed_at', timestampStart, timestampEnd),
+      supabase
+        .from('proposals')
+        .select('id', { count: 'exact', head: true })
+        .gte('issued_on', dateStart)
+        .lt('issued_on', dateEnd),
+      supabase
+        .from('deals')
+        .select('id', { count: 'exact', head: true })
+        .eq('stage', 'won')
+        .gte('updated_at', timestampStart)
+        .lt('updated_at', timestampEnd),
+    ])
+
+    const firstError = [
+      companiesResult.error,
+      contactsResult.error,
+      qualifiedResult.error,
+      opportunitiesResult.error,
+      campaignTargetsResult.error,
+      tasksResult.error,
+      activitiesResult.error,
+      healthChecksResult.error,
+      proposalsResult.error,
+      winsResult.error,
+    ].find(Boolean)
+
+    if (firstError) {
+      setErrorMessage(firstError.message)
+      return
+    }
+
+    setWeekReport({
+      companiesAdded: companiesResult.count ?? 0,
+      contactsAdded: contactsResult.count ?? 0,
+      qualified: qualifiedResult.count ?? 0,
+      opportunities: opportunitiesResult.count ?? 0,
+      campaignTargets: campaignTargetsResult.count ?? 0,
+      tasksCompleted: tasksResult.count ?? 0,
+      activities: (activitiesResult.data ?? []) as WeekActivity[],
+      healthChecks: healthChecksResult.count ?? 0,
+      proposals: proposalsResult.count ?? 0,
+      wins: winsResult.count ?? 0,
+    })
+  }
+
+  useEffect(() => {
+    // Initial reporting data load.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    void Promise.all([loadReports(), loadWeekReport()])
+    // The report range is intentionally fixed when the page opens.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
   return (
     <main className="min-h-screen bg-stone-100 text-stone-900">
       <AppHeader />
@@ -320,6 +457,85 @@ export default function ReportsPage() {
           </div>
         ) : (
           <>
+            <section className="rounded-3xl border border-red-200 bg-white p-6 shadow-sm">
+              <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-end">
+                <div>
+                  <p className="text-xs font-black uppercase tracking-[0.18em] text-red-600">
+                    This week
+                  </p>
+                  <h2 className="mt-1 text-2xl font-black text-stone-950">
+                    Weekly activity and funnel report
+                  </h2>
+                  <p className="mt-2 text-sm text-stone-500">
+                    {formatDisplayDate(weekRange.start)}–{formatDisplayDate(new Date(weekRange.end.getTime() - 86400000))}
+                  </p>
+                </div>
+                <Link href="/prospecting" className="rounded-xl bg-stone-950 px-4 py-2.5 text-sm font-black text-white">
+                  Work prospecting queue →
+                </Link>
+              </div>
+
+              <div className="mt-6 grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
+                <WeekMetric label="Companies added" value={weekReport.companiesAdded} />
+                <WeekMetric label="Contacts added" value={weekReport.contactsAdded} />
+                <WeekMetric label="Qualified" value={weekReport.qualified} />
+                <WeekMetric label="Opportunities" value={weekReport.opportunities} />
+                <WeekMetric label="Campaign targets" value={weekReport.campaignTargets} />
+                <WeekMetric label="Tasks completed" value={weekReport.tasksCompleted} />
+                <WeekMetric label="Activities logged" value={weekReport.activities.length} />
+                <WeekMetric label="Health checks" value={weekReport.healthChecks} />
+                <WeekMetric label="Proposals issued" value={weekReport.proposals} />
+                <WeekMetric label="Wins" value={weekReport.wins} />
+              </div>
+
+              <div className="mt-6 grid gap-5 lg:grid-cols-2">
+                <div className="rounded-2xl bg-stone-50 p-5">
+                  <h3 className="font-black text-stone-950">Weekly funnel</h3>
+                  <p className="mt-1 text-xs text-stone-500">Movement recorded during this Monday-to-Sunday period.</p>
+                  <div className="mt-4">
+                    <BarList rows={[
+                      { label: 'Companies added', value: weekReport.companiesAdded },
+                      { label: 'Qualified prospects', value: weekReport.qualified },
+                      { label: 'Opportunities created', value: weekReport.opportunities },
+                      { label: 'Proposals issued', value: weekReport.proposals },
+                      { label: 'Wins', value: weekReport.wins },
+                    ]} />
+                  </div>
+                </div>
+
+                <div className="rounded-2xl bg-stone-50 p-5">
+                  <h3 className="font-black text-stone-950">Activity mix</h3>
+                  <p className="mt-1 text-xs text-stone-500">Logged calls, emails, meetings and other relationship work.</p>
+                  <div className="mt-4">
+                    <BarList rows={getTopCounts(
+                      weekReport.activities.map((activity) => activity.activity_type.replaceAll('_', ' ')),
+                      8,
+                    )} />
+                  </div>
+                </div>
+              </div>
+
+              <div className="mt-6 rounded-2xl border border-stone-200 p-5">
+                <h3 className="font-black text-stone-950">Recent work this week</h3>
+                <div className="mt-4 grid gap-3 md:grid-cols-2">
+                  {weekReport.activities.slice(0, 8).map((activity) => (
+                    <div key={activity.id} className="border-l-2 border-red-100 pl-4">
+                      <div className="flex items-center gap-2 text-[10px] font-black uppercase text-stone-400">
+                        <span>{activity.activity_type.replaceAll('_', ' ')}</span>
+                        <span>·</span>
+                        <span>{new Date(activity.occurred_at).toLocaleString('en-GB')}</span>
+                      </div>
+                      <p className="mt-1 text-sm font-bold text-stone-800">{activity.summary}</p>
+                      <p className="mt-1 text-xs text-red-600">{weekActivityCompany(activity)}</p>
+                    </div>
+                  ))}
+                  {!weekReport.activities.length ? (
+                    <p className="text-sm font-semibold text-stone-500">No relationship activity has been logged this week.</p>
+                  ) : null}
+                </div>
+              </div>
+            </section>
+
             <div className="grid gap-4 md:grid-cols-4">
               <SummaryCard label="Total companies" value={companies.length} />
 
@@ -416,6 +632,13 @@ export default function ReportsPage() {
               </ReportPanel>
 
               <ReportPanel
+                title="County coverage"
+                subtitle="Companies by county; Yorkshire county variants are combined."
+              >
+                <BarList rows={countyCoverage} />
+              </ReportPanel>
+
+              <ReportPanel
                 title="Company size bands"
                 subtitle="Split by size band."
               >
@@ -478,6 +701,48 @@ export default function ReportsPage() {
         )}
       </section>
     </main>
+  )
+}
+
+function getThisWeekRange() {
+  const start = new Date()
+  start.setHours(0, 0, 0, 0)
+  const day = start.getDay() || 7
+  start.setDate(start.getDate() - day + 1)
+  const end = new Date(start)
+  end.setDate(end.getDate() + 7)
+  return { start, end }
+}
+
+function formatIsoDate(value: Date) {
+  return `${value.getFullYear()}-${String(value.getMonth() + 1).padStart(2, '0')}-${String(value.getDate()).padStart(2, '0')}`
+}
+
+function formatDisplayDate(value: Date) {
+  return value.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })
+}
+
+function countQuery(table: string, column: string, start: string, end: string) {
+  return supabase
+    .from(table)
+    .select('id', { count: 'exact', head: true })
+    .gte(column, start)
+    .lt(column, end)
+}
+
+function weekActivityCompany(activity: WeekActivity) {
+  const company = Array.isArray(activity.companies)
+    ? activity.companies[0]
+    : activity.companies
+  return company?.company_name || 'General CRM activity'
+}
+
+function WeekMetric({ label, value }: { label: string; value: number }) {
+  return (
+    <div className="rounded-xl border border-stone-200 bg-stone-50 p-4">
+      <p className="text-[10px] font-black uppercase tracking-wide text-stone-400">{label}</p>
+      <p className="mt-2 text-3xl font-black text-stone-950">{value}</p>
+    </div>
   )
 }
 

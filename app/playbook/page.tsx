@@ -1,11 +1,11 @@
 import AppHeader from '@/app/components/AppHeader'
-import TodayWorkspace from '@/app/TodayWorkspace'
+import PlaybookWorkspace from '@/app/playbook/PlaybookWorkspace'
 
-export default function TodayPage() {
+export default function PlaybookPage() {
   return (
     <main className="min-h-screen bg-stone-100 text-stone-900">
       <AppHeader />
-      <TodayWorkspace />
+      <PlaybookWorkspace />
     </main>
   )
 }

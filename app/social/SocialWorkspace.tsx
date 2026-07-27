@@ -46,46 +46,47 @@ const weekdays = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday']
 const baseThemes: Theme[] = [
   {
     key: 'work',
-    label: "Something we're working on this week",
-    shortLabel: 'This week',
-    helper: 'Show useful work in progress, without oversharing client details.',
-  },
-  {
-    key: 'personal',
-    label: 'Personal post',
-    shortLabel: 'Personal',
-    helper: 'A human post that helps people know, like and trust you.',
+    label: 'Make It Happen Monday',
+    shortLabel: 'Make It Happen Monday',
+    helper: 'Share the work, priority or improvement that is driving the week.',
   },
   {
     key: 'testimonial',
-    label: 'Customer testimonial',
-    shortLabel: 'Testimonial',
-    helper: 'Turn proof into a short story about the problem and result.',
+    label: 'Testimonial Tuesday',
+    shortLabel: 'Testimonial Tuesday',
+    helper: 'Turn a customer testimonial into a short story about the problem, support and result.',
+  },
+  {
+    key: 'personal',
+    label: "What's Happening Wednesday",
+    shortLabel: "What's Happening Wednesday",
+    helper: 'Use a support ticket lesson, FAQ, useful business news or a current Fixing IT update.',
   },
   {
     key: 'it-now',
-    label: 'Something happening in IT right now',
-    shortLabel: 'IT now',
-    helper: 'Make a current IT issue understandable and relevant.',
+    label: 'Cyber Threat Thursday',
+    shortLabel: 'Cyber Threat Thursday',
+    helper: 'Explain a current cyber threat, warning or practical security action in plain English.',
   },
   {
     key: 'recap',
-    label: 'Recap',
-    shortLabel: 'Recap',
-    helper: 'Summarise the week and give people a simple next step.',
+    label: 'Fixing IT Friday',
+    shortLabel: 'Fixing IT Friday',
+    helper: 'Recap the week, highlight what mattered and give people one useful takeaway.',
   },
 ]
 
 const defaultInputs: PlannerInputs = {
   work:
-    'Improving response time for a client and reviewing where their systems slow the team down.',
-  personal: 'A small lesson from running a business this week.',
+    'The main client work, improvement or business priority driving this week.',
   testimonial:
-    'A client said they finally feel confident that their IT is being looked after properly.',
+    'A customer quote, the situation behind it and the difference the support made.',
+  personal:
+    'A useful support ticket lesson, frequently asked question, Fixing IT update or relevant business news.',
   'it-now':
-    'Cyber security, backups, Microsoft 365, AI tools, or common scams affecting small businesses.',
+    'A current cyber threat, scam, vulnerability or security action relevant to businesses and charities.',
   recap:
-    'The main thing we helped clients with this week, plus one useful reminder.',
+    'The week’s highlights, what clients needed help with and one useful reminder for next week.',
 }
 
 const platformOptions = ['LinkedIn', 'Facebook', 'Instagram']
@@ -236,16 +237,8 @@ export function SocialWorkspace({ view }: { view: SocialView }) {
 
   const weekDate = useMemo(() => parseDateInput(weekStart), [weekStart])
 
-  const rotatedThemes = useMemo(() => {
-    const offset = getWeekRotationOffset(weekDate)
-    return weekdays.map(
-      (_, index) =>
-        baseThemes[(index - offset + baseThemes.length) % baseThemes.length],
-    )
-  }, [weekDate])
-
   const posts = useMemo(() => {
-    return rotatedThemes.map((theme, index) => {
+    return baseThemes.map((theme, index) => {
       const date = addDays(weekDate, index)
 
       return {
@@ -262,7 +255,7 @@ export function SocialWorkspace({ view }: { view: SocialView }) {
         }),
       }
     })
-  }, [audience, cta, generatedContent, inputs, platform, rotatedThemes, tone, weekDate])
+  }, [audience, cta, generatedContent, inputs, platform, tone, weekDate])
 
   function updateInput(key: ThemeKey, value: string) {
     setInputs((current) => ({
@@ -448,6 +441,28 @@ export function SocialWorkspace({ view }: { view: SocialView }) {
 
       <section className="mx-auto max-w-7xl px-4 py-8">
         {view === 'planner' ? (
+          <>
+          <aside className="mb-6 flex flex-col gap-4 rounded-2xl border border-red-200 bg-gradient-to-r from-red-50 to-white p-5 shadow-sm sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <p className="text-xs font-black uppercase tracking-[0.16em] text-red-600">
+                Start with the Content Bank
+              </p>
+              <h2 className="mt-1 text-lg font-black text-stone-950">
+                Turn saved ideas into this week&apos;s posts.
+              </h2>
+              <p className="mt-1 max-w-3xl text-sm leading-6 text-stone-600">
+                Check the bank for ticket lessons, FAQs, testimonials, cyber news and team updates,
+                then bring the strongest ideas into the five-day planner below.
+              </p>
+            </div>
+            <Link
+              href="/social"
+              className="shrink-0 rounded-xl bg-red-600 px-5 py-3 text-center text-sm font-black text-white hover:bg-red-700"
+            >
+              Open Content Bank →
+            </Link>
+          </aside>
+
           <div className="grid gap-6 lg:grid-cols-[0.75fr_1.25fr]">
           <section className="rounded-2xl border border-stone-200 bg-white p-6 shadow-sm">
             <h2 className="text-xl font-black text-stone-950">
@@ -500,11 +515,11 @@ export function SocialWorkspace({ view }: { view: SocialView }) {
 
             <div className="mt-6 rounded-2xl border border-stone-200 bg-stone-50 p-4">
               <p className="text-xs font-black uppercase tracking-wide text-stone-500">
-                This week&apos;s rotation
+                This week&apos;s structure
               </p>
 
               <div className="mt-3 space-y-2">
-                {rotatedThemes.map((theme, index) => (
+                {baseThemes.map((theme, index) => (
                   <div
                     key={`${theme.key}-${weekdays[index]}`}
                     className="flex items-center justify-between gap-3 rounded-xl bg-white px-3 py-2 text-sm"
@@ -545,6 +560,7 @@ export function SocialWorkspace({ view }: { view: SocialView }) {
             </div>
           </section>
           </div>
+          </>
         ) : null}
 
         {view === 'facebook' ? (
@@ -804,7 +820,7 @@ function generatePost({
   }
 
   if (theme.key === 'personal') {
-    return `${opening}\n\n${subject}\n\n${insight}\n\nIt has been a useful reminder that the way we work matters just as much as the tools we use. For ${audienceLine}, a clear and practical approach can make a complicated situation feel much more manageable.${callToAction}${platformTail}`
+    return `${opening}\n\n${subject}\n\n${insight}\n\nFor ${audienceLine}, the useful part is understanding what this means in practice and what sensible next step—if any—is worth taking.${callToAction}${platformTail}`
   }
 
   if (theme.key === 'testimonial') {
@@ -812,7 +828,7 @@ function generatePost({
   }
 
   if (theme.key === 'it-now') {
-    return `${opening}\n\n${subject}\n\n${insight}\n\nFor ${audienceLine}, the important thing is not to treat this as background noise. Understanding how it could affect the business makes it much easier to decide what needs attention now and what can wait.\n\nA sensible next step is to review how this applies to your own systems and team.${callToAction}${platformTail}`
+    return `${opening}\n\n${subject}\n\n${insight}\n\nFor ${audienceLine}, the important thing is not to treat cyber warnings as background noise. Check whether this threat applies to your systems, people or suppliers, then record the action needed to reduce the risk.${callToAction}${platformTail}`
   }
 
   return `${opening}\n\n${subject}\n\n${insight}\n\nThe thread running through it all is that small, well-chosen improvements can make work feel safer, smoother and easier to manage. That is a useful thought for ${audienceLine} to carry into next week.${callToAction}${platformTail}`
@@ -856,9 +872,9 @@ function getKeywordInsight(note: string, theme: ThemeKey) {
 
   const fallbacks: Record<ThemeKey, string> = {
     work: 'The aim is to understand the real cause, make a practical improvement and leave things easier to manage afterwards.',
-    personal: 'The useful lessons are often simple: be clear about the goal, listen carefully and keep the next step practical.',
+    personal: 'Useful updates turn everyday tickets, repeated questions and business news into a clear, practical next step.',
     testimonial: 'The strongest results are the ones people notice: less uncertainty, less interruption and more confidence.',
-    'it-now': 'The useful question is what this means in practice and whether the business needs to act.',
+    'it-now': 'The useful question is how the threat could reach the business and which practical control reduces the risk.',
     recap: 'Looking back helps turn a busy week into a useful lesson and a clear priority for what comes next.',
   }
   return fallbacks[theme]
@@ -882,34 +898,34 @@ function buildHashtags(note: string) {
 function getOpening(theme: ThemeKey, tone: string) {
   const openings: Record<ThemeKey, Record<string, string>> = {
     work: {
-      Helpful: 'Here is a look at something we are working on this week.',
-      'Plain English': 'This week, we are working on something practical.',
-      Warm: 'A little look behind the scenes at what we are working on this week.',
-      Direct: 'This is what we are working on this week.',
+      Helpful: 'Make It Happen Monday: here is what is driving our week.',
+      'Plain English': 'Make It Happen Monday. This is our focus for the week.',
+      Warm: 'Make It Happen Monday—a look at what is driving our week.',
+      Direct: 'Make It Happen Monday: this is the priority.',
     },
     personal: {
-      Helpful: 'A lesson from behind the scenes this week.',
-      'Plain English': 'A thought from running the business this week.',
-      Warm: 'A small behind-the-scenes thought from this week.',
-      Direct: 'One thing stood out to me this week.',
+      Helpful: "What's Happening Wednesday: here is something useful to know.",
+      'Plain English': "What's Happening Wednesday. This came up this week.",
+      Warm: "What's Happening Wednesday—a useful update from our week.",
+      Direct: "What's Happening Wednesday: this deserves attention.",
     },
     testimonial: {
-      Helpful: 'This customer feedback captures the result we aim for.',
-      'Plain English': 'A customer shared this with us.',
-      Warm: 'It is always lovely to receive feedback like this.',
-      Direct: 'This is what good support should deliver.',
+      Helpful: 'Testimonial Tuesday: this feedback captures the result we aim for.',
+      'Plain English': 'Testimonial Tuesday. A customer shared this with us.',
+      Warm: 'Testimonial Tuesday—it is always lovely to receive feedback like this.',
+      Direct: 'Testimonial Tuesday: this is what good support should deliver.',
     },
     'it-now': {
-      Helpful: 'Here is something worth knowing about in IT right now.',
-      'Plain English': 'Something important is happening in IT right now.',
-      Warm: 'A friendly heads-up about something happening in IT right now.',
-      Direct: 'This IT issue deserves attention now.',
+      Helpful: 'Cyber Threat Thursday: here is a risk worth understanding.',
+      'Plain English': 'Cyber Threat Thursday. This is the threat to know about.',
+      Warm: 'Cyber Threat Thursday—a friendly security heads-up.',
+      Direct: 'Cyber Threat Thursday: this risk deserves attention.',
     },
     recap: {
-      Helpful: 'A useful recap from this week.',
-      'Plain English': 'Here is what stood out this week.',
-      Warm: 'A quick Friday look back at the week.',
-      Direct: 'This week in brief.',
+      Helpful: 'Fixing IT Friday: a useful recap from this week.',
+      'Plain English': 'Fixing IT Friday. Here is what stood out this week.',
+      Warm: 'Fixing IT Friday—a quick look back at the week.',
+      Direct: 'Fixing IT Friday: the week in brief.',
     },
   }
 
@@ -1005,13 +1021,6 @@ function addDays(date: Date, days: number) {
   const copy = new Date(date)
   copy.setDate(copy.getDate() + days)
   return copy
-}
-
-function getWeekRotationOffset(date: Date) {
-  const start = new Date(date.getFullYear(), 0, 1)
-  const diffMs = date.getTime() - start.getTime()
-  const weekNumber = Math.floor(diffMs / 1000 / 60 / 60 / 24 / 7)
-  return weekNumber % baseThemes.length
 }
 
 function toDateInput(date: Date) {

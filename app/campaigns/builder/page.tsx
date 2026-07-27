@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import Link from 'next/link'
 import { supabase } from '@/lib/supabaseClient'
 import { isRoleAddress, isValidEmail } from '@/lib/marketingImportHelpers'
@@ -20,6 +20,7 @@ type ExportRow = {
   size_band: string | null
   last_contact_date: string | null
   days_since_last_contact: number | string | null
+  last_campaign_at?: string | null
   next_contact_opportunity: string | null
   outcome: string | null
 }
@@ -38,9 +39,16 @@ type CampaignEmailStatus =
 type CampaignRelationshipStatus = 'prospect' | 'customer' | 'quoted'
 
 type ContactAgeFilter = 'all' | '30' | '60' | '90' | 'never'
+type CampaignAgeFilter = 'all' | '30' | '60' | '90' | '180' | 'never'
+
+type CampaignCompanyHistory = {
+  company_id: string | null
+  created_at: string | null
+}
 
 type CampaignRow = ExportRow & {
   company_id: string | null
+  last_campaign_at: string | null
   campaign_email_status: CampaignEmailStatus
   campaign_email_note: string
   campaign_relationship_status: CampaignRelationshipStatus
@@ -73,6 +81,8 @@ export default function CampaignBuilderPage() {
   const [selectedLocations, setSelectedLocations] = useState<string[]>([])
   const [contactAgeFilter, setContactAgeFilter] =
     useState<ContactAgeFilter>('all')
+  const [campaignAgeFilter, setCampaignAgeFilter] =
+    useState<CampaignAgeFilter>('all')
   const [includeRiskyEmails, setIncludeRiskyEmails] = useState(true)
   const [includeInvalidEmails, setIncludeInvalidEmails] = useState(false)
   const [excludeCustomers, setExcludeCustomers] = useState(true)
@@ -89,9 +99,13 @@ export default function CampaignBuilderPage() {
     const params = new URLSearchParams(window.location.search)
 
     if (params.get('due90') === 'true') {
+      // Initialise the filter from the incoming campaign-builder query.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setContactAgeFilter('90')
     }
 
+    // Existing initial data loader intentionally runs once on mount.
+    // eslint-disable-next-line react-hooks/immutability
     loadRows()
   }, [])
 
@@ -184,6 +198,10 @@ export default function CampaignBuilderPage() {
         row.days_since_last_contact,
         contactAgeFilter,
       )
+      const matchesCampaignAge = matchesCampaignAgeFilter(
+        row.last_campaign_at,
+        campaignAgeFilter,
+      )
 
       const isRisky = row.campaign_email_status === 'risky'
 
@@ -206,6 +224,7 @@ export default function CampaignBuilderPage() {
         matchesIndustry &&
         matchesLocation &&
         matchesContactAge &&
+        matchesCampaignAge &&
         matchesEmailRules &&
         matchesCustomerRules &&
         matchesQuotedRules
@@ -217,6 +236,7 @@ export default function CampaignBuilderPage() {
     selectedIndustries,
     selectedLocations,
     contactAgeFilter,
+    campaignAgeFilter,
     includeRiskyEmails,
     includeInvalidEmails,
     excludeCustomers,
@@ -293,13 +313,53 @@ export default function CampaignBuilderPage() {
       }
     }
 
-    const enrichedRows = exportRows.map((row) => ({
+    const companyIds = Array.from(
+      new Set(
+        exportRows
+          .map((row) =>
+            row.company_id ||
+            (row.contact_id ? contactCompanyMap.get(row.contact_id) || null : null),
+          )
+          .filter((value): value is string => Boolean(value)),
+      ),
+    )
+    const lastCampaignByCompany = new Map<string, string>()
+
+    for (const chunk of chunkArray(companyIds, 500)) {
+      const { data: campaignRows, error: campaignError } = await supabase
+        .from('campaign_companies')
+        .select('company_id, created_at')
+        .in('company_id', chunk)
+        .order('created_at', { ascending: false })
+
+      if (campaignError) {
+        setErrorMessage(campaignError.message)
+        setLoading(false)
+        return
+      }
+
+      ;((campaignRows ?? []) as CampaignCompanyHistory[]).forEach((campaignRow) => {
+        if (
+          campaignRow.company_id &&
+          campaignRow.created_at &&
+          !lastCampaignByCompany.has(campaignRow.company_id)
+        ) {
+          lastCampaignByCompany.set(campaignRow.company_id, campaignRow.created_at)
+        }
+      })
+    }
+
+    const enrichedRows = exportRows.map((row) => {
+      const companyId =
+        row.company_id ||
+        (row.contact_id ? contactCompanyMap.get(row.contact_id) || null : null)
+      return {
       ...row,
       email: row.email || row.email_address || null,
-      company_id:
-        row.company_id ||
-        (row.contact_id ? contactCompanyMap.get(row.contact_id) || null : null),
-    }))
+      company_id: companyId,
+      last_campaign_at: companyId ? lastCampaignByCompany.get(companyId) || null : null,
+      }
+    })
 
     setRows(enrichedRows.map(addCampaignStatuses))
     setLoading(false)
@@ -310,6 +370,7 @@ export default function CampaignBuilderPage() {
     setSelectedIndustries([])
     setSelectedLocations([])
     setContactAgeFilter('all')
+    setCampaignAgeFilter('all')
     setIncludeRiskyEmails(true)
     setIncludeInvalidEmails(false)
     setExcludeCustomers(true)
@@ -526,9 +587,9 @@ export default function CampaignBuilderPage() {
               </h2>
 
               <p className="mt-1 text-sm text-stone-500">
-                Filter by contact age, company size, industry, location and
-                email quality. Customers and quoted companies are excluded by
-                default.
+                Filter by contact age, time since the last campaign, company
+                size, industry, location and email quality. Customers and
+                quoted companies are excluded by default.
               </p>
             </div>
 
@@ -637,6 +698,27 @@ export default function CampaignBuilderPage() {
                 <option value="60">Not contacted for 60+ days</option>
                 <option value="90">Not contacted for 90+ days</option>
                 <option value="never">Never contacted / unknown</option>
+              </select>
+            </label>
+
+            <label className="block rounded-xl border border-stone-300 bg-white px-4 py-3">
+              <span className="text-xs font-black uppercase tracking-wide text-stone-500">
+                Last campaign
+              </span>
+
+              <select
+                value={campaignAgeFilter}
+                onChange={(event) =>
+                  setCampaignAgeFilter(event.target.value as CampaignAgeFilter)
+                }
+                className="mt-1 w-full rounded-lg border border-stone-300 bg-white px-3 py-2 text-sm font-bold outline-none focus:border-red-500 focus:ring-4 focus:ring-red-50"
+              >
+                <option value="all">Any campaign age</option>
+                <option value="30">No campaign for 30+ days</option>
+                <option value="60">No campaign for 60+ days</option>
+                <option value="90">No campaign for 90+ days</option>
+                <option value="180">No campaign for 180+ days</option>
+                <option value="never">Never included in a campaign</option>
               </select>
             </label>
 
@@ -885,6 +967,7 @@ function addCampaignStatuses(row: ExportRow): CampaignRow {
     ...row,
     email: row.email || row.email_address || null,
     company_id: row.company_id || null,
+    last_campaign_at: row.last_campaign_at || null,
     ...emailStatus,
     ...relationshipStatus,
   }
@@ -981,6 +1064,23 @@ function matchesContactAgeFilter(
   return true
 }
 
+function matchesCampaignAgeFilter(
+  lastCampaignAt: string | null,
+  filter: CampaignAgeFilter,
+) {
+  if (filter === 'all') return true
+  if (!lastCampaignAt) return true
+  if (filter === 'never') return false
+
+  const timestamp = new Date(lastCampaignAt).getTime()
+  if (Number.isNaN(timestamp)) return true
+
+  const daysSinceCampaign = Math.floor(
+    (Date.now() - timestamp) / (1000 * 60 * 60 * 24),
+  )
+  return daysSinceCampaign >= Number(filter)
+}
+
 function formatDaysSinceContact(value: number | string | null) {
   if (value === null || value === undefined || value === '') return 'Never'
 
@@ -1061,6 +1161,24 @@ function MultiSelectDropdown({
   selectedValues: string[]
   onChange: (values: string[]) => void
 }) {
+  const [open, setOpen] = useState(false)
+  const dropdownRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    function dismiss(event: PointerEvent) {
+      if (!dropdownRef.current?.contains(event.target as Node)) setOpen(false)
+    }
+    function dismissWithKeyboard(event: KeyboardEvent) {
+      if (event.key === 'Escape') setOpen(false)
+    }
+    document.addEventListener('pointerdown', dismiss)
+    document.addEventListener('keydown', dismissWithKeyboard)
+    return () => {
+      document.removeEventListener('pointerdown', dismiss)
+      document.removeEventListener('keydown', dismissWithKeyboard)
+    }
+  }, [])
+
   function toggleValue(value: string) {
     if (selectedValues.includes(value)) {
       onChange(selectedValues.filter((item) => item !== value))
@@ -1079,13 +1197,19 @@ function MultiSelectDropdown({
         : `${selectedValues.length} selected`
 
   return (
-    <div className="relative block">
+    <div ref={dropdownRef} className="relative block">
       <span className="text-xs font-black uppercase tracking-wide text-stone-500">
         {label}
       </span>
 
-      <details className="group mt-1">
-        <summary className="flex cursor-pointer list-none items-center justify-between rounded-xl border border-stone-300 bg-white px-3 py-2 text-sm font-semibold text-stone-800 hover:bg-stone-50 group-open:border-red-500 group-open:ring-4 group-open:ring-red-50">
+      <details open={open} className="group mt-1">
+        <summary
+          onClick={(event) => {
+            event.preventDefault()
+            setOpen((current) => !current)
+          }}
+          className="flex cursor-pointer list-none items-center justify-between rounded-xl border border-stone-300 bg-white px-3 py-2 text-sm font-semibold text-stone-800 hover:bg-stone-50 group-open:border-red-500 group-open:ring-4 group-open:ring-red-50"
+        >
           <span className="truncate">{selectedLabel}</span>
           <span className="ml-2 text-xs text-stone-400">▼</span>
         </summary>

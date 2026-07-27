@@ -1,10 +1,12 @@
 'use client'
 
-import { useEffect, useMemo, useState } from 'react'
+import { type FormEvent, useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import { useParams } from 'next/navigation'
 import { supabase } from '@/lib/supabaseClient'
 import AppHeader from '@/app/components/AppHeader'
+import CompanyLookupLinks from '@/app/components/CompanyLookupLinks'
+import { formatCurrency, stageFor } from '@/lib/crm'
 
 type DbRow = Record<string, unknown>
 
@@ -41,12 +43,21 @@ export default function CompanyDetailPage() {
   const [campaignHistory, setCampaignHistory] = useState<CampaignHistoryRow[]>(
     [],
   )
+  const [deals, setDeals] = useState<DbRow[]>([])
+  const [tasks, setTasks] = useState<DbRow[]>([])
+  const [activities, setActivities] = useState<DbRow[]>([])
   const [loading, setLoading] = useState(true)
   const [errorMessage, setErrorMessage] = useState('')
   const [warningMessage, setWarningMessage] = useState('')
+  const [successMessage, setSuccessMessage] = useState('')
+  const [editingDetails, setEditingDetails] = useState(false)
+  const [addingContact, setAddingContact] = useState(false)
 
+  // Existing detail-page loader is intentionally triggered when the route id changes.
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/immutability
     loadCompany()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [companyId])
 
   const relationshipStatus = useMemo(() => {
@@ -104,6 +115,31 @@ export default function CompanyDetailPage() {
     }
 
     setCompany(companyData as CompanyRow)
+
+    const [dealsResult, tasksResult, activitiesResult] = await Promise.all([
+      supabase
+        .from('deals')
+        .select('*')
+        .eq('company_id', companyId)
+        .order('updated_at', { ascending: false }),
+      supabase
+        .from('crm_tasks')
+        .select('*')
+        .eq('company_id', companyId)
+        .order('due_date', { ascending: true, nullsFirst: false }),
+      supabase
+        .from('crm_activities')
+        .select('*')
+        .eq('company_id', companyId)
+        .order('occurred_at', { ascending: false }),
+    ])
+
+    if (dealsResult.error) warnings.push(`Deals could not be loaded: ${dealsResult.error.message}`)
+    if (tasksResult.error) warnings.push(`Tasks could not be loaded: ${tasksResult.error.message}`)
+    if (activitiesResult.error) warnings.push(`Activities could not be loaded: ${activitiesResult.error.message}`)
+    setDeals((dealsResult.data ?? []) as DbRow[])
+    setTasks((tasksResult.data ?? []) as DbRow[])
+    setActivities((activitiesResult.data ?? []) as DbRow[])
 
     const { data: contactData, error: contactsError } = await supabase
       .from('contacts')
@@ -233,6 +269,12 @@ export default function CompanyDetailPage() {
           </p>
         ) : null}
 
+        {successMessage ? (
+          <p className="mb-6 rounded-xl bg-emerald-50 p-4 text-sm font-semibold text-emerald-800">
+            {successMessage}
+          </p>
+        ) : null}
+
         {loading ? (
           <div className="rounded-2xl border border-stone-200 bg-white p-6 text-sm font-semibold text-stone-500">
             Loading company...
@@ -280,7 +322,16 @@ export default function CompanyDetailPage() {
                     </p>
                   </div>
 
-                  <RelationshipBadge status={relationshipStatus} />
+                  <div className="flex items-center gap-2">
+                    <RelationshipBadge status={relationshipStatus} />
+                    <button
+                      type="button"
+                      onClick={() => setEditingDetails(true)}
+                      className="rounded-lg bg-stone-950 px-3 py-2 text-xs font-black text-white hover:bg-stone-800"
+                    >
+                      Edit details
+                    </button>
+                  </div>
                 </div>
 
                 <div className="mt-6 grid gap-4 sm:grid-cols-2">
@@ -292,6 +343,17 @@ export default function CompanyDetailPage() {
                   <DetailItem label="Last contact" value={formatDate(getCompanyLastContactDate(company))} />
                   <DetailItem label="Created" value={formatDate(getCompanyCreatedAt(company))} />
                   <DetailItem label="DNC" value={getCompanyDnc(company) ? 'Yes' : 'No'} />
+                </div>
+
+                <div className="mt-6 border-t border-stone-100 pt-5">
+                  <p className="mb-3 text-xs font-black uppercase tracking-wide text-stone-400">
+                    One-click research
+                  </p>
+                  <CompanyLookupLinks
+                    companyName={getCompanyName(company)}
+                    domain={getCompanyDomain(company)}
+                    telephone={contacts.map(getContactPhone).find(Boolean)}
+                  />
                 </div>
               </section>
 
@@ -328,15 +390,146 @@ export default function CompanyDetailPage() {
               </section>
             </div>
 
-            <section className="mt-6 overflow-hidden rounded-2xl border border-stone-200 bg-white shadow-sm">
-              <div className="border-b border-stone-200 p-5">
-                <h2 className="text-xl font-black text-stone-950">
-                  Contacts
-                </h2>
+            <div className="mt-6 grid gap-6 lg:grid-cols-[1fr_0.9fr]">
+              <section className="rounded-2xl border border-stone-200 bg-white p-6 shadow-sm">
+                <div className="flex items-start justify-between gap-4">
+                  <div>
+                    <p className="text-xs font-black uppercase tracking-[0.18em] text-red-600">
+                      Revenue
+                    </p>
+                    <h2 className="mt-1 text-xl font-black text-stone-950">
+                      Opportunities
+                    </h2>
+                  </div>
+                  <Link href="/sales" className="rounded-lg bg-stone-950 px-3 py-2 text-xs font-black text-white">
+                    Open pipeline
+                  </Link>
+                </div>
+                <div className="mt-5 space-y-3">
+                  {deals.length ? deals.map((deal) => (
+                    <div key={getString(deal, ['id'])} className="rounded-xl border border-stone-200 p-4">
+                      <div className="flex items-start justify-between gap-4">
+                        <div>
+                          <p className="text-sm font-black text-stone-900">{getString(deal, ['name'])}</p>
+                          <p className="mt-1 text-xs font-bold text-red-600">{stageFor(getString(deal, ['stage'])).label}</p>
+                        </div>
+                        <p className="text-sm font-black text-stone-900">{formatCurrency(getString(deal, ['annual_value']))}</p>
+                      </div>
+                      <p className="mt-3 rounded-lg bg-stone-50 p-3 text-xs leading-5 text-stone-600">
+                        {getString(deal, ['next_action']) || 'No next action set'}
+                        {getString(deal, ['next_action_due']) ? ` · ${formatDate(getString(deal, ['next_action_due']))}` : ''}
+                      </p>
+                    </div>
+                  )) : (
+                    <p className="rounded-xl border border-dashed border-stone-300 p-5 text-sm text-stone-500">
+                      No opportunity exists yet. Create one from the Sales pipeline.
+                    </p>
+                  )}
+                </div>
+              </section>
 
-                <p className="mt-1 text-sm text-stone-500">
-                  Contacts linked to this company.
+              <section className="rounded-2xl border border-stone-200 bg-white p-6 shadow-sm">
+                <p className="text-xs font-black uppercase tracking-[0.18em] text-red-600">
+                  Next actions
                 </p>
+                <h2 className="mt-1 text-xl font-black text-stone-950">Open tasks</h2>
+                <div className="mt-5 space-y-3">
+                  {tasks.filter((task) => !['completed', 'cancelled'].includes(getString(task, ['status']))).length ? (
+                    tasks
+                      .filter((task) => !['completed', 'cancelled'].includes(getString(task, ['status'])))
+                      .map((task) => (
+                        <div key={getString(task, ['id'])} className="rounded-xl bg-stone-50 p-4">
+                          <p className="text-sm font-black text-stone-900">{getString(task, ['title'])}</p>
+                          <p className="mt-1 text-xs text-stone-500">
+                            {formatDate(getString(task, ['due_date']))} · {getString(task, ['priority']) || 'normal'}
+                          </p>
+                        </div>
+                      ))
+                  ) : (
+                    <p className="rounded-xl border border-dashed border-stone-300 p-5 text-sm text-stone-500">
+                      No open tasks for this company.
+                    </p>
+                  )}
+                </div>
+              </section>
+            </div>
+
+            <section className="mt-6 rounded-2xl border border-stone-200 bg-white p-6 shadow-sm">
+              <p className="text-xs font-black uppercase tracking-[0.18em] text-red-600">
+                Relationship history
+              </p>
+              <h2 className="mt-1 text-xl font-black text-stone-950">Activity timeline</h2>
+              <div className="mt-5 grid gap-4 lg:grid-cols-2">
+                {activities.length ? activities.slice(0, 12).map((activity) => (
+                  <div key={getString(activity, ['id'])} className="border-l-2 border-red-100 pl-4">
+                    <div className="flex items-center gap-2">
+                      <span className="rounded-full bg-stone-100 px-2 py-1 text-[10px] font-black uppercase text-stone-500">
+                        {(getString(activity, ['activity_type']) || 'note').replace('_', ' ')}
+                      </span>
+                      <span className="text-[10px] font-bold text-stone-400">
+                        {formatDate(getString(activity, ['occurred_at']))}
+                      </span>
+                    </div>
+                    <p className="mt-2 text-sm font-bold leading-6 text-stone-800">
+                      {getString(activity, ['summary'])}
+                    </p>
+                  </div>
+                )) : (
+                  <p className="rounded-xl border border-dashed border-stone-300 p-5 text-sm text-stone-500">
+                    No calls, emails, meetings or notes have been logged yet.
+                  </p>
+                )}
+              </div>
+            </section>
+
+            {editingDetails ? (
+              <CompanyDetailsEditor
+                company={company}
+                onClose={() => setEditingDetails(false)}
+                onSaved={(updatedCompany, activity) => {
+                  setCompany(updatedCompany)
+                  if (activity) {
+                    setActivities((current) => [activity, ...current])
+                  }
+                  setEditingDetails(false)
+                }}
+              />
+            ) : null}
+
+            {addingContact ? (
+              <AddContactEditor
+                company={company}
+                onClose={() => setAddingContact(false)}
+                onSaved={(contact, activity) => {
+                  setContacts((current) => [...current, contact])
+                  if (activity) setActivities((current) => [activity, ...current])
+                  setAddingContact(false)
+                  setSuccessMessage(`${getContactName(contact) || 'Contact'} added.`)
+                }}
+              />
+            ) : null}
+
+            <section className="mt-6 overflow-hidden rounded-2xl border border-stone-200 bg-white shadow-sm">
+              <div className="flex flex-wrap items-start justify-between gap-3 border-b border-stone-200 p-5">
+                <div>
+                  <h2 className="text-xl font-black text-stone-950">
+                    Contacts
+                  </h2>
+
+                  <p className="mt-1 text-sm text-stone-500">
+                    Contacts linked to this company.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSuccessMessage('')
+                    setAddingContact(true)
+                  }}
+                  className="rounded-xl bg-red-600 px-4 py-2.5 text-sm font-black text-white hover:bg-red-700"
+                >
+                  + Add contact
+                </button>
               </div>
 
               <div className="overflow-x-auto">
@@ -823,4 +1016,317 @@ function SummaryCard({
       </p>
     </div>
   )
+}
+
+function CompanyDetailsEditor({
+  company,
+  onClose,
+  onSaved,
+}: {
+  company: CompanyRow
+  onClose: () => void
+  onSaved: (company: CompanyRow, activity: DbRow | null) => void
+}) {
+  const [draft, setDraft] = useState({
+    companyName: getCompanyName(company),
+    industry: getCompanyIndustry(company),
+    location: getCompanyLocation(company),
+    sizeBand: getCompanySizeBand(company),
+    domain: getCompanyDomain(company),
+    lastContactDate: toDateInput(getCompanyLastContactDate(company)),
+    dnc: getCompanyDnc(company),
+  })
+  const [logActivity, setLogActivity] = useState(true)
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState('')
+
+  function update(field: keyof typeof draft, value: string | boolean) {
+    setDraft((current) => ({ ...current, [field]: value }))
+  }
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    setSaving(true)
+    setError('')
+
+    const payload = {
+      company_name: draft.companyName.trim(),
+      industry: draft.industry.trim() || null,
+      location: draft.location.trim() || null,
+      size_band: draft.sizeBand.trim() || null,
+      domain: draft.domain.trim() || null,
+      last_contact_date: draft.lastContactDate || null,
+      dnc: draft.dnc,
+      updated_at: new Date().toISOString(),
+    }
+    const { data, error: saveError } = await supabase
+      .from('companies')
+      .update(payload)
+      .eq('id', company.id)
+      .select('*')
+      .single()
+
+    if (saveError) {
+      setError(saveError.message)
+      setSaving(false)
+      return
+    }
+
+    let activity: DbRow | null = null
+    const summary = companyChangeSummary(company, draft)
+    if (logActivity && summary) {
+      const result = await supabase
+        .from('crm_activities')
+        .insert({
+          company_id: company.id,
+          activity_type: 'company_update',
+          summary,
+        })
+        .select('*')
+        .single()
+
+      if (result.error) {
+        setError(`Details saved, but activity logging failed: ${result.error.message}`)
+        setSaving(false)
+        onSaved(data as CompanyRow, null)
+        return
+      }
+      activity = result.data as DbRow
+    }
+
+    onSaved(data as CompanyRow, activity)
+  }
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-stone-950/45 p-4 backdrop-blur-sm"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="company-editor-title"
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget && !saving) onClose()
+      }}
+    >
+      <form onSubmit={submit} className="max-h-[calc(100vh-2rem)] w-full max-w-3xl overflow-y-auto rounded-3xl bg-white p-6 shadow-2xl sm:p-8">
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <p className="text-xs font-black uppercase tracking-[0.18em] text-red-600">Company record</p>
+            <h2 id="company-editor-title" className="mt-2 text-2xl font-black text-stone-950">
+              Edit company details
+            </h2>
+          </div>
+          <button type="button" onClick={onClose} disabled={saving} className="rounded-xl border border-stone-200 px-3 py-2 font-black text-stone-500 hover:bg-stone-50">
+            ✕
+          </button>
+        </div>
+
+        <div className="mt-7 grid gap-5 sm:grid-cols-2">
+          <EditorField label="Company name" value={draft.companyName} onChange={(value) => update('companyName', value)} />
+          <EditorField label="Industry" value={draft.industry} onChange={(value) => update('industry', value)} />
+          <EditorField label="Location" value={draft.location} onChange={(value) => update('location', value)} placeholder="Village, town or city" />
+          <EditorField label="Size band" value={draft.sizeBand} onChange={(value) => update('sizeBand', value)} placeholder="For example, 15–49" />
+          <EditorField label="Website or domain" value={draft.domain} onChange={(value) => update('domain', value)} placeholder="example.co.uk" />
+          <label className="block">
+            <span className="mb-1.5 block text-xs font-black uppercase tracking-wide text-stone-500">Last contact</span>
+            <input type="date" value={draft.lastContactDate} onChange={(event) => update('lastContactDate', event.target.value)} className="w-full rounded-xl border border-stone-300 px-3 py-2.5 text-sm font-semibold outline-none focus:border-red-500 focus:ring-4 focus:ring-red-50" />
+          </label>
+          <EditorCheckbox checked={draft.dnc} onChange={(value) => update('dnc', value)} title="Do not contact" description="Exclude this company from outreach." />
+          <EditorCheckbox checked={logActivity} onChange={setLogActivity} title="Add to recent activity" description="Record a summary of the fields changed." highlighted />
+        </div>
+
+        {error ? <p className="mt-5 rounded-xl bg-red-50 p-3 text-sm font-bold text-red-700">{error}</p> : null}
+
+        <div className="mt-8 flex flex-col-reverse gap-3 border-t border-stone-100 pt-5 sm:flex-row sm:justify-end">
+          <button type="button" onClick={onClose} disabled={saving} className="rounded-xl border border-stone-300 px-5 py-3 text-sm font-black text-stone-700 hover:bg-stone-50 disabled:opacity-50">Cancel</button>
+          <button type="submit" disabled={saving || !draft.companyName.trim()} className="rounded-xl bg-red-600 px-6 py-3 text-sm font-black text-white hover:bg-red-700 disabled:opacity-50">
+            {saving ? 'Saving changes…' : 'Save company'}
+          </button>
+        </div>
+      </form>
+    </div>
+  )
+}
+
+function AddContactEditor({
+  company,
+  onClose,
+  onSaved,
+}: {
+  company: CompanyRow
+  onClose: () => void
+  onSaved: (contact: ContactRow, activity: DbRow | null) => void
+}) {
+  const [draft, setDraft] = useState({
+    firstName: '',
+    lastName: '',
+    role: '',
+    email: '',
+    telephone: '',
+    notes: '',
+  })
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState('')
+
+  function update(field: keyof typeof draft, value: string) {
+    setDraft((current) => ({ ...current, [field]: value }))
+  }
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    setSaving(true)
+    setError('')
+
+    const result = await supabase
+      .from('contacts')
+      .insert({
+        company_id: company.id,
+        first_name: draft.firstName.trim(),
+        last_name: draft.lastName.trim() || null,
+        role: draft.role.trim() || null,
+        email: draft.email.trim() || null,
+        telephone: draft.telephone.trim() || null,
+        notes: draft.notes.trim() || null,
+        contact_source: 'company_record',
+      })
+      .select('*')
+      .single()
+
+    if (result.error) {
+      setError(result.error.message)
+      setSaving(false)
+      return
+    }
+
+    const contact = result.data as ContactRow
+    const contactName = getContactName(contact) || 'A contact'
+    const activityResult = await supabase
+      .from('crm_activities')
+      .insert({
+        company_id: company.id,
+        contact_id: contact.id,
+        activity_type: 'note',
+        summary: `${contactName} added as a contact from the company record.`,
+      })
+      .select('*')
+      .single()
+
+    if (activityResult.error) {
+      setError(`Contact added, but activity logging failed: ${activityResult.error.message}`)
+      setSaving(false)
+      onSaved(contact, null)
+      return
+    }
+
+    onSaved(contact, activityResult.data as DbRow)
+  }
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-stone-950/45 p-4 backdrop-blur-sm"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="contact-editor-title"
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget && !saving) onClose()
+      }}
+    >
+      <form onSubmit={submit} className="max-h-[calc(100vh-2rem)] w-full max-w-3xl overflow-y-auto rounded-3xl bg-white p-6 shadow-2xl sm:p-8">
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <p className="text-xs font-black uppercase tracking-[0.18em] text-red-600">Company contact</p>
+            <h2 id="contact-editor-title" className="mt-2 text-2xl font-black text-stone-950">
+              Add contact to {getCompanyName(company)}
+            </h2>
+          </div>
+          <button type="button" onClick={onClose} disabled={saving} className="rounded-xl border border-stone-200 px-3 py-2 font-black text-stone-500 hover:bg-stone-50">
+            ✕
+          </button>
+        </div>
+
+        <div className="mt-7 grid gap-5 sm:grid-cols-2">
+          <EditorField label="First name" value={draft.firstName} onChange={(value) => update('firstName', value)} />
+          <EditorField label="Last name" value={draft.lastName} onChange={(value) => update('lastName', value)} />
+          <EditorField label="Role" value={draft.role} onChange={(value) => update('role', value)} placeholder="Managing Director" />
+          <EditorField label="Email" value={draft.email} onChange={(value) => update('email', value)} placeholder="name@company.co.uk" />
+          <EditorField label="Telephone" value={draft.telephone} onChange={(value) => update('telephone', value)} />
+          <label className="block sm:col-span-2">
+            <span className="mb-1.5 block text-xs font-black uppercase tracking-wide text-stone-500">Notes</span>
+            <textarea value={draft.notes} onChange={(event) => update('notes', event.target.value)} rows={3} className="w-full rounded-xl border border-stone-300 px-3 py-2.5 text-sm font-semibold outline-none focus:border-red-500 focus:ring-4 focus:ring-red-50" />
+          </label>
+        </div>
+
+        <p className="mt-5 rounded-xl bg-stone-50 p-3 text-sm text-stone-600">
+          This contact will be linked to the company and recorded in recent activity.
+        </p>
+        {error ? <p className="mt-5 rounded-xl bg-red-50 p-3 text-sm font-bold text-red-700">{error}</p> : null}
+
+        <div className="mt-8 flex flex-col-reverse gap-3 border-t border-stone-100 pt-5 sm:flex-row sm:justify-end">
+          <button type="button" onClick={onClose} disabled={saving} className="rounded-xl border border-stone-300 px-5 py-3 text-sm font-black text-stone-700 hover:bg-stone-50 disabled:opacity-50">Cancel</button>
+          <button type="submit" disabled={saving || !draft.firstName.trim()} className="rounded-xl bg-red-600 px-6 py-3 text-sm font-black text-white hover:bg-red-700 disabled:opacity-50">
+            {saving ? 'Adding contact…' : 'Add contact'}
+          </button>
+        </div>
+      </form>
+    </div>
+  )
+}
+
+function EditorField({ label, value, onChange, placeholder = '' }: { label: string; value: string; onChange: (value: string) => void; placeholder?: string }) {
+  return (
+    <label className="block">
+      <span className="mb-1.5 block text-xs font-black uppercase tracking-wide text-stone-500">{label}</span>
+      <input value={value} onChange={(event) => onChange(event.target.value)} placeholder={placeholder} className="w-full rounded-xl border border-stone-300 px-3 py-2.5 text-sm font-semibold outline-none focus:border-red-500 focus:ring-4 focus:ring-red-50" />
+    </label>
+  )
+}
+
+function EditorCheckbox({ checked, onChange, title, description, highlighted = false }: { checked: boolean; onChange: (value: boolean) => void; title: string; description: string; highlighted?: boolean }) {
+  return (
+    <label className={`flex min-h-20 items-center gap-3 rounded-xl border px-4 py-3 ${highlighted ? 'border-red-100 bg-red-50' : 'border-stone-200 bg-stone-50'}`}>
+      <input type="checkbox" checked={checked} onChange={(event) => onChange(event.target.checked)} className="h-5 w-5 accent-red-600" />
+      <span>
+        <span className="block text-sm font-black text-stone-800">{title}</span>
+        <span className="block text-xs text-stone-500">{description}</span>
+      </span>
+    </label>
+  )
+}
+
+function toDateInput(value: string) {
+  if (!value) return ''
+  const parsed = new Date(value)
+  return Number.isNaN(parsed.getTime()) ? value.slice(0, 10) : parsed.toISOString().slice(0, 10)
+}
+
+function companyChangeSummary(
+  company: DbRow,
+  draft: {
+    companyName: string
+    industry: string
+    location: string
+    sizeBand: string
+    domain: string
+    lastContactDate: string
+    dnc: boolean
+  },
+) {
+  const fields: Array<[string, string | boolean, string | boolean]> = [
+    ['Name', getCompanyName(company), draft.companyName.trim()],
+    ['Industry', getCompanyIndustry(company), draft.industry.trim()],
+    ['Location', getCompanyLocation(company), draft.location.trim()],
+    ['Size band', getCompanySizeBand(company), draft.sizeBand.trim()],
+    ['Domain', getCompanyDomain(company), draft.domain.trim()],
+    ['Last contact', toDateInput(getCompanyLastContactDate(company)), draft.lastContactDate],
+    ['DNC', getCompanyDnc(company), draft.dnc],
+  ]
+
+  const changes = fields
+    .filter(([, before, after]) => before !== after)
+    .map(([label, before, after]) => {
+      const from = before === '' ? 'blank' : before === true ? 'Yes' : before === false ? 'No' : before
+      const to = after === '' ? 'blank' : after === true ? 'Yes' : after === false ? 'No' : after
+      return `${label}: ${from} → ${to}`
+    })
+
+  return changes.length ? `Company details updated — ${changes.join('; ')}.` : ''
 }
