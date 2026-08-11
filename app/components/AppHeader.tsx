@@ -42,6 +42,7 @@ const menus: Menu[] = [
       { href: '/sales', label: 'Deal pipeline', description: 'Move opportunities toward a contract' },
       { href: '/#tasks', label: 'Tasks', description: 'Today’s follow-ups and next actions' },
       { href: '/sales/workflows', label: 'Health checks, proposals and renewals', description: 'Work the timing-sensitive queues' },
+      { href: '/quotes', label: 'Quotes', description: 'Track quote values and follow-up chases' },
     ],
   },
   {

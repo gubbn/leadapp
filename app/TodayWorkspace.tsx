@@ -9,6 +9,8 @@ type Company = {
   id: string
   company_name: string
   prospecting_status?: 'research' | 'qualified' | 'nurture' | 'disqualified'
+  relationship_status?: string | null
+  customer_contract_end?: string | null
 }
 type Deal = {
   id: string
@@ -38,8 +40,41 @@ type Activity = {
   occurred_at: string
   companies: Company | Company[] | null
 }
+type Contact = {
+  id: string
+  first_name: string | null
+  last_name: string | null
+  next_contact_opportunity: string | null
+  companies: Company | Company[] | null
+}
+type Quote = {
+  id: string
+  quote_number: string
+  chase_due_date: string
+  status: string
+  companies: Company | Company[] | null
+}
+type NextAction = {
+  id: string
+  title: string
+  detail: string
+  dueDate: string | null
+  href: string
+  kind: 'task' | 'opportunity' | 'contact' | 'customer' | 'quote'
+  task?: Task
+}
 
-const today = new Date().toISOString().slice(0, 10)
+const londonDate = new Intl.DateTimeFormat('en-CA', {
+  timeZone: 'Europe/London',
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+})
+const today = londonDate.format(new Date())
+const daysUntilSunday = 7 - new Date(`${today}T12:00:00Z`).getUTCDay()
+const endOfWeek = new Date(`${today}T12:00:00Z`)
+endOfWeek.setUTCDate(endOfWeek.getUTCDate() + daysUntilSunday)
+const endOfWeekDate = endOfWeek.toISOString().slice(0, 10)
 const stalledCutoff = Date.now() - 14 * 86400000
 const todayLabel = new Intl.DateTimeFormat('en-GB', {
   weekday: 'long',
@@ -53,6 +88,8 @@ export default function TodayWorkspace() {
   const [companies, setCompanies] = useState<Company[]>([])
   const [tasks, setTasks] = useState<Task[]>([])
   const [deals, setDeals] = useState<Deal[]>([])
+  const [contacts, setContacts] = useState<Contact[]>([])
+  const [quotes, setQuotes] = useState<Quote[]>([])
   const [activities, setActivities] = useState<Activity[]>([])
   const [contactCount, setContactCount] = useState(0)
   const [loading, setLoading] = useState(true)
@@ -63,10 +100,10 @@ export default function TodayWorkspace() {
   const loadWorkspace = useCallback(async () => {
     setLoading(true)
     setError('')
-    const [companiesResult, contactsResult, tasksResult, dealsResult, activitiesResult] =
+    const [companiesResult, contactsResult, tasksResult, dealsResult, activitiesResult, quotesResult] =
       await Promise.all([
-        supabase.from('companies').select('id,company_name,prospecting_status').order('company_name'),
-        supabase.from('contacts').select('id', { count: 'exact', head: true }),
+        supabase.from('companies').select('id,company_name,prospecting_status,relationship_status,customer_contract_end').order('company_name'),
+        supabase.from('contacts').select('id,first_name,last_name,next_contact_opportunity,companies(id,company_name)', { count: 'exact' }).eq('is_active', true),
         supabase
           .from('crm_tasks')
           .select('id,title,due_date,priority,status,company_id,companies(id,company_name),deals(id,name)')
@@ -82,6 +119,11 @@ export default function TodayWorkspace() {
           .select('id,activity_type,summary,outcome,occurred_at,companies(id,company_name)')
           .order('occurred_at', { ascending: false })
           .limit(8),
+        supabase
+          .from('quotes')
+          .select('id,quote_number,chase_due_date,status,companies(id,company_name)')
+          .in('status', ['issued', 'chased'])
+          .order('chase_due_date'),
       ])
 
     const firstError = [
@@ -90,11 +132,14 @@ export default function TodayWorkspace() {
       tasksResult.error,
       dealsResult.error,
       activitiesResult.error,
+      quotesResult.error,
     ].find(Boolean)
 
     if (firstError) setError(firstError.message)
     setCompanies((companiesResult.data ?? []) as Company[])
     setContactCount(contactsResult.count ?? 0)
+    setContacts((contactsResult.data ?? []) as Contact[])
+    setQuotes((quotesResult.data ?? []) as Quote[])
     setTasks((tasksResult.data ?? []) as Task[])
     setDeals((dealsResult.data ?? []) as Deal[])
     setActivities((activitiesResult.data ?? []) as Activity[])
@@ -114,6 +159,54 @@ export default function TodayWorkspace() {
     () => tasks.filter((task) => !task.due_date || task.due_date <= today),
     [tasks],
   )
+  const nextActions = useMemo<NextAction[]>(() => {
+    const datedTasks = tasks.map((task) => ({
+      id: `task-${task.id}`,
+      title: task.title,
+      detail: companyName(task.companies),
+      dueDate: task.due_date,
+      href: '#tasks',
+      kind: 'task' as const,
+      task,
+    }))
+    const datedDeals = deals.flatMap((deal) => deal.next_action_due ? [{
+      id: `deal-${deal.id}`,
+      title: deal.next_action || deal.name,
+      detail: `${companyName(deal.companies)} · opportunity`,
+      dueDate: deal.next_action_due,
+      href: `/sales/${deal.id}`,
+      kind: 'opportunity' as const,
+    }] : [])
+    const datedContacts = contacts.flatMap((contact) => contact.next_contact_opportunity ? [{
+      id: `contact-${contact.id}`,
+      title: `Follow up with ${contactName(contact)}`,
+      detail: `${companyName(contact.companies)} · contact`,
+      dueDate: contact.next_contact_opportunity,
+      href: '/contacts',
+      kind: 'contact' as const,
+    }] : [])
+    const customerDates = companies.flatMap((company) =>
+      company.relationship_status === 'customer' && company.customer_contract_end ? [{
+        id: `customer-${company.id}`,
+        title: `Review ${company.company_name} contract`,
+        detail: 'Customer contract end',
+        dueDate: company.customer_contract_end,
+        href: `/companies/${company.id}`,
+        kind: 'customer' as const,
+      }] : [],
+    )
+    const quoteChases = quotes.map((quote) => ({
+      id: `quote-${quote.id}`,
+      title: `Chase quote ${quote.quote_number}`,
+      detail: `${companyName(quote.companies)} · quote follow-up`,
+      dueDate: quote.chase_due_date,
+      href: '/quotes',
+      kind: 'quote' as const,
+    }))
+
+    return [...datedTasks, ...datedDeals, ...datedContacts, ...customerDates, ...quoteChases]
+      .sort((first, second) => (first.dueDate ?? '9999-12-31').localeCompare(second.dueDate ?? '9999-12-31'))
+  }, [companies, contacts, deals, quotes, tasks])
   const stalledDeals = useMemo(() => {
     return deals.filter(
       (deal) =>
@@ -228,20 +321,20 @@ export default function TodayWorkspace() {
             <section id="tasks" className="scroll-mt-28 rounded-2xl border border-stone-200 bg-white p-5 shadow-sm">
               <SectionTitle eyebrow="Do next" title="Tasks and follow-ups" />
               <div className="mt-5 space-y-3">
-                {tasks.length ? tasks.slice(0, 10).map((task) => (
-                  <div key={task.id} className={`rounded-xl border p-4 ${task.due_date && task.due_date < today ? 'border-red-200 bg-red-50' : 'border-stone-200'}`}>
+                {nextActions.length ? nextActions.slice(0, 10).map((action) => (
+                  <div key={action.id} className={`rounded-xl border p-4 ${dueDateTone(action.dueDate)}`}>
                     <div className="flex items-start gap-3">
-                      <button onClick={() => void completeTask(task)} title="Mark complete" className="mt-0.5 h-5 w-5 shrink-0 rounded-full border-2 border-stone-300 hover:border-emerald-500" />
+                      {action.task ? <button onClick={() => void completeTask(action.task!)} title="Mark complete" className="mt-0.5 h-5 w-5 shrink-0 rounded-full border-2 border-stone-300 hover:border-emerald-500" /> : <span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full border-2 border-current text-[10px] font-black">→</span>}
                       <div className="min-w-0 flex-1">
-                        <p className="text-sm font-black text-stone-900">{task.title}</p>
+                        <Link href={action.href} className="text-sm font-black text-stone-900 hover:underline">{action.title}</Link>
                         <p className="mt-1 text-xs text-stone-500">
-                          {companyName(task.companies)} · {formatShortDate(task.due_date)}
+                          {action.detail} · {formatShortDate(action.dueDate)}
                         </p>
                       </div>
-                      <Priority value={task.priority} />
+                      {action.task ? <Priority value={action.task.priority} /> : <ActionType value={action.kind} />}
                     </div>
                   </div>
-                )) : <Empty text="No open tasks. Add the next action for an opportunity." />}
+                )) : <Empty text="No dated actions. Add a due date to a task, opportunity, contact or customer record." />}
               </div>
             </section>
 
@@ -330,5 +423,14 @@ function InlineForm({ title, onClose, children }: { title: string; onClose: () =
 function Metric({ label, value, helper, urgent = false }: { label: string; value: string | number; helper?: string; urgent?: boolean }) { return <div className={`rounded-2xl border bg-white p-5 shadow-sm ${urgent ? 'border-red-300 ring-4 ring-red-50' : 'border-stone-200'}`}><p className="text-xs font-black uppercase tracking-wide text-stone-400">{label}</p><p className={`mt-3 text-3xl font-black ${urgent ? 'text-red-600' : 'text-stone-950'}`}>{value}</p>{helper ? <p className="mt-1 text-xs text-stone-400">{helper}</p> : null}</div> }
 function SectionTitle({ eyebrow, title, action }: { eyebrow: string; title: string; action?: React.ReactNode }) { return <div className="flex items-end justify-between gap-3"><div><p className="text-[10px] font-black uppercase tracking-[0.18em] text-red-600">{eyebrow}</p><h2 className="mt-1 text-xl font-black text-stone-950">{title}</h2></div>{action}</div> }
 function Priority({ value }: { value: string }) { return <span className={`rounded-full px-2 py-1 text-[10px] font-black uppercase ${value === 'urgent' ? 'bg-red-100 text-red-700' : value === 'high' ? 'bg-amber-100 text-amber-800' : 'bg-stone-100 text-stone-500'}`}>{value}</span> }
+function ActionType({ value }: { value: NextAction['kind'] }) { return <span className="rounded-full bg-white/70 px-2 py-1 text-[10px] font-black uppercase text-stone-600">{value}</span> }
 function Empty({ text }: { text: string }) { return <p className="rounded-xl border border-dashed border-stone-300 p-5 text-sm leading-6 text-stone-500">{text}</p> }
 function companyName(value: Company | Company[] | null) { const company = Array.isArray(value) ? value[0] : value; return company?.company_name ?? 'No company' }
+function contactName(contact: Contact) { return `${contact.first_name ?? ''} ${contact.last_name ?? ''}`.trim() || 'contact' }
+function dueDateTone(date: string | null) {
+  if (!date) return 'border-stone-200 bg-white'
+  if (date < today) return 'border-red-200 bg-red-50 text-red-700'
+  if (date === today) return 'border-emerald-200 bg-emerald-50 text-emerald-700'
+  if (date <= endOfWeekDate) return 'border-violet-200 bg-violet-50 text-violet-700'
+  return 'border-stone-200 bg-white'
+}
