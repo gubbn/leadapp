@@ -195,7 +195,7 @@ export default function TodayWorkspace() {
         kind: 'customer' as const,
       }] : [],
     )
-    const quoteChases = quotes.map((quote) => ({
+    const quoteChases = quotes.filter((quote) => quote.chase_due_date <= today).map((quote) => ({
       id: `quote-${quote.id}`,
       title: `Chase quote ${quote.quote_number}`,
       detail: `${companyName(quote.companies)} · quote follow-up`,

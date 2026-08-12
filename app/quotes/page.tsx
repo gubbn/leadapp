@@ -60,7 +60,12 @@ export default function QuotesPage() {
   }), [quotes])
 
   async function setStatus(quote: Quote, status: string) {
-    const { error: saveError } = await supabase.from('quotes').update({ status, updated_at: new Date().toISOString() }).eq('id', quote.id)
+    const update = {
+      status,
+      updated_at: new Date().toISOString(),
+      ...(status === 'chased' ? { chase_due_date: addBusinessDays(today, 5) } : {}),
+    }
+    const { error: saveError } = await supabase.from('quotes').update(update).eq('id', quote.id)
     if (saveError) setError(saveError.message)
     else await load()
   }
