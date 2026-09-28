@@ -83,6 +83,23 @@ Open `/social`, complete the five content notes, and select **Generate with AI**
 The API key is never sent to the browser. Generated copy should be reviewed and
 edited before publishing.
 
+## Warranty expiry imports
+
+Run [`docs/warranties.sql`](docs/warranties.sql) in the Supabase SQL editor once,
+then open `/warranties`. Export the SharePoint list as CSV or Excel (`.xlsx`),
+upload it, confirm the detected column mapping, and import the valid rows. A
+SharePoint ID is used to update matching records on later imports; when no ID is
+present, customer, product, serial number and expiry date form the match key.
+
+## Networking little black book
+
+Run [`docs/networking-black-book.sql`](docs/networking-black-book.sql) in the
+Supabase SQL editor once, then open `/networking`. Add the networking group and
+event, upload a text-based PDF attendee list, review the extracted people, and
+optionally link each person to an existing CRM contact, company, or sales
+opportunity before saving. Scanned PDFs can be entered manually from the same
+screen.
+
 You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
 
 This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.

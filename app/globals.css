@@ -1,22 +1,40 @@
 @import "tailwindcss";
 
-@layer components {
-  .form-input {
-    @apply w-full rounded-xl border border-stone-200 bg-white px-3 py-2.5 text-sm text-stone-900 outline-none transition placeholder:text-stone-400 focus:border-red-400 focus:ring-4 focus:ring-red-50;
-  }
-
-  .prose-guide h3 {
-    @apply mt-6 text-lg font-black text-stone-950;
-  }
-
-  .prose-guide code {
-    @apply rounded-md bg-stone-100 px-1.5 py-0.5 font-mono text-xs font-bold text-red-700;
-  }
+@theme {
+  --color-stone-50: #f7f7f5;
+  --color-stone-100: #efefeb;
+  --color-stone-200: #deded7;
+  --color-stone-300: #c7c7bd;
+  --color-stone-400: #97978c;
+  --color-stone-500: #707068;
+  --color-stone-600: #565650;
+  --color-stone-700: #3f403c;
+  --color-stone-800: #292b29;
+  --color-stone-900: #1c1f1e;
+  --color-stone-950: #101312;
+  --color-red-50: #fff3ef;
+  --color-red-100: #ffe3dc;
+  --color-red-200: #ffc9bd;
+  --color-red-300: #fca58f;
+  --color-red-400: #f4775d;
+  --color-red-500: #eb563b;
+  --color-red-600: #dd3f27;
+  --color-red-700: #b92f1b;
+  --color-red-800: #99291b;
+  --color-red-900: #7e281d;
+  --color-red-950: #451108;
 }
 
 :root {
-  --background: #f5f5f4;
-  --foreground: #1c1917;
+  --background: #f3f2ee;
+  --foreground: #171a19;
+  --surface: #ffffff;
+  --surface-muted: #f7f7f5;
+  --line: #deded7;
+  --brand: #dd3f27;
+  --brand-dark: #b92f1b;
+  --ink: #101312;
+  --success: #177a55;
 }
 
 * {
@@ -25,26 +43,30 @@
 
 html {
   scroll-behavior: smooth;
-  scroll-padding-top: 8rem;
+  scroll-padding-top: 7rem;
 }
 
 body {
   margin: 0;
-  background: var(--background);
+  background:
+    radial-gradient(circle at 8% -10%, rgba(221, 63, 39, 0.055), transparent 28rem),
+    var(--background);
   color: var(--foreground);
   font-family:
-    Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
-    sans-serif;
+    "Aptos", "Segoe UI Variable", "Segoe UI", ui-sans-serif, system-ui, -apple-system,
+    BlinkMacSystemFont, sans-serif;
+  font-feature-settings: "ss01" 1, "cv02" 1, "cv03" 1;
+  text-rendering: optimizeLegibility;
 }
 
 ::selection {
-  background: #fecaca;
-  color: #7f1d1d;
+  background: #ffc9bd;
+  color: #451108;
 }
 
 :focus-visible {
-  outline: 3px solid #fca5a5;
-  outline-offset: 2px;
+  outline: 3px solid #fca58f;
+  outline-offset: 3px;
 }
 
 button,
@@ -52,4 +74,56 @@ input,
 select,
 textarea {
   font: inherit;
+}
+
+button,
+summary,
+a {
+  -webkit-tap-highlight-color: transparent;
+}
+
+button:not(:disabled),
+summary {
+  cursor: pointer;
+}
+
+@layer components {
+  .form-input {
+    @apply w-full rounded-xl border border-stone-300 bg-white px-3.5 py-2.5 text-sm text-stone-950 shadow-[0_1px_0_rgba(16,19,18,0.02)] outline-none transition placeholder:text-stone-400 focus:border-red-400 focus:ring-4 focus:ring-red-100/70;
+  }
+
+  .nav-trigger {
+    @apply inline-flex items-center gap-2 rounded-xl px-3 py-2.5 text-xs font-black text-stone-300 transition hover:bg-white/8 hover:text-white;
+  }
+
+  .nav-trigger-active {
+    @apply bg-white/10 text-white shadow-[inset_0_0_0_1px_rgba(255,255,255,0.08)];
+  }
+
+  .mobile-nav-row {
+    @apply flex items-center gap-3 rounded-xl px-4 py-3 text-sm font-black text-stone-300 transition hover:bg-white/8 hover:text-white;
+  }
+
+  .mobile-nav-row-active {
+    @apply bg-white/10 text-white;
+  }
+
+  .prose-guide h3 {
+    @apply mt-6 text-lg font-black tracking-tight text-stone-950;
+  }
+
+  .prose-guide code {
+    @apply rounded-md bg-stone-100 px-1.5 py-0.5 font-mono text-xs font-bold text-red-700;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+  }
 }

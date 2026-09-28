@@ -167,7 +167,7 @@ const sections: GuideSection[] = [
     id: 'sales',
     title: '7. Sales pipeline',
     summary: 'Move qualified interest toward a 36-month contract.',
-    keywords: 'sales deal pipeline opportunity stages health check proposal contract won lost nurture',
+    keywords: 'sales deal pipeline opportunity stages health check proposal contract won lost on hold nurture',
     content: (
       <>
         <p><LinkText href="/sales">Deal Pipeline</LinkText> is for genuine commercial opportunities, not every company in the database.</p>
@@ -176,7 +176,7 @@ const sections: GuideSection[] = [
           'Create an opportunity only when there is enough fit or engagement to justify active sales work.',
           'Record annual value, users, source, current provider, renewal date, next action and next-action due date.',
           'Every open opportunity must have a concrete next action. “Follow up” is too vague; state what will be discussed and with whom.',
-          'Use Nurture when the organisation is suitable but timing is not active.',
+          'Use Put on hold when the opportunity is suitable but timing is not active; choose when it should return to Today.',
           'When marking Lost, record the real loss reason so future marketing can improve.',
         ]} />
         <h3>IT Resilience Check</h3>

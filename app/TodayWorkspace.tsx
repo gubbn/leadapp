@@ -2,6 +2,22 @@
 
 import Link from 'next/link'
 import { FormEvent, useCallback, useEffect, useMemo, useState } from 'react'
+import {
+  ArrowRight,
+  BriefcaseBusiness,
+  Building2,
+  CalendarDays,
+  Check,
+  ChevronRight,
+  CircleAlert,
+  Clock3,
+  ListChecks,
+  MessageSquareText,
+  Plus,
+  Radar,
+  Sparkles,
+  TrendingUp,
+} from 'lucide-react'
 import { supabase } from '@/lib/supabaseClient'
 import { formatCurrency, formatShortDate, stageFor } from '@/lib/crm'
 
@@ -62,6 +78,7 @@ type NextAction = {
   href: string
   kind: 'task' | 'opportunity' | 'contact' | 'customer' | 'quote'
   task?: Task
+  deal?: Deal
 }
 
 const londonDate = new Intl.DateTimeFormat('en-CA', {
@@ -96,6 +113,7 @@ export default function TodayWorkspace() {
   const [error, setError] = useState('')
   const [showTaskForm, setShowTaskForm] = useState(false)
   const [showActivityForm, setShowActivityForm] = useState(false)
+  const [holdingDeal, setHoldingDeal] = useState<Deal | null>(null)
 
   const loadWorkspace = useCallback(async () => {
     setLoading(true)
@@ -136,9 +154,11 @@ export default function TodayWorkspace() {
     ].find(Boolean)
 
     if (firstError) setError(firstError.message)
-    setCompanies((companiesResult.data ?? []) as Company[])
-    setContactCount(contactsResult.count ?? 0)
-    setContacts((contactsResult.data ?? []) as Contact[])
+    const uniqueCompanies = dedupeCompanies((companiesResult.data ?? []) as Company[])
+    const uniqueContacts = dedupeContacts((contactsResult.data ?? []) as Contact[])
+    setCompanies(uniqueCompanies)
+    setContactCount(uniqueContacts.length)
+    setContacts(uniqueContacts)
     setQuotes((quotesResult.data ?? []) as Quote[])
     setTasks((tasksResult.data ?? []) as Task[])
     setDeals((dealsResult.data ?? []) as Deal[])
@@ -159,6 +179,10 @@ export default function TodayWorkspace() {
     () => tasks.filter((task) => !task.due_date || task.due_date <= today),
     [tasks],
   )
+  const visibleDeals = useMemo(
+    () => deals.filter((deal) => deal.stage !== 'nurture' || Boolean(deal.next_action_due && deal.next_action_due <= today)),
+    [deals],
+  )
   const nextActions = useMemo<NextAction[]>(() => {
     const datedTasks = tasks.map((task) => ({
       id: `task-${task.id}`,
@@ -169,13 +193,14 @@ export default function TodayWorkspace() {
       kind: 'task' as const,
       task,
     }))
-    const datedDeals = deals.flatMap((deal) => deal.next_action_due ? [{
+    const datedDeals = visibleDeals.flatMap((deal) => deal.next_action_due ? [{
       id: `deal-${deal.id}`,
-      title: deal.next_action || deal.name,
-      detail: `${companyName(deal.companies)} · opportunity`,
+      title: deal.stage === 'nurture' ? `Hold ended: ${deal.name}` : deal.next_action || deal.name,
+      detail: `${companyName(deal.companies)} · ${deal.stage === 'nurture' ? 'ready to resume' : 'opportunity'}`,
       dueDate: deal.next_action_due,
       href: `/sales/${deal.id}`,
       kind: 'opportunity' as const,
+      deal,
     }] : [])
     const datedContacts = contacts.flatMap((contact) => contact.next_contact_opportunity ? [{
       id: `contact-${contact.id}`,
@@ -206,15 +231,16 @@ export default function TodayWorkspace() {
 
     return [...datedTasks, ...datedDeals, ...datedContacts, ...customerDates, ...quoteChases]
       .sort((first, second) => (first.dueDate ?? '9999-12-31').localeCompare(second.dueDate ?? '9999-12-31'))
-  }, [companies, contacts, deals, quotes, tasks])
+  }, [companies, contacts, quotes, tasks, visibleDeals])
   const stalledDeals = useMemo(() => {
-    return deals.filter(
+    return visibleDeals.filter(
       (deal) =>
+        deal.stage === 'nurture' ||
         !deal.next_action ||
         !deal.next_action_due ||
         new Date(deal.updated_at).getTime() < stalledCutoff,
     )
-  }, [deals])
+  }, [visibleDeals])
   const pipelineValue = deals.reduce((sum, deal) => sum + Number(deal.annual_value ?? 0), 0)
   const weightedValue = deals.reduce(
     (sum, deal) => sum + Number(deal.annual_value ?? 0) * (stageFor(deal.stage).probability / 100),
@@ -240,137 +266,191 @@ export default function TodayWorkspace() {
     else await loadWorkspace()
   }
 
+  async function holdDeal(deal: Deal, resumeDate: string) {
+    setError('')
+    const { error: saveError } = await supabase
+      .from('deals')
+      .update({
+        stage: 'nurture',
+        probability: stageFor('nurture').probability,
+        next_action: deal.next_action || 'Review opportunity after hold',
+        next_action_due: resumeDate,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', deal.id)
+
+    if (saveError) {
+      setError(saveError.message)
+      return
+    }
+
+    await supabase.from('crm_activities').insert({
+      activity_type: 'status_change',
+      summary: `Deal put on hold until ${formatShortDate(resumeDate)}.`,
+      deal_id: deal.id,
+      company_id: firstCompany(deal.companies)?.id ?? null,
+    })
+    setHoldingDeal(null)
+    await loadWorkspace()
+  }
+
   return (
     <>
-      <section className="border-b border-stone-200 bg-gradient-to-br from-white via-stone-50 to-red-50">
-        <div className="mx-auto max-w-7xl px-4 py-9">
-          <div className="flex flex-col justify-between gap-6 lg:flex-row lg:items-end">
-            <div>
-              <div className="flex flex-wrap items-center gap-3">
-                <p className="inline-flex rounded-full bg-red-100 px-3 py-1 text-xs font-black uppercase tracking-wide text-red-700">
-                  Today
-                </p>
-                <time
-                  dateTime={today}
-                  className="text-sm font-bold text-stone-500"
-                >
-                  {todayLabel}
-                </time>
+      <section className="relative overflow-hidden bg-stone-950 text-white">
+        <div className="pointer-events-none absolute inset-0 opacity-80" aria-hidden="true">
+          <div className="absolute -right-20 -top-40 h-[30rem] w-[30rem] rounded-full bg-red-600/15 blur-3xl" />
+          <div className="absolute bottom-0 left-[35%] h-px w-[45%] bg-gradient-to-r from-transparent via-red-400/50 to-transparent" />
+        </div>
+        <div className="relative mx-auto max-w-[96rem] px-4 py-8 sm:px-6 lg:py-10">
+          <div className="flex flex-col justify-between gap-7 lg:flex-row lg:items-end">
+            <div className="max-w-3xl">
+              <div className="flex flex-wrap items-center gap-3 text-xs font-bold">
+                <span className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/8 px-3 py-1.5 text-stone-200">
+                  <CalendarDays size={14} className="text-red-400" />
+                  <time dateTime={today}>{todayLabel}</time>
+                </span>
+                <span className="inline-flex items-center gap-2 text-stone-400">
+                  <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
+                  Workspace live
+                </span>
               </div>
-              <h1 className="mt-4 text-4xl font-black tracking-tight text-stone-950 md:text-5xl">
-                Move the next relationship forward.
+              <h1 className="mt-5 text-4xl font-black tracking-[-0.045em] text-white sm:text-5xl lg:text-[3.5rem] lg:leading-[1.02]">
+                Focus on what moves<br className="hidden sm:block" /> the relationship forward.
               </h1>
-              <p className="mt-4 max-w-2xl text-base leading-7 text-stone-600">
-                Tasks, stalled opportunities and recent activity in one working view.
+              <p className="mt-4 max-w-2xl text-base leading-7 text-stone-400">
+                Your priorities, pipeline risks and latest conversations—distilled into one place to act.
               </p>
             </div>
-            <div className="flex flex-wrap gap-3">
-              <button onClick={() => setShowTaskForm(true)} className="rounded-xl bg-red-600 px-5 py-3 text-sm font-black text-white shadow-sm hover:bg-red-700">
-                + Add task
+            <div className="flex flex-wrap gap-2.5">
+              <button onClick={() => setShowTaskForm(true)} className="inline-flex items-center gap-2 rounded-xl bg-red-600 px-4 py-3 text-sm font-black text-white shadow-[0_10px_30px_rgba(221,63,39,0.24)] transition hover:-translate-y-0.5 hover:bg-red-500">
+                <Plus size={17} strokeWidth={2.8} /> Add task
               </button>
-              <button onClick={() => setShowActivityForm(true)} className="rounded-xl border border-stone-300 bg-white px-5 py-3 text-sm font-black text-stone-800 shadow-sm hover:bg-stone-50">
-                Log activity
+              <button onClick={() => setShowActivityForm(true)} className="inline-flex items-center gap-2 rounded-xl border border-white/15 bg-white/8 px-4 py-3 text-sm font-black text-white transition hover:bg-white/12">
+                <MessageSquareText size={17} /> Log activity
               </button>
-              <Link href="/sales" className="rounded-xl bg-stone-950 px-5 py-3 text-sm font-black text-white hover:bg-stone-800">
-                Open pipeline
+              <Link href="/sales" className="inline-flex items-center gap-2 rounded-xl border border-white/15 px-4 py-3 text-sm font-black text-stone-200 transition hover:border-white/25 hover:bg-white/8 hover:text-white">
+                Pipeline <ArrowRight size={16} />
               </Link>
             </div>
+          </div>
+
+          <div className="mt-9 grid overflow-hidden rounded-2xl border border-white/10 bg-white/[0.045] sm:grid-cols-2 xl:grid-cols-5">
+            <Metric icon={<Clock3 size={17} />} label="Due now" value={dueToday.length} urgent={dueToday.length > 0} />
+            <Metric icon={<CircleAlert size={17} />} label="Overdue" value={overdueTasks.length} urgent={overdueTasks.length > 0} />
+            <Metric icon={<BriefcaseBusiness size={17} />} label="Open pipeline" value={formatCurrency(pipelineValue)} />
+            <Metric icon={<TrendingUp size={17} />} label="Weighted forecast" value={formatCurrency(weightedValue)} />
+            <Metric icon={<Building2 size={17} />} label="CRM reach" value={`${companies.length} / ${contactCount}`} helper="companies / contacts" />
           </div>
         </div>
       </section>
 
-      <section className="mx-auto max-w-7xl px-4 py-8">
-        {error ? <p className="mb-5 rounded-xl bg-red-50 p-4 text-sm font-bold text-red-700">{error}</p> : null}
+      <section className="mx-auto max-w-[96rem] px-4 py-7 sm:px-6 lg:py-9">
+        {error ? <p role="alert" className="mb-5 flex items-center gap-3 rounded-xl border border-red-200 bg-red-50 p-4 text-sm font-bold text-red-700"><CircleAlert size={18} />{error}</p> : null}
         {showTaskForm ? <TaskForm companies={companies} onClose={() => setShowTaskForm(false)} onSaved={loadWorkspace} /> : null}
         {showActivityForm ? <ActivityForm companies={companies} onClose={() => setShowActivityForm(false)} onSaved={loadWorkspace} /> : null}
-
-        <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
-          <Metric label="Due now" value={dueToday.length} urgent={dueToday.length > 0} />
-          <Metric label="Overdue" value={overdueTasks.length} urgent={overdueTasks.length > 0} />
-          <Metric label="Open pipeline" value={formatCurrency(pipelineValue)} />
-          <Metric label="Weighted forecast" value={formatCurrency(weightedValue)} />
-          <Metric label="CRM reach" value={`${companies.length} / ${contactCount}`} helper="companies / contacts" />
-        </div>
-
-        <Link
-          href="/prospecting"
-          className="mt-6 flex flex-col gap-4 rounded-2xl border border-amber-200 bg-amber-50 p-5 transition hover:border-amber-300 hover:bg-amber-100 sm:flex-row sm:items-center sm:justify-between"
-        >
-          <div>
-            <p className="text-xs font-black uppercase tracking-[0.18em] text-amber-700">
-              Prospecting queue
-            </p>
-            <p className="mt-1 text-lg font-black text-stone-950">
-              {researchQueueCount} need research · {qualifiedProspectCount} qualified
-            </p>
-            <p className="mt-1 text-sm text-stone-600">
-              Enrich a company, identify the decision-maker and create its next action.
-            </p>
-          </div>
-          <span className="shrink-0 rounded-xl bg-stone-950 px-4 py-2.5 text-sm font-black text-white">
-            Work the queue →
-          </span>
-        </Link>
+        {holdingDeal ? <HoldDealForm deal={holdingDeal} onClose={() => setHoldingDeal(null)} onSave={holdDeal} /> : null}
 
         {loading ? (
-          <div className="mt-6 rounded-2xl border border-stone-200 bg-white p-8 text-sm font-bold text-stone-500">
+          <div className="rounded-2xl border border-stone-200 bg-white p-8 text-sm font-bold text-stone-500 shadow-[0_8px_30px_rgba(16,19,18,0.04)]">
             Loading today&apos;s work...
           </div>
         ) : (
-          <div className="mt-6 grid gap-6 xl:grid-cols-[1fr_1fr_0.85fr]">
-            <section id="tasks" className="scroll-mt-28 rounded-2xl border border-stone-200 bg-white p-5 shadow-sm">
-              <SectionTitle eyebrow="Do next" title="Tasks and follow-ups" />
-              <div className="mt-5 space-y-3">
+          <div className="grid gap-5 xl:grid-cols-[minmax(0,1.2fr)_minmax(22rem,0.8fr)]">
+            <section id="tasks" className="scroll-mt-28 rounded-2xl border border-stone-200 bg-white shadow-[0_12px_40px_rgba(16,19,18,0.055)]">
+              <div className="flex flex-wrap items-center justify-between gap-4 border-b border-stone-100 px-5 py-5 sm:px-6">
+                <SectionTitle icon={<ListChecks size={18} />} eyebrow="Priority queue" title="Next actions" />
+                <span className="rounded-full bg-stone-100 px-3 py-1.5 text-xs font-black text-stone-600">{nextActions.length} open</span>
+              </div>
+              <div className="divide-y divide-stone-100 px-5 sm:px-6">
                 {nextActions.length ? nextActions.slice(0, 10).map((action) => (
-                  <div key={action.id} className={`rounded-xl border p-4 ${dueDateTone(action.dueDate)}`}>
-                    <div className="flex items-start gap-3">
-                      {action.task ? <button onClick={() => void completeTask(action.task!)} title="Mark complete" className="mt-0.5 h-5 w-5 shrink-0 rounded-full border-2 border-stone-300 hover:border-emerald-500" /> : <span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full border-2 border-current text-[10px] font-black">→</span>}
-                      <div className="min-w-0 flex-1">
-                        <Link href={action.href} className="text-sm font-black text-stone-900 hover:underline">{action.title}</Link>
-                        <p className="mt-1 text-xs text-stone-500">
-                          {action.detail} · {formatShortDate(action.dueDate)}
+                  <div key={action.id} className="group flex items-start gap-3 py-4">
+                    {action.task ? (
+                      <button onClick={() => void completeTask(action.task!)} title="Mark complete" aria-label={`Mark ${action.title} complete`} className="mt-0.5 grid h-6 w-6 shrink-0 place-items-center rounded-full border-2 border-stone-300 text-transparent transition hover:border-emerald-500 hover:bg-emerald-50 hover:text-emerald-600">
+                        <Check size={13} strokeWidth={3} />
+                      </button>
+                    ) : (
+                      <span className="mt-0.5 grid h-6 w-6 shrink-0 place-items-center rounded-full bg-stone-100 text-stone-500">
+                        <ChevronRight size={14} strokeWidth={2.8} />
+                      </span>
+                    )}
+                    <div className="min-w-0 flex-1">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <Link href={action.href} className="text-sm font-black text-stone-900 transition group-hover:text-red-600">{action.title}</Link>
+                        {action.task ? <Priority value={action.task.priority} /> : <ActionType value={action.kind} />}
+                      </div>
+                      <p className="mt-1.5 flex flex-wrap items-center gap-x-2 text-xs text-stone-500">
+                        <span>{action.detail}</span>
+                        <span className="text-stone-300">•</span>
+                        <span className={dueDateTextTone(action.dueDate)}>{formatShortDate(action.dueDate)}</span>
+                      </p>
+                    </div>
+                    <div className="flex shrink-0 items-center gap-1">
+                      {action.deal ? <button type="button" onClick={() => setHoldingDeal(action.deal!)} className="rounded-lg px-2 py-1.5 text-[10px] font-black uppercase text-stone-400 transition hover:bg-amber-50 hover:text-amber-700">Hold</button> : null}
+                      <Link href={action.href} aria-label={`Open ${action.title}`} className="grid h-8 w-8 place-items-center rounded-lg text-stone-300 transition group-hover:bg-red-50 group-hover:text-red-600">
+                        <ArrowRight size={15} />
+                      </Link>
+                    </div>
+                  </div>
+                )) : <div className="py-6"><Empty text="Nothing is due. Add a next action to keep momentum visible." /></div>}
+              </div>
+            </section>
+
+            <div className="grid gap-5">
+              <Link href="/prospecting" className="group relative overflow-hidden rounded-2xl bg-red-600 p-5 text-white shadow-[0_12px_35px_rgba(221,63,39,0.2)] transition hover:-translate-y-0.5 hover:bg-red-500 sm:p-6">
+                <Radar size={110} strokeWidth={0.7} className="absolute -bottom-7 -right-5 rotate-12 text-white/15 transition group-hover:rotate-6 group-hover:scale-105" />
+                <div className="relative flex items-start justify-between gap-5">
+                  <div>
+                    <p className="text-[0.65rem] font-black uppercase tracking-[0.2em] text-red-100">Prospecting pulse</p>
+                    <p className="mt-3 text-2xl font-black tracking-tight">{researchQueueCount} ready to research</p>
+                    <p className="mt-2 text-sm leading-6 text-red-100">{qualifiedProspectCount} qualified and ready for a considered next step.</p>
+                  </div>
+                  <span className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-white text-red-600"><ArrowRight size={17} /></span>
+                </div>
+              </Link>
+
+              <section className="rounded-2xl border border-stone-200 bg-white shadow-[0_12px_40px_rgba(16,19,18,0.05)]">
+                <div className="flex items-center justify-between gap-4 border-b border-stone-100 px-5 py-5">
+                  <SectionTitle icon={<CircleAlert size={18} />} eyebrow="Pipeline health" title="Needs attention" />
+                  <Link href="/sales" className="text-xs font-black text-red-600 hover:text-red-700">View all</Link>
+                </div>
+                <div className="divide-y divide-stone-100 px-5">
+                  {stalledDeals.length ? stalledDeals.slice(0, 5).map((deal) => (
+                    <article key={deal.id} className="group py-4">
+                      <div className="flex items-start justify-between gap-4">
+                        <div className="min-w-0">
+                          <Link href={`/sales/${deal.id}`} className="truncate text-sm font-black text-stone-900 group-hover:text-red-600">{deal.name}</Link>
+                          <p className="mt-1 text-xs text-stone-500">{companyName(deal.companies)} · {stageFor(deal.stage).label}</p>
+                        </div>
+                        <p className="shrink-0 text-sm font-black text-stone-900">{formatCurrency(deal.annual_value)}</p>
+                      </div>
+                      <div className="mt-2 flex items-center justify-between gap-3">
+                        <p className="flex items-center gap-1.5 text-xs font-bold text-amber-800">
+                          <Clock3 size={13} /> {deal.stage === 'nurture' ? 'Hold ended' : deal.next_action || 'No next action set'} {deal.next_action_due ? `· ${formatShortDate(deal.next_action_due)}` : ''}
                         </p>
+                        <button type="button" onClick={() => setHoldingDeal(deal)} className="shrink-0 text-[10px] font-black uppercase text-stone-400 hover:text-amber-700">Hold</button>
                       </div>
-                      {action.task ? <Priority value={action.task.priority} /> : <ActionType value={action.kind} />}
-                    </div>
-                  </div>
-                )) : <Empty text="No dated actions. Add a due date to a task, opportunity, contact or customer record." />}
-              </div>
-            </section>
+                    </article>
+                  )) : <div className="py-5"><Empty text="Every open opportunity has a current next action." /></div>}
+                </div>
+              </section>
+            </div>
 
-            <section className="rounded-2xl border border-stone-200 bg-white p-5 shadow-sm">
-              <SectionTitle eyebrow="Protect the pipeline" title="Needs attention" action={<Link href="/sales" className="text-xs font-black text-red-600">View pipeline →</Link>} />
-              <div className="mt-5 space-y-3">
-                {stalledDeals.length ? stalledDeals.slice(0, 8).map((deal) => (
-                  <Link key={deal.id} href={`/sales?deal=${deal.id}`} className="block rounded-xl border border-amber-200 bg-amber-50 p-4 transition hover:border-amber-300">
-                    <div className="flex items-start justify-between gap-4">
-                      <div>
-                        <p className="text-sm font-black text-stone-900">{deal.name}</p>
-                        <p className="mt-1 text-xs text-stone-500">{companyName(deal.companies)} · {stageFor(deal.stage).label}</p>
-                      </div>
-                      <p className="text-sm font-black text-stone-900">{formatCurrency(deal.annual_value)}</p>
-                    </div>
-                    <p className="mt-3 text-xs font-bold text-amber-800">
-                      {deal.next_action || 'No next action set'} {deal.next_action_due ? `· ${formatShortDate(deal.next_action_due)}` : ''}
-                    </p>
-                  </Link>
-                )) : <Empty text="Every open opportunity has a current next action." />}
+            <section className="rounded-2xl border border-stone-200 bg-white shadow-[0_12px_40px_rgba(16,19,18,0.05)] xl:col-span-2">
+              <div className="flex items-center justify-between gap-4 border-b border-stone-100 px-5 py-5 sm:px-6">
+                <SectionTitle icon={<Sparkles size={18} />} eyebrow="Relationship signal" title="Latest activity" />
+                <span className="text-xs font-bold text-stone-400">Most recent first</span>
               </div>
-            </section>
-
-            <section className="rounded-2xl border border-stone-200 bg-white p-5 shadow-sm">
-              <SectionTitle eyebrow="Relationship history" title="Recent activity" />
-              <div className="mt-5 space-y-4">
-                {activities.length ? activities.map((activity) => (
-                  <div key={activity.id} className="border-l-2 border-red-100 pl-4">
+              <div className="grid divide-y divide-stone-100 px-5 sm:grid-cols-2 sm:divide-x sm:divide-y-0 sm:px-6 lg:grid-cols-4">
+                {activities.length ? activities.slice(0, 8).map((activity, index) => (
+                  <article key={activity.id} className={`py-5 sm:px-5 ${index === 0 ? 'sm:pl-0' : ''}`}>
                     <div className="flex items-center gap-2">
-                      <span className="rounded-full bg-stone-100 px-2 py-1 text-[10px] font-black uppercase text-stone-500">{activity.activity_type.replace('_', ' ')}</span>
-                      <span className="text-[10px] font-bold text-stone-400">{new Date(activity.occurred_at).toLocaleDateString('en-GB')}</span>
+                      <span className="rounded-full bg-stone-100 px-2 py-1 text-[0.62rem] font-black uppercase tracking-wide text-stone-600">{activity.activity_type.replace('_', ' ')}</span>
+                      <span className="text-[0.65rem] font-bold text-stone-400">{new Date(activity.occurred_at).toLocaleDateString('en-GB')}</span>
                     </div>
-                    <p className="mt-2 text-sm font-bold leading-5 text-stone-800">{activity.summary}</p>
-                    <p className="mt-1 text-xs text-stone-400">{companyName(activity.companies)}</p>
-                  </div>
-                )) : <Empty text="No activity logged yet." />}
+                    <p className="mt-3 text-sm font-bold leading-5 text-stone-800">{activity.summary}</p>
+                    <p className="mt-2 text-xs font-bold text-red-600">{companyName(activity.companies)}</p>
+                  </article>
+                )) : <div className="col-span-full py-5"><Empty text="No activity logged yet." /></div>}
               </div>
             </section>
           </div>
@@ -417,20 +497,89 @@ function ActivityForm({ companies, onClose, onSaved }: { companies: Company[]; o
   return <InlineForm title="Log relationship activity" onClose={onClose}><form onSubmit={submit} className="grid gap-4 md:grid-cols-4"><select required name="company_id" className="form-input"><option value="">Choose company</option>{companies.map((company) => <option key={company.id} value={company.id}>{company.company_name}</option>)}</select><select name="activity_type" className="form-input"><option value="note">Note</option><option value="call">Call</option><option value="email">Email</option><option value="meeting">Meeting</option><option value="health_check">Health check</option><option value="proposal">Proposal</option></select><input required name="summary" className="form-input md:col-span-2" placeholder="What happened and what matters next?" /><div className="flex gap-3 md:col-span-4 md:justify-end">{error ? <p className="mr-auto text-xs font-bold text-red-600">{error}</p> : null}<button type="button" onClick={onClose} className="rounded-xl px-4 py-2 text-sm font-bold text-stone-500">Cancel</button><button disabled={saving} className="rounded-xl bg-red-600 px-4 py-2 text-sm font-black text-white">{saving ? 'Saving...' : 'Log activity'}</button></div></form></InlineForm>
 }
 
-function InlineForm({ title, onClose, children }: { title: string; onClose: () => void; children: React.ReactNode }) {
-  return <section className="mb-6 rounded-2xl border border-red-200 bg-white p-5 shadow-lg"><div className="mb-4 flex items-center justify-between"><h2 className="text-xl font-black text-stone-950">{title}</h2><button type="button" onClick={onClose} className="text-sm font-bold text-stone-400">Close</button></div>{children}</section>
+function HoldDealForm({ deal, onClose, onSave }: { deal: Deal; onClose: () => void; onSave: (deal: Deal, resumeDate: string) => Promise<void> }) {
+  const [saving, setSaving] = useState(false)
+  const defaultDate = deal.stage === 'nurture' && deal.next_action_due && deal.next_action_due >= today
+    ? deal.next_action_due
+    : addDays(today, 7)
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    const resumeDate = String(new FormData(event.currentTarget).get('resume_date') || '')
+    if (!resumeDate) return
+    setSaving(true)
+    await onSave(deal, resumeDate)
+    setSaving(false)
+  }
+
+  return <InlineForm title={`Put ${deal.name} on hold`} onClose={onClose}><form onSubmit={submit} className="flex flex-col gap-4 sm:flex-row sm:items-end"><label className="block flex-1"><span className="mb-2 block text-sm font-black text-stone-700">Show back up in Today</span><input required name="resume_date" type="date" min={today} defaultValue={defaultDate} className="form-input" /></label><p className="flex-1 text-sm leading-6 text-stone-500">The deal stays in the pipeline&apos;s On hold column and returns to Today on this date.</p><div className="flex justify-end gap-3"><button type="button" onClick={onClose} className="rounded-xl px-4 py-2 text-sm font-bold text-stone-500">Cancel</button><button disabled={saving} className="rounded-xl bg-amber-600 px-4 py-2 text-sm font-black text-white hover:bg-amber-700">{saving ? 'Saving...' : 'Put on hold'}</button></div></form></InlineForm>
 }
-function Metric({ label, value, helper, urgent = false }: { label: string; value: string | number; helper?: string; urgent?: boolean }) { return <div className={`rounded-2xl border bg-white p-5 shadow-sm ${urgent ? 'border-red-300 ring-4 ring-red-50' : 'border-stone-200'}`}><p className="text-xs font-black uppercase tracking-wide text-stone-400">{label}</p><p className={`mt-3 text-3xl font-black ${urgent ? 'text-red-600' : 'text-stone-950'}`}>{value}</p>{helper ? <p className="mt-1 text-xs text-stone-400">{helper}</p> : null}</div> }
-function SectionTitle({ eyebrow, title, action }: { eyebrow: string; title: string; action?: React.ReactNode }) { return <div className="flex items-end justify-between gap-3"><div><p className="text-[10px] font-black uppercase tracking-[0.18em] text-red-600">{eyebrow}</p><h2 className="mt-1 text-xl font-black text-stone-950">{title}</h2></div>{action}</div> }
+
+function InlineForm({ title, onClose, children }: { title: string; onClose: () => void; children: React.ReactNode }) {
+  return <section className="mb-6 rounded-2xl border border-red-200 bg-white p-5 shadow-[0_18px_50px_rgba(16,19,18,0.09)]"><div className="mb-4 flex items-center justify-between"><h2 className="text-xl font-black tracking-tight text-stone-950">{title}</h2><button type="button" onClick={onClose} className="text-sm font-bold text-stone-500 hover:text-stone-950">Close</button></div>{children}</section>
+}
+function Metric({ icon, label, value, helper, urgent = false }: { icon: React.ReactNode; label: string; value: string | number; helper?: string; urgent?: boolean }) {
+  return <div className="border-b border-white/10 p-4 last:border-b-0 sm:border-b-0 sm:border-r sm:last:border-r-0 lg:p-5"><div className={`flex items-center gap-2 text-xs font-bold ${urgent ? 'text-red-300' : 'text-stone-400'}`}><span className={urgent ? 'text-red-400' : 'text-stone-500'}>{icon}</span>{label}</div><p className={`mt-3 text-2xl font-black tracking-tight lg:text-3xl ${urgent ? 'text-red-300' : 'text-white'}`}>{value}</p>{helper ? <p className="mt-1 text-[0.65rem] font-bold text-stone-500">{helper}</p> : null}</div>
+}
+function SectionTitle({ icon, eyebrow, title }: { icon: React.ReactNode; eyebrow: string; title: string }) { return <div className="flex items-center gap-3"><span className="grid h-9 w-9 place-items-center rounded-xl bg-red-50 text-red-600">{icon}</span><div><p className="text-[0.62rem] font-black uppercase tracking-[0.18em] text-stone-400">{eyebrow}</p><h2 className="mt-0.5 text-lg font-black tracking-tight text-stone-950">{title}</h2></div></div> }
 function Priority({ value }: { value: string }) { return <span className={`rounded-full px-2 py-1 text-[10px] font-black uppercase ${value === 'urgent' ? 'bg-red-100 text-red-700' : value === 'high' ? 'bg-amber-100 text-amber-800' : 'bg-stone-100 text-stone-500'}`}>{value}</span> }
 function ActionType({ value }: { value: NextAction['kind'] }) { return <span className="rounded-full bg-white/70 px-2 py-1 text-[10px] font-black uppercase text-stone-600">{value}</span> }
-function Empty({ text }: { text: string }) { return <p className="rounded-xl border border-dashed border-stone-300 p-5 text-sm leading-6 text-stone-500">{text}</p> }
-function companyName(value: Company | Company[] | null) { const company = Array.isArray(value) ? value[0] : value; return company?.company_name ?? 'No company' }
+function Empty({ text }: { text: string }) { return <p className="rounded-xl border border-dashed border-stone-300 bg-stone-50/60 p-5 text-sm leading-6 text-stone-500">{text}</p> }
+function firstCompany(value: Company | Company[] | null) { return Array.isArray(value) ? value[0] : value }
+function companyName(value: Company | Company[] | null) { return firstCompany(value)?.company_name ?? 'No company' }
 function contactName(contact: Contact) { return `${contact.first_name ?? ''} ${contact.last_name ?? ''}`.trim() || 'contact' }
-function dueDateTone(date: string | null) {
-  if (!date) return 'border-stone-200 bg-white'
-  if (date < today) return 'border-red-200 bg-red-50 text-red-700'
-  if (date === today) return 'border-emerald-200 bg-emerald-50 text-emerald-700'
-  if (date <= endOfWeekDate) return 'border-violet-200 bg-violet-50 text-violet-700'
-  return 'border-stone-200 bg-white'
+function normaliseIdentity(value: string | null | undefined) {
+  return String(value ?? '')
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/&/g, ' and ')
+    .replace(/\b(the|limited|ltd|plc|llp|incorporated|inc|company|co)\b/g, ' ')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim()
+    .replace(/\s+/g, ' ')
+}
+function dedupeCompanies(companies: Company[]) {
+  const unique = new Map<string, Company>()
+  for (const company of companies) {
+    const key = normaliseIdentity(company.company_name) || company.id
+    const existing = unique.get(key)
+    if (!existing) unique.set(key, company)
+    else unique.set(key, {
+      ...existing,
+      prospecting_status: existing.prospecting_status ?? company.prospecting_status,
+      relationship_status: existing.relationship_status ?? company.relationship_status,
+      customer_contract_end: earliestDate(existing.customer_contract_end, company.customer_contract_end),
+    })
+  }
+  return [...unique.values()]
+}
+function dedupeContacts(contacts: Contact[]) {
+  const unique = new Map<string, Contact>()
+  for (const contact of contacts) {
+    const company = firstCompany(contact.companies)
+    const contactIdentity = [normaliseIdentity(contact.first_name), normaliseIdentity(contact.last_name)].filter(Boolean).join(' ')
+    const key = contactIdentity ? `${contactIdentity}|${normaliseIdentity(company?.company_name)}` : contact.id
+    const existing = unique.get(key)
+    if (!existing) unique.set(key, contact)
+    else if ((!existing.next_contact_opportunity && contact.next_contact_opportunity) || (contact.next_contact_opportunity && existing.next_contact_opportunity && contact.next_contact_opportunity < existing.next_contact_opportunity)) unique.set(key, contact)
+  }
+  return [...unique.values()]
+}
+function earliestDate(first: string | null | undefined, second: string | null | undefined) {
+  if (!first) return second ?? null
+  if (!second) return first
+  return first < second ? first : second
+}
+function addDays(dateValue: string, days: number) {
+  const date = new Date(`${dateValue}T12:00:00Z`)
+  date.setUTCDate(date.getUTCDate() + days)
+  return date.toISOString().slice(0, 10)
+}
+function dueDateTextTone(date: string | null) {
+  if (!date) return 'font-bold text-stone-400'
+  if (date < today) return 'font-black text-red-600'
+  if (date === today) return 'font-black text-emerald-700'
+  if (date <= endOfWeekDate) return 'font-black text-violet-700'
+  return 'font-bold text-stone-500'
 }

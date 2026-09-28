@@ -10,7 +10,7 @@ export const dealStages = [
   { key: 'contract_sent', label: 'Contract sent', probability: 95 },
   { key: 'won', label: 'Won', probability: 100 },
   { key: 'lost', label: 'Lost', probability: 0 },
-  { key: 'nurture', label: 'Nurture', probability: 10 },
+  { key: 'nurture', label: 'On hold', probability: 10 },
 ] as const
 
 export type DealStage = (typeof dealStages)[number]['key']

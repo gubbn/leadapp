@@ -226,7 +226,7 @@ export default function OpportunityWorkspace() {
           <div className="mt-6 grid gap-5 md:grid-cols-2">
             <Field label="Opportunity name"><input required name="name" defaultValue={deal.name} className="form-input" /></Field>
             <Field label="Primary contact"><select name="primary_contact_id" defaultValue={deal.primary_contact_id ?? ''} className="form-input"><option value="">Not assigned</option>{contacts.map((contact) => <option key={contact.id} value={contact.id}>{contactName(contact)}{contact.role ? ` · ${contact.role}` : ''}</option>)}</select></Field>
-            <Field label="Stage"><select name="stage" defaultValue={deal.stage} className="form-input">{dealStages.map((stage) => <option key={stage.key} value={stage.key}>{stage.label}</option>)}</select></Field>
+            <Field label="Stage"><select name="stage" defaultValue={deal.stage} className="form-input">{dealStages.filter((stage) => stage.key !== 'nurture' || deal.stage === 'nurture').map((stage) => <option key={stage.key} value={stage.key}>{stage.label}</option>)}</select></Field>
             <Field label="Annual value (£)"><input name="annual_value" type="number" min="0" defaultValue={deal.annual_value ?? ''} className="form-input" /></Field>
             <Field label="Number of users"><input name="number_of_users" type="number" min="0" defaultValue={deal.number_of_users ?? company?.number_of_users ?? ''} className="form-input" /></Field>
             <Field label="Services"><input name="service_interest" defaultValue={deal.service_interest ?? ''} className="form-input" placeholder="Managed IT, cyber, Microsoft 365..." /></Field>
