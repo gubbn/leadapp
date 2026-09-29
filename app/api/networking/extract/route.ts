@@ -8,10 +8,22 @@ const MAX_FILE_SIZE = 10 * 1024 * 1024
 const MAX_EXTRACTED_TEXT_LENGTH = 500_000
 
 export async function POST(request: Request) {
-  const supabase = await createSupabaseServerClient()
-  const { data: { user } } = await supabase.auth.getUser()
+  try {
+    return await extractAttendees(request)
+  } catch (error) {
+    console.error('Networking PDF service failed', error)
+    return NextResponse.json(
+      { error: 'The PDF service is temporarily unavailable. Refresh the page and try again.' },
+      { status: 500 },
+    )
+  }
+}
 
-  if (!user) {
+async function extractAttendees(request: Request) {
+  const supabase = await createSupabaseServerClient()
+  const { data: { user }, error: authError } = await supabase.auth.getUser()
+
+  if (authError || !user) {
     return NextResponse.json({ error: 'Sign in to import an attendee list.' }, { status: 401 })
   }
 

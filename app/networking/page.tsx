@@ -5,6 +5,8 @@ import AppHeader from '@/app/components/AppHeader'
 import { supabase } from '@/lib/supabaseClient'
 import {
   blankAttendeeDraft,
+  networkingPersonKey,
+  networkingRostersMatch,
   parseAttendeeText,
   parseNetworkingGroupName,
   type NetworkingAttendeeDraft,
@@ -124,10 +126,47 @@ export default function NetworkingPage() {
     attendees.forEach((attendee) => counts.set(attendee.event_id, (counts.get(attendee.event_id) ?? 0) + 1))
     return counts
   }, [attendees])
-  const linkedOpportunityCount = attendees.filter((attendee) => attendee.deal_id).length
-  const recentAttendees = selectedEventId
-    ? attendees.filter((attendee) => attendee.event_id === selectedEventId)
-    : attendees.slice(0, 8)
+  const attendeeKey = useCallback((attendee: NetworkingAttendee) => networkingPersonKey({
+    contactId: attendee.contact_id,
+    email: attendee.raw_email,
+    name: attendee.raw_name,
+    company: attendee.raw_company,
+  }), [])
+  const uniquePeopleCount = useMemo(() => new Set(attendees.map(attendeeKey)).size, [attendeeKey, attendees])
+  const linkedOpportunityCount = useMemo(() => new Set(attendees.filter((attendee) => attendee.deal_id).map(attendeeKey)).size, [attendeeKey, attendees])
+  const peopleByGroupId = useMemo(() => {
+    const people = new Map<string, Set<string>>()
+    attendees.forEach((attendee) => {
+      const event = eventById.get(attendee.event_id)
+      if (!event) return
+      const groupPeople = people.get(event.group_id) ?? new Set<string>()
+      groupPeople.add(attendeeKey(attendee))
+      people.set(event.group_id, groupPeople)
+    })
+    return people
+  }, [attendeeKey, attendees, eventById])
+  const locationsByPerson = useMemo(() => {
+    const locations = new Map<string, Map<string, NetworkingGroup>>()
+    attendees.forEach((attendee) => {
+      const event = eventById.get(attendee.event_id)
+      const group = event ? groupById.get(event.group_id) : null
+      if (!group) return
+      const personLocations = locations.get(attendeeKey(attendee)) ?? new Map<string, NetworkingGroup>()
+      personLocations.set(group.id, group)
+      locations.set(attendeeKey(attendee), personLocations)
+    })
+    return new Map(Array.from(locations, ([key, value]) => [key, Array.from(value.values())]))
+  }, [attendeeKey, attendees, eventById, groupById])
+  const recentAttendees = useMemo(() => {
+    if (selectedEventId) return attendees.filter((attendee) => attendee.event_id === selectedEventId)
+    const seen = new Set<string>()
+    return attendees.filter((attendee) => {
+      const key = attendeeKey(attendee)
+      if (seen.has(key)) return false
+      seen.add(key)
+      return true
+    }).slice(0, 8)
+  }, [attendeeKey, attendees, selectedEventId])
 
   return (
     <main className="min-h-screen bg-[#eeeae3] text-stone-900">
@@ -156,13 +195,15 @@ export default function NetworkingPage() {
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
           <Metric label="Networking groups" value={groups.length} note="Your regular rooms" />
           <Metric label="Events remembered" value={events.length} note="With useful context" />
-          <Metric label="People met" value={attendees.length} note="Across every event" />
+          <Metric label="People met" value={uniquePeopleCount} note="Unique people across every event" />
           <Metric label="Opportunity links" value={linkedOpportunityCount} note="Introductions with purpose" accent />
         </div>
 
         {importOpen ? (
           <ImportEventPanel
             groups={groups}
+            events={events}
+            attendees={attendees}
             companies={companies}
             contacts={contacts}
             deals={deals}
@@ -187,7 +228,7 @@ export default function NetworkingPage() {
               <div className="mt-3 divide-y divide-stone-200">
                 {groups.map((group) => {
                   const groupEvents = events.filter((event) => event.group_id === group.id)
-                  const people = groupEvents.reduce((total, event) => total + (attendeeCounts.get(event.id) ?? 0), 0)
+                  const people = peopleByGroupId.get(group.id)?.size ?? 0
                   return <article key={group.id} className="grid grid-cols-[auto_1fr_auto] items-center gap-4 py-4">
                     <span className="flex h-10 w-10 items-center justify-center rounded-full bg-stone-950 text-sm font-black text-white">{initials(group.name)}</span>
                     <div><h3 className="font-black text-stone-950">{group.name}</h3><p className="mt-1 text-xs font-bold text-stone-500">{group.location || 'Location not recorded'} · {groupEvents.length} events</p></div>
@@ -232,9 +273,10 @@ export default function NetworkingPage() {
             const linkedContact = attendee.contact_id ? contactById.get(attendee.contact_id) : null
             const linkedCompany = attendee.company_id ? companyById.get(attendee.company_id) : null
             const linkedDeal = attendee.deal_id ? dealById.get(attendee.deal_id) : null
-            return <article key={attendee.id} className="grid gap-3 p-5 md:grid-cols-[1.15fr_1fr_1fr_auto] md:items-center">
-              <div><h3 className="font-black text-stone-950">{attendee.raw_name}</h3><p className="mt-1 text-sm text-stone-500">{attendee.raw_role || 'Role not recorded'}{attendee.raw_company ? ` · ${attendee.raw_company}` : ''}</p></div>
-              <div><p className="text-xs font-black uppercase tracking-wide text-stone-400">Met at</p><p className="mt-1 text-sm font-bold">{event ? `${groupById.get(event.group_id)?.name ?? 'Group'} · ${formatDate(event.event_date)}` : 'Event'}</p></div>
+            const personLocations = locationsByPerson.get(attendeeKey(attendee)) ?? []
+            return <article key={attendee.id} className="grid gap-3 p-5 md:grid-cols-[1.15fr_1.2fr_1fr_auto] md:items-center">
+              <div><h3 className="font-black text-stone-950">{attendee.raw_name}</h3>{attendee.raw_company ? <p className="mt-1 text-sm text-stone-500">{attendee.raw_company}</p> : null}</div>
+              <div><p className="text-xs font-black uppercase tracking-wide text-stone-400">Groups / locations</p><div className="mt-2 flex flex-wrap gap-1.5">{personLocations.length ? personLocations.map((group) => <span key={group.id} title={group.location || group.name} className="rounded-full bg-red-50 px-2.5 py-1 text-[11px] font-black text-red-700">{group.location && normalise(group.location) !== normalise(group.name) ? `${group.name} · ${group.location}` : group.name}</span>) : <span className="text-sm font-bold text-stone-500">Not recorded</span>}</div>{event ? <p className="mt-2 text-[11px] font-bold text-stone-400">Last seen {formatDate(event.event_date)}</p> : null}</div>
               <div><p className="text-xs font-black uppercase tracking-wide text-stone-400">CRM connection</p><p className="mt-1 text-sm font-bold">{linkedDeal?.name || linkedContact && contactName(linkedContact) || linkedCompany?.company_name || 'Not linked yet'}</p></div>
               <span className={`w-fit rounded-full px-3 py-1 text-xs font-black ${linkedDeal ? 'bg-red-100 text-red-700' : linkedContact || linkedCompany ? 'bg-amber-100 text-amber-800' : 'bg-stone-100 text-stone-500'}`}>{linkedDeal ? 'Opportunity' : linkedContact || linkedCompany ? 'CRM match' : 'Black book only'}</span>
             </article>
@@ -245,7 +287,7 @@ export default function NetworkingPage() {
   )
 }
 
-function ImportEventPanel({ groups, companies, contacts, deals, onClose, onSaved }: { groups: NetworkingGroup[]; companies: Company[]; contacts: Contact[]; deals: Deal[]; onClose: () => void; onSaved: () => Promise<void> }) {
+function ImportEventPanel({ groups, events, attendees, companies, contacts, deals, onClose, onSaved }: { groups: NetworkingGroup[]; events: NetworkingEvent[]; attendees: NetworkingAttendee[]; companies: Company[]; contacts: Contact[]; deals: Deal[]; onClose: () => void; onSaved: () => Promise<void> }) {
   const [groupId, setGroupId] = useState(groups[0]?.id ?? '__new__')
   const [newGroupName, setNewGroupName] = useState('')
   const [eventName, setEventName] = useState('')
@@ -271,6 +313,13 @@ function ImportEventPanel({ groups, companies, contacts, deals, onClose, onSaved
 
     try {
       const response = await fetch('/api/networking/extract', { method: 'POST', body })
+      const contentType = response.headers.get('content-type') ?? ''
+      if (!contentType.includes('application/json')) {
+        if (response.redirected || response.url.includes('/login')) {
+          throw new Error('Your session has expired. Sign in again, then upload the PDF once more.')
+        }
+        throw new Error(`The PDF service returned an unexpected response (${response.status}). Refresh the page and try again.`)
+      }
       const result = await response.json() as { text?: string; pageCount?: number; error?: string }
       if (!response.ok || !result.text) throw new Error(result.error || 'The PDF could not be read.')
       const parsed = parseAttendeeText(result.text)
@@ -323,6 +372,36 @@ function ImportEventPanel({ groups, companies, contacts, deals, onClose, onSaved
         savedGroupId = data.id
       }
 
+      const uploadedRoster = usableDrafts.map((draft) => networkingPersonKey({
+        contactId: draft.contactId || null,
+        email: draft.email,
+        name: draft.name,
+        company: draft.company,
+      }))
+      const matchingEvent = events
+        .filter((existingEvent) => existingEvent.group_id === savedGroupId)
+        .find((existingEvent) => networkingRostersMatch(
+          attendees
+            .filter((attendee) => attendee.event_id === existingEvent.id)
+            .map((attendee) => networkingPersonKey({
+              contactId: attendee.contact_id,
+              email: attendee.raw_email,
+              name: attendee.raw_name,
+              company: attendee.raw_company,
+            })),
+          uploadedRoster,
+        ))
+
+      if (matchingEvent) {
+        const { error: updateError } = await supabase
+          .from('networking_events')
+          .update({ event_date: eventDate, updated_at: new Date().toISOString() })
+          .eq('id', matchingEvent.id)
+        if (updateError) throw updateError
+        await onSaved()
+        return
+      }
+
       const { data: savedEvent, error: eventError } = await supabase.from('networking_events').insert({
         group_id: savedGroupId,
         event_name: cleanEventName,
@@ -365,12 +444,13 @@ function ImportEventPanel({ groups, companies, contacts, deals, onClose, onSaved
     </div>
     <div className="border-b border-stone-800 p-6">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center"><label className="cursor-pointer rounded-xl bg-red-600 px-5 py-3 text-center text-sm font-black hover:bg-red-500">{reading ? 'Reading PDF…' : 'Upload attendee PDF'}<input type="file" accept="application/pdf,.pdf" onChange={handlePdf} disabled={reading} className="sr-only" /></label><button onClick={() => setDrafts((current) => [...current, blankAttendeeDraft(current.length)])} className="rounded-xl border border-stone-600 px-5 py-3 text-sm font-black text-stone-200 hover:bg-stone-800">+ Add person manually</button>{fileName ? <p className="text-sm font-bold text-stone-400">{fileName}{pageCount ? ` · ${pageCount} pages` : ''}</p> : null}</div>
+      <p className="mt-3 text-xs font-bold text-stone-500">Uploading the same people for the same group updates their existing met-at date instead of adding them again.</p>
       {error ? <p className="mt-4 rounded-xl border border-red-900 bg-red-950/60 p-4 text-sm font-bold text-red-200">{error}</p> : null}
     </div>
     {drafts.length ? <div className="p-6"><div className="mb-4 flex items-end justify-between gap-4"><div><p className="text-xs font-black uppercase tracking-wide text-red-400">Review before saving</p><h3 className="mt-1 text-xl font-black">{drafts.length} people found</h3></div><p className="hidden text-xs text-stone-500 md:block">PDF layouts vary. Correct anything that landed in the wrong box.</p></div><div className="space-y-3">{drafts.map((draft, index) => {
       const visibleDeals = draft.companyId ? deals.filter((deal) => deal.company_id === draft.companyId) : deals
       const suggested = Boolean(draft.contactId || draft.companyId)
-      return <article key={draft.draftId} className="rounded-2xl border border-stone-700 bg-stone-900 p-4"><div className="mb-3 flex items-center justify-between"><p className="text-xs font-black uppercase tracking-wide text-stone-500">Person {index + 1}{suggested ? <span className="ml-2 text-amber-400">Possible CRM match</span> : null}</p><button onClick={() => setDrafts((current) => current.filter((item) => item.draftId !== draft.draftId))} className="text-xs font-black text-stone-500 hover:text-red-400">Remove</button></div><div className="grid gap-3 md:grid-cols-2 lg:grid-cols-3"><input value={draft.name} onChange={(event) => updateDraft(draft.draftId, 'name', event.target.value)} className="form-input" placeholder="Full name" aria-label={`Person ${index + 1} full name`} /><input value={draft.company} onChange={(event) => updateDraft(draft.draftId, 'company', event.target.value)} className="form-input" placeholder="Company" aria-label={`Person ${index + 1} company`} /><input value={draft.email} onChange={(event) => updateDraft(draft.draftId, 'email', event.target.value)} className="form-input" placeholder="Email" aria-label={`Person ${index + 1} email`} /><input value={draft.website} onChange={(event) => updateDraft(draft.draftId, 'website', event.target.value)} className="form-input" placeholder="Website" aria-label={`Person ${index + 1} website`} /><input value={draft.role} onChange={(event) => updateDraft(draft.draftId, 'role', event.target.value)} className="form-input" placeholder="Role (optional)" aria-label={`Person ${index + 1} role`} /><input value={draft.phone} onChange={(event) => updateDraft(draft.draftId, 'phone', event.target.value)} className="form-input" placeholder="Phone (optional)" aria-label={`Person ${index + 1} phone`} /></div><div className="mt-3 grid gap-3 md:grid-cols-3"><select value={draft.contactId} onChange={(event) => updateDraft(draft.draftId, 'contactId', event.target.value)} className="form-input"><option value="">No existing contact link</option>{contacts.map((contact) => <option key={contact.id} value={contact.id}>{contactName(contact)}{contact.email ? ` · ${contact.email}` : ''}</option>)}</select><select value={draft.companyId} onChange={(event) => updateDraft(draft.draftId, 'companyId', event.target.value)} className="form-input"><option value="">No existing company link</option>{companies.map((company) => <option key={company.id} value={company.id}>{company.company_name}</option>)}</select><select value={draft.dealId} onChange={(event) => updateDraft(draft.draftId, 'dealId', event.target.value)} className="form-input"><option value="">No opportunity link</option>{visibleDeals.map((deal) => <option key={deal.id} value={deal.id}>{deal.name} · {deal.stage}</option>)}</select></div>{draft.contactId && contactNames.get(draft.contactId) !== normalise(draft.name) ? <p className="mt-2 text-xs font-bold text-amber-300">Check this contact link: the names are not an exact match.</p> : null}</article>
+      return <article key={draft.draftId} className="rounded-2xl border border-stone-700 bg-stone-900 p-4"><div className="mb-3 flex items-center justify-between"><p className="text-xs font-black uppercase tracking-wide text-stone-500">Person {index + 1}{suggested ? <span className="ml-2 text-amber-400">Possible CRM match</span> : null}</p><button onClick={() => setDrafts((current) => current.filter((item) => item.draftId !== draft.draftId))} className="text-xs font-black text-stone-500 hover:text-red-400">Remove</button></div><div className="grid gap-3 md:grid-cols-2 lg:grid-cols-3"><input value={draft.name} onChange={(event) => updateDraft(draft.draftId, 'name', event.target.value)} className="form-input" placeholder="Full name" aria-label={`Person ${index + 1} full name`} /><input value={draft.company} onChange={(event) => updateDraft(draft.draftId, 'company', event.target.value)} className="form-input" placeholder="Company" aria-label={`Person ${index + 1} company`} /><input value={draft.email} onChange={(event) => updateDraft(draft.draftId, 'email', event.target.value)} className="form-input" placeholder="Email" aria-label={`Person ${index + 1} email`} /><input value={draft.website} onChange={(event) => updateDraft(draft.draftId, 'website', event.target.value)} className="form-input" placeholder="Website" aria-label={`Person ${index + 1} website`} /><input value={draft.phone} onChange={(event) => updateDraft(draft.draftId, 'phone', event.target.value)} className="form-input" placeholder="Phone (optional)" aria-label={`Person ${index + 1} phone`} /></div><div className="mt-3 grid gap-3 md:grid-cols-3"><select value={draft.contactId} onChange={(event) => updateDraft(draft.draftId, 'contactId', event.target.value)} className="form-input"><option value="">No existing contact link</option>{contacts.map((contact) => <option key={contact.id} value={contact.id}>{contactName(contact)}{contact.email ? ` · ${contact.email}` : ''}</option>)}</select><select value={draft.companyId} onChange={(event) => updateDraft(draft.draftId, 'companyId', event.target.value)} className="form-input"><option value="">No existing company link</option>{companies.map((company) => <option key={company.id} value={company.id}>{company.company_name}</option>)}</select><select value={draft.dealId} onChange={(event) => updateDraft(draft.draftId, 'dealId', event.target.value)} className="form-input"><option value="">No opportunity link</option>{visibleDeals.map((deal) => <option key={deal.id} value={deal.id}>{deal.name} · {deal.stage}</option>)}</select></div>{draft.contactId && contactNames.get(draft.contactId) !== normalise(draft.name) ? <p className="mt-2 text-xs font-bold text-amber-300">Check this contact link: the names are not an exact match.</p> : null}</article>
     })}</div><div className="mt-6 flex flex-col justify-end gap-3 sm:flex-row"><button onClick={onClose} className="rounded-xl px-5 py-3 text-sm font-black text-stone-400">Cancel</button><button onClick={() => void saveEvent()} disabled={saving} className="rounded-xl bg-red-600 px-6 py-3 text-sm font-black text-white hover:bg-red-500 disabled:opacity-50">{saving ? 'Saving the room…' : `Save event and ${drafts.filter((draft) => draft.name.trim()).length} people`}</button></div></div> : <div className="p-10 text-center"><p className="text-lg font-black">Start with the attendee list.</p><p className="mt-2 text-sm text-stone-500">You can also add people one at a time if there is no PDF.</p></div>}
   </section>
 }

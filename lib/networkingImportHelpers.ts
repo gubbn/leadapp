@@ -12,6 +12,13 @@ export type NetworkingAttendeeDraft = {
   dealId: string
 }
 
+type NetworkingPersonIdentity = {
+  contactId?: string | null
+  email?: string | null
+  name?: string | null
+  company?: string | null
+}
+
 const EMAIL_PATTERN = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i
 const PHONE_PATTERN = /(?:\+44\s?\(?(?:0\)?\s?)?|\(?0)(?:\d[\s().-]?){8,12}\d/
 const WEBSITE_PATTERN = /^(?:https?:\/\/)?(?:www\.)?[a-z0-9][a-z0-9.-]*\.[a-z]{2,}(?:\/\S*)?$/i
@@ -35,6 +42,26 @@ export function blankAttendeeDraft(index = 0): NetworkingAttendeeDraft {
     companyId: '',
     dealId: '',
   }
+}
+
+export function networkingPersonKey(person: NetworkingPersonIdentity) {
+  if (person.contactId) return `contact:${person.contactId}`
+
+  const email = person.email?.trim().toLowerCase()
+  if (email) return `email:${email}`
+
+  const name = normaliseIdentity(person.name)
+  const company = normaliseIdentity(person.company)
+  return `name:${name}|company:${company}`
+}
+
+export function networkingRostersMatch(left: string[], right: string[]) {
+  const leftRoster = new Set(left)
+  const rightRoster = new Set(right)
+
+  return leftRoster.size > 0
+    && leftRoster.size === rightRoster.size
+    && Array.from(leftRoster).every((personKey) => rightRoster.has(personKey))
 }
 
 export function parseAttendeeText(text: string): NetworkingAttendeeDraft[] {
@@ -156,7 +183,7 @@ function draftFromIdentity(identityLines: string[], email: string, index: number
     draftId: `pdf-${index}-${simpleHash([...cells, email].join('|'))}`,
     name: rawName,
     company,
-    role: /\s+-\s+HOST$/i.test(nameParts.join(' ')) ? 'Host' : presentingIndex >= 0 ? 'Presenter' : '',
+    role: /\s+-\s+HOST$/i.test(nameParts.join(' ')) ? 'Host' : '',
     email,
   }
 }
@@ -228,4 +255,8 @@ function simpleHash(value: string) {
     hash = (hash * 31 + value.charCodeAt(index)) >>> 0
   }
   return hash.toString(36)
+}
+
+function normaliseIdentity(value?: string | null) {
+  return value?.trim().toLowerCase().replace(/[^a-z0-9]+/g, ' ') ?? ''
 }
