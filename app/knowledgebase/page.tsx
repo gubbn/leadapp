@@ -237,7 +237,7 @@ const sections: GuideSection[] = [
     keywords: 'playbook strategy monthly weekly scorecard reports kpi targets',
     content: (
       <>
-        <p>The <LinkText href="/playbook">Marketing Playbook</LinkText> contains the six-month strategy, monthly actions, weekly rhythm and scorecard.</p>
+        <p>The <LinkText href="/playbook">Marketing Playbook</LinkText> contains the six-month strategy, monthly actions and weekly rhythm. Use the <LinkText href="/scorecard">Strategy Scorecard</LinkText> to record actuals, review conversion and capture what changes next.</p>
         <GuideList items={[
           'Complete weekly actions rather than treating the Playbook as reference material only.',
           'Record monthly leads, qualified opportunities, meetings, proposals, wins and revenue.',
@@ -274,7 +274,7 @@ const sections: GuideSection[] = [
           'Update the Playbook checklist.',
         ]} />
         <Routine title="Monthly" items={[
-          'Update the Playbook scorecard and Reports.',
+          'Update the Strategy Scorecard and Reports.',
           'Compare leads, meetings, proposals, wins and revenue against target.',
           'Review campaign response and unsubscribe/bounce quality.',
           'Choose the next month’s sector, message and introductory offer.',

@@ -102,12 +102,12 @@ const menus: MenuGroup[] = [
   {
     label: 'Strategy',
     description: 'Playbook, guidance and reporting',
-    match: ['/playbook', '/knowledgebase', '/reports'],
+    match: ['/playbook', '/scorecard', '/knowledgebase', '/reports'],
     icon: BookOpenText,
     items: [
       { href: '/playbook', label: 'Playbook', description: 'Strategy, plan and rhythm', icon: BookOpenText },
       { href: '/playbook#monthly-plan', label: 'Monthly plan', description: 'Campaign actions and targets', icon: ListChecks },
-      { href: '/playbook#scorecard', label: 'Scorecard', description: 'Record monthly performance', icon: CircleGauge },
+      { href: '/scorecard', label: 'Scorecard', description: 'Targets, actuals and conversion', icon: CircleGauge },
       { href: '/knowledgebase', label: 'Knowledge base', description: 'System and workflow guide', icon: FileSearch },
       { href: '/reports', label: 'Reports', description: 'Performance at a glance', icon: BarChart3 },
     ],

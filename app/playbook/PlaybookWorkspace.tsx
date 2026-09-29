@@ -1,11 +1,13 @@
 'use client'
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import Link from 'next/link'
 import { supabase } from '@/lib/supabaseClient'
 import {
   brandGuardrails,
   playbookMonths,
   scorecardFields,
+  strategyPillars,
   strategicTargets,
   weeklyCommitments,
 } from '@/app/playbook/data'
@@ -212,6 +214,10 @@ export default function PlaybookWorkspace() {
                 Follow the monthly campaign, protect the weekly rhythm and keep
                 every opportunity moving toward a dated next action.
               </p>
+              <div className="mt-6 flex flex-wrap gap-3">
+                <a href="#monthly-plan" className="rounded-xl bg-stone-950 px-4 py-3 text-sm font-black text-white transition hover:bg-red-600">Open monthly plan</a>
+                <Link href="/scorecard" className="rounded-xl border border-stone-300 bg-white px-4 py-3 text-sm font-black text-stone-800 transition hover:border-red-300 hover:text-red-700">Open scorecard</Link>
+              </div>
             </div>
 
             <div className="rounded-3xl border border-stone-200 bg-white p-5 shadow-sm">
@@ -242,6 +248,25 @@ export default function PlaybookWorkspace() {
             </button>
           </div>
         ) : null}
+
+        <section className="mb-6 rounded-3xl border border-stone-200 bg-stone-950 p-5 text-white shadow-sm md:p-7">
+          <div className="flex flex-col justify-between gap-3 border-b border-white/10 pb-5 md:flex-row md:items-end">
+            <div>
+              <p className="text-xs font-black uppercase tracking-[0.2em] text-red-300">Strategy on one page</p>
+              <h2 className="mt-2 text-2xl font-black">The choices that guide the work</h2>
+            </div>
+            <p className="max-w-xl text-sm leading-6 text-stone-400">Use these guardrails to decide what belongs in the plan, what can wait and how every campaign should feel.</p>
+          </div>
+          <div className="mt-5 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+            {strategyPillars.map((pillar) => (
+              <article key={pillar.label} className="rounded-2xl border border-white/10 bg-white/5 p-4">
+                <p className="text-[10px] font-black uppercase tracking-[0.18em] text-red-300">{pillar.label}</p>
+                <p className="mt-2 text-sm font-black leading-6 text-white">{pillar.value}</p>
+                <p className="mt-2 text-xs leading-5 text-stone-400">{pillar.detail}</p>
+              </article>
+            ))}
+          </div>
+        </section>
 
         <div className="mb-6 flex flex-col gap-4 rounded-2xl border border-stone-200 bg-white p-3 shadow-sm lg:flex-row lg:items-center lg:justify-between">
           <div className="flex gap-2 overflow-x-auto">

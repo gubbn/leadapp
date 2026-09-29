@@ -190,6 +190,38 @@ export const strategicTargets = [
   { label: 'Proposal conversion', core: '30%', stretch: '40%' },
 ]
 
+export const strategyPillars = [
+  {
+    label: 'Who we serve',
+    value: 'Nottinghamshire organisations that need dependable, human IT support.',
+    detail: 'Prioritise businesses where continuity, Microsoft 365 and cyber resilience matter to leadership.',
+  },
+  {
+    label: 'Lead offer',
+    value: 'A free 30-minute IT Resilience Check with a useful written report.',
+    detail: 'Create value first, uncover practical risk and earn the right to continue the conversation.',
+  },
+  {
+    label: 'Positioning',
+    value: 'Plain-English IT guidance from people who take ownership.',
+    detail: 'Lead with reassurance, responsiveness and business outcomes instead of technical features.',
+  },
+  {
+    label: 'Commercial outcome',
+    value: 'Build a consistent pipeline and win 5-8 managed support clients.',
+    detail: 'The stretch goal is 10-15 clients without sacrificing fit, trust or delivery quality.',
+  },
+]
+
+export const scorecardTargetsByMonth: Record<string, Partial<Record<(typeof scorecardFields)[number]['key'], number>>> = {
+  '2026-08': { targets: 100 },
+  '2026-09': { contacts: 60, checks: 4, opportunities: 4 },
+  '2026-10': { checks: 6, opportunities: 8, proposals: 3 },
+  '2026-11': { checks: 6, opportunities: 8, proposals: 4 },
+  '2026-12': {},
+  '2027-01': { checks: 6, opportunities: 10, proposals: 5 },
+}
+
 export const brandGuardrails = [
   'Make every message useful before asking for a meeting.',
   'Use plain English and explain why a recommendation matters.',
