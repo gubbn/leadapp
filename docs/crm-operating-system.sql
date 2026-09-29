@@ -16,15 +16,11 @@ create table if not exists public.deals (
       'new',
       'conversation',
       'discovery',
-      'health_check',
-      'report_sent',
-      'solution_agreed',
       'proposal',
       'decision',
-      'contract_sent',
-      'won',
+      'nurture',
       'lost',
-      'nurture'
+      'won'
     )),
   annual_value numeric(12,2)
     check (annual_value is null or annual_value >= 0),
@@ -46,6 +42,26 @@ create table if not exists public.deals (
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
+
+-- Collapse legacy pipeline stages before tightening the allowed values.
+update public.deals
+set
+  stage = case
+    when stage in ('health_check', 'report_sent', 'solution_agreed') then 'discovery'
+    when stage = 'contract_sent' then 'decision'
+    else stage
+  end,
+  probability = case
+    when stage in ('health_check', 'report_sent', 'solution_agreed') then 40
+    when stage = 'contract_sent' then 90
+    else probability
+  end
+where stage in ('health_check', 'report_sent', 'solution_agreed', 'contract_sent');
+
+alter table public.deals drop constraint if exists deals_stage_check;
+alter table public.deals
+  add constraint deals_stage_check
+  check (stage in ('new', 'conversation', 'discovery', 'proposal', 'decision', 'nurture', 'lost', 'won'));
 
 create table if not exists public.crm_tasks (
   id uuid primary key default gen_random_uuid(),
@@ -160,3 +176,6 @@ create index crm_activities_company_occurred_idx
   on public.crm_activities(company_id, occurred_at desc);
 create index crm_activities_deal_occurred_idx
   on public.crm_activities(deal_id, occurred_at desc);
+create index crm_activities_status_change_deal_occurred_idx
+  on public.crm_activities(deal_id, occurred_at desc)
+  where activity_type = 'status_change';

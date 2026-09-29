@@ -19,7 +19,7 @@ import {
   TrendingUp,
 } from 'lucide-react'
 import { supabase } from '@/lib/supabaseClient'
-import { formatCurrency, formatShortDate, stageFor } from '@/lib/crm'
+import { formatCurrency, formatShortDate, normalizeDealStage, stageFor } from '@/lib/crm'
 
 type Company = {
   id: string
@@ -93,6 +93,7 @@ const endOfWeek = new Date(`${today}T12:00:00Z`)
 endOfWeek.setUTCDate(endOfWeek.getUTCDate() + daysUntilSunday)
 const endOfWeekDate = endOfWeek.toISOString().slice(0, 10)
 const stalledCutoff = Date.now() - 14 * 86400000
+const nurtureCutoff = Date.now() - 10 * 86400000
 const todayLabel = new Intl.DateTimeFormat('en-GB', {
   weekday: 'long',
   day: 'numeric',
@@ -113,7 +114,6 @@ export default function TodayWorkspace() {
   const [error, setError] = useState('')
   const [showTaskForm, setShowTaskForm] = useState(false)
   const [showActivityForm, setShowActivityForm] = useState(false)
-  const [holdingDeal, setHoldingDeal] = useState<Deal | null>(null)
 
   const loadWorkspace = useCallback(async () => {
     setLoading(true)
@@ -180,7 +180,7 @@ export default function TodayWorkspace() {
     [tasks],
   )
   const visibleDeals = useMemo(
-    () => deals.filter((deal) => deal.stage !== 'nurture' || Boolean(deal.next_action_due && deal.next_action_due <= today)),
+    () => deals.filter((deal) => normalizeDealStage(deal.stage) !== 'nurture' || new Date(deal.updated_at).getTime() <= nurtureCutoff),
     [deals],
   )
   const nextActions = useMemo<NextAction[]>(() => {
@@ -193,23 +193,27 @@ export default function TodayWorkspace() {
       kind: 'task' as const,
       task,
     }))
-    const datedDeals = visibleDeals.flatMap((deal) => deal.next_action_due ? [{
-      id: `deal-${deal.id}`,
-      title: deal.stage === 'nurture' ? `Hold ended: ${deal.name}` : deal.next_action || deal.name,
-      detail: `${companyName(deal.companies)} · ${deal.stage === 'nurture' ? 'ready to resume' : 'opportunity'}`,
-      dueDate: deal.next_action_due,
-      href: `/sales/${deal.id}`,
-      kind: 'opportunity' as const,
-      deal,
-    }] : [])
-    const datedContacts = contacts.flatMap((contact) => contact.next_contact_opportunity ? [{
-      id: `contact-${contact.id}`,
-      title: `Follow up with ${contactName(contact)}`,
-      detail: `${companyName(contact.companies)} · contact`,
-      dueDate: contact.next_contact_opportunity,
-      href: '/contacts',
-      kind: 'contact' as const,
-    }] : [])
+    const datedDeals = visibleDeals.flatMap((deal) => {
+      const stage = normalizeDealStage(deal.stage)
+      if (stage === 'nurture') return [{
+        id: `deal-${deal.id}`,
+        title: `Continue nurturing: ${deal.name}`,
+        detail: `${companyName(deal.companies)} · no update for 10 days`,
+        dueDate: addDays(deal.updated_at.slice(0, 10), 10),
+        href: `/sales/${deal.id}`,
+        kind: 'opportunity' as const,
+        deal,
+      }]
+      return deal.next_action_due ? [{
+        id: `deal-${deal.id}`,
+        title: deal.next_action || deal.name,
+        detail: `${companyName(deal.companies)} · opportunity`,
+        dueDate: deal.next_action_due,
+        href: `/sales/${deal.id}`,
+        kind: 'opportunity' as const,
+        deal,
+      }] : []
+    })
     const customerDates = companies.flatMap((company) =>
       company.relationship_status === 'customer' && company.customer_contract_end ? [{
         id: `customer-${company.id}`,
@@ -228,6 +232,27 @@ export default function TodayWorkspace() {
       href: '/quotes',
       kind: 'quote' as const,
     }))
+    const companiesWithUpdates = new Set([
+      ...datedTasks.map((action) => companyIdentity(action.task.companies)),
+      ...datedDeals.map((action) => companyIdentity(action.deal.companies)),
+      ...companies
+        .filter((company) => company.relationship_status === 'customer' && company.customer_contract_end)
+        .map((company) => companyIdentityFromName(company.company_name)),
+      ...quotes.filter((quote) => quote.chase_due_date <= today).map((quote) => companyIdentity(quote.companies)),
+    ].filter(Boolean))
+    const datedContacts = contacts.flatMap((contact) => {
+      if (!contact.next_contact_opportunity) return []
+      const contactCompany = companyIdentity(contact.companies)
+      if (contactCompany && companiesWithUpdates.has(contactCompany)) return []
+      return [{
+        id: `contact-${contact.id}`,
+        title: `Follow up with ${contactName(contact)}`,
+        detail: `${companyName(contact.companies)} · contact`,
+        dueDate: contact.next_contact_opportunity,
+        href: '/contacts',
+        kind: 'contact' as const,
+      }]
+    })
 
     return [...datedTasks, ...datedDeals, ...datedContacts, ...customerDates, ...quoteChases]
       .sort((first, second) => (first.dueDate ?? '9999-12-31').localeCompare(second.dueDate ?? '9999-12-31'))
@@ -235,14 +260,16 @@ export default function TodayWorkspace() {
   const stalledDeals = useMemo(() => {
     return visibleDeals.filter(
       (deal) =>
-        deal.stage === 'nurture' ||
-        !deal.next_action ||
-        !deal.next_action_due ||
-        new Date(deal.updated_at).getTime() < stalledCutoff,
+        normalizeDealStage(deal.stage) !== 'nurture' && (
+          !deal.next_action ||
+          !deal.next_action_due ||
+          new Date(deal.updated_at).getTime() < stalledCutoff
+        ),
     )
   }, [visibleDeals])
-  const pipelineValue = deals.reduce((sum, deal) => sum + Number(deal.annual_value ?? 0), 0)
-  const weightedValue = deals.reduce(
+  const activePipelineDeals = deals.filter((deal) => !['nurture', 'lost', 'won'].includes(normalizeDealStage(deal.stage)))
+  const pipelineValue = activePipelineDeals.reduce((sum, deal) => sum + Number(deal.annual_value ?? 0), 0)
+  const weightedValue = activePipelineDeals.reduce(
     (sum, deal) => sum + Number(deal.annual_value ?? 0) * (stageFor(deal.stage).probability / 100),
     0,
   )
@@ -264,34 +291,6 @@ export default function TodayWorkspace() {
       .eq('id', task.id)
     if (saveError) setError(saveError.message)
     else await loadWorkspace()
-  }
-
-  async function holdDeal(deal: Deal, resumeDate: string) {
-    setError('')
-    const { error: saveError } = await supabase
-      .from('deals')
-      .update({
-        stage: 'nurture',
-        probability: stageFor('nurture').probability,
-        next_action: deal.next_action || 'Review opportunity after hold',
-        next_action_due: resumeDate,
-        updated_at: new Date().toISOString(),
-      })
-      .eq('id', deal.id)
-
-    if (saveError) {
-      setError(saveError.message)
-      return
-    }
-
-    await supabase.from('crm_activities').insert({
-      activity_type: 'status_change',
-      summary: `Deal put on hold until ${formatShortDate(resumeDate)}.`,
-      deal_id: deal.id,
-      company_id: firstCompany(deal.companies)?.id ?? null,
-    })
-    setHoldingDeal(null)
-    await loadWorkspace()
   }
 
   return (
@@ -348,7 +347,6 @@ export default function TodayWorkspace() {
         {error ? <p role="alert" className="mb-5 flex items-center gap-3 rounded-xl border border-red-200 bg-red-50 p-4 text-sm font-bold text-red-700"><CircleAlert size={18} />{error}</p> : null}
         {showTaskForm ? <TaskForm companies={companies} onClose={() => setShowTaskForm(false)} onSaved={loadWorkspace} /> : null}
         {showActivityForm ? <ActivityForm companies={companies} onClose={() => setShowActivityForm(false)} onSaved={loadWorkspace} /> : null}
-        {holdingDeal ? <HoldDealForm deal={holdingDeal} onClose={() => setHoldingDeal(null)} onSave={holdDeal} /> : null}
 
         {loading ? (
           <div className="rounded-2xl border border-stone-200 bg-white p-8 text-sm font-bold text-stone-500 shadow-[0_8px_30px_rgba(16,19,18,0.04)]">
@@ -384,12 +382,9 @@ export default function TodayWorkspace() {
                         <span className={dueDateTextTone(action.dueDate)}>{formatShortDate(action.dueDate)}</span>
                       </p>
                     </div>
-                    <div className="flex shrink-0 items-center gap-1">
-                      {action.deal ? <button type="button" onClick={() => setHoldingDeal(action.deal!)} className="rounded-lg px-2 py-1.5 text-[10px] font-black uppercase text-stone-400 transition hover:bg-amber-50 hover:text-amber-700">Hold</button> : null}
-                      <Link href={action.href} aria-label={`Open ${action.title}`} className="grid h-8 w-8 place-items-center rounded-lg text-stone-300 transition group-hover:bg-red-50 group-hover:text-red-600">
-                        <ArrowRight size={15} />
-                      </Link>
-                    </div>
+                    <Link href={action.href} aria-label={`Open ${action.title}`} className="grid h-8 w-8 shrink-0 place-items-center rounded-lg text-stone-300 transition group-hover:bg-red-50 group-hover:text-red-600">
+                      <ArrowRight size={15} />
+                    </Link>
                   </div>
                 )) : <div className="py-6"><Empty text="Nothing is due. Add a next action to keep momentum visible." /></div>}
               </div>
@@ -423,12 +418,9 @@ export default function TodayWorkspace() {
                         </div>
                         <p className="shrink-0 text-sm font-black text-stone-900">{formatCurrency(deal.annual_value)}</p>
                       </div>
-                      <div className="mt-2 flex items-center justify-between gap-3">
-                        <p className="flex items-center gap-1.5 text-xs font-bold text-amber-800">
-                          <Clock3 size={13} /> {deal.stage === 'nurture' ? 'Hold ended' : deal.next_action || 'No next action set'} {deal.next_action_due ? `· ${formatShortDate(deal.next_action_due)}` : ''}
-                        </p>
-                        <button type="button" onClick={() => setHoldingDeal(deal)} className="shrink-0 text-[10px] font-black uppercase text-stone-400 hover:text-amber-700">Hold</button>
-                      </div>
+                      <p className="mt-2 flex items-center gap-1.5 text-xs font-bold text-amber-800">
+                        <Clock3 size={13} /> {deal.next_action || 'No next action set'} {deal.next_action_due ? `· ${formatShortDate(deal.next_action_due)}` : ''}
+                      </p>
                     </article>
                   )) : <div className="py-5"><Empty text="Every open opportunity has a current next action." /></div>}
                 </div>
@@ -497,24 +489,6 @@ function ActivityForm({ companies, onClose, onSaved }: { companies: Company[]; o
   return <InlineForm title="Log relationship activity" onClose={onClose}><form onSubmit={submit} className="grid gap-4 md:grid-cols-4"><select required name="company_id" className="form-input"><option value="">Choose company</option>{companies.map((company) => <option key={company.id} value={company.id}>{company.company_name}</option>)}</select><select name="activity_type" className="form-input"><option value="note">Note</option><option value="call">Call</option><option value="email">Email</option><option value="meeting">Meeting</option><option value="health_check">Health check</option><option value="proposal">Proposal</option></select><input required name="summary" className="form-input md:col-span-2" placeholder="What happened and what matters next?" /><div className="flex gap-3 md:col-span-4 md:justify-end">{error ? <p className="mr-auto text-xs font-bold text-red-600">{error}</p> : null}<button type="button" onClick={onClose} className="rounded-xl px-4 py-2 text-sm font-bold text-stone-500">Cancel</button><button disabled={saving} className="rounded-xl bg-red-600 px-4 py-2 text-sm font-black text-white">{saving ? 'Saving...' : 'Log activity'}</button></div></form></InlineForm>
 }
 
-function HoldDealForm({ deal, onClose, onSave }: { deal: Deal; onClose: () => void; onSave: (deal: Deal, resumeDate: string) => Promise<void> }) {
-  const [saving, setSaving] = useState(false)
-  const defaultDate = deal.stage === 'nurture' && deal.next_action_due && deal.next_action_due >= today
-    ? deal.next_action_due
-    : addDays(today, 7)
-
-  async function submit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault()
-    const resumeDate = String(new FormData(event.currentTarget).get('resume_date') || '')
-    if (!resumeDate) return
-    setSaving(true)
-    await onSave(deal, resumeDate)
-    setSaving(false)
-  }
-
-  return <InlineForm title={`Put ${deal.name} on hold`} onClose={onClose}><form onSubmit={submit} className="flex flex-col gap-4 sm:flex-row sm:items-end"><label className="block flex-1"><span className="mb-2 block text-sm font-black text-stone-700">Show back up in Today</span><input required name="resume_date" type="date" min={today} defaultValue={defaultDate} className="form-input" /></label><p className="flex-1 text-sm leading-6 text-stone-500">The deal stays in the pipeline&apos;s On hold column and returns to Today on this date.</p><div className="flex justify-end gap-3"><button type="button" onClick={onClose} className="rounded-xl px-4 py-2 text-sm font-bold text-stone-500">Cancel</button><button disabled={saving} className="rounded-xl bg-amber-600 px-4 py-2 text-sm font-black text-white hover:bg-amber-700">{saving ? 'Saving...' : 'Put on hold'}</button></div></form></InlineForm>
-}
-
 function InlineForm({ title, onClose, children }: { title: string; onClose: () => void; children: React.ReactNode }) {
   return <section className="mb-6 rounded-2xl border border-red-200 bg-white p-5 shadow-[0_18px_50px_rgba(16,19,18,0.09)]"><div className="mb-4 flex items-center justify-between"><h2 className="text-xl font-black tracking-tight text-stone-950">{title}</h2><button type="button" onClick={onClose} className="text-sm font-bold text-stone-500 hover:text-stone-950">Close</button></div>{children}</section>
 }
@@ -527,6 +501,8 @@ function ActionType({ value }: { value: NextAction['kind'] }) { return <span cla
 function Empty({ text }: { text: string }) { return <p className="rounded-xl border border-dashed border-stone-300 bg-stone-50/60 p-5 text-sm leading-6 text-stone-500">{text}</p> }
 function firstCompany(value: Company | Company[] | null) { return Array.isArray(value) ? value[0] : value }
 function companyName(value: Company | Company[] | null) { return firstCompany(value)?.company_name ?? 'No company' }
+function companyIdentity(value: Company | Company[] | null) { return companyIdentityFromName(firstCompany(value)?.company_name) }
+function companyIdentityFromName(value: string | null | undefined) { return normaliseIdentity(value) }
 function contactName(contact: Contact) { return `${contact.first_name ?? ''} ${contact.last_name ?? ''}`.trim() || 'contact' }
 function normaliseIdentity(value: string | null | undefined) {
   return String(value ?? '')

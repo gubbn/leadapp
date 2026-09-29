@@ -4,7 +4,7 @@ import Link from 'next/link'
 import { FormEvent, useCallback, useEffect, useMemo, useState } from 'react'
 import { useParams } from 'next/navigation'
 import { supabase } from '@/lib/supabaseClient'
-import { dealStages, DealStage, formatCurrency, formatShortDate, stageFor } from '@/lib/crm'
+import { dealStages, DealStage, formatCurrency, formatShortDate, normalizeDealStage, stageFor } from '@/lib/crm'
 
 type Company = {
   id: string
@@ -102,7 +102,9 @@ export default function OpportunityWorkspace() {
       .eq('id', dealId)
       .single()
     if (dealResult.error) { setError(dealResult.error.message); setLoading(false); return }
-    const loadedDeal = dealResult.data as Deal
+    const rawDeal = dealResult.data as Deal
+    const normalizedStage = normalizeDealStage(rawDeal.stage)
+    const loadedDeal = { ...rawDeal, stage: normalizedStage, probability: stageFor(normalizedStage).probability }
     const [contactsResult, tasksResult, activitiesResult, healthResult, proposalResult] = await Promise.all([
       supabase.from('contacts').select('id,first_name,last_name,role').eq('company_id', loadedDeal.company_id).eq('is_active', true),
       supabase.from('crm_tasks').select('id,title,due_date,priority,status').eq('deal_id', dealId).order('due_date', { ascending: true, nullsFirst: false }),
@@ -136,7 +138,8 @@ export default function OpportunityWorkspace() {
     event.preventDefault()
     if (!deal) return
     const form = new FormData(event.currentTarget)
-    const stage = String(form.get('stage')) as DealStage
+    const stage = normalizeDealStage(String(form.get('stage')))
+    const changedAt = new Date().toISOString()
     setSaving(true); setError(''); setSuccess('')
     const payload = {
       name: String(form.get('name') || '').trim(),
@@ -154,17 +157,35 @@ export default function OpportunityWorkspace() {
       next_action_due: String(form.get('next_action_due') || '') || null,
       loss_reason: String(form.get('loss_reason') || '').trim() || null,
       notes: String(form.get('notes') || '').trim() || null,
-      updated_at: new Date().toISOString(),
+      updated_at: changedAt,
     }
     const { error: saveError } = await supabase.from('deals').update(payload).eq('id', dealId)
     if (saveError) setError(saveError.message)
-    else { setSuccess('Opportunity updated.'); await load() }
+    else {
+      if (stage !== deal.stage) {
+        const { error: activityError } = await supabase.from('crm_activities').insert({
+          activity_type: 'status_change',
+          summary: `Deal moved from ${stageFor(deal.stage).label} to ${stageFor(stage).label}.`,
+          company_id: deal.company_id,
+          deal_id: dealId,
+          occurred_at: changedAt,
+        })
+        if (activityError) setError(`Opportunity updated, but its status timestamp could not be logged: ${activityError.message}`)
+      }
+      setSuccess('Opportunity updated.')
+      await load()
+    }
     setSaving(false)
   }
 
   async function completeTask(task: Task) {
-    const { error: saveError } = await supabase.from('crm_tasks').update({ status: 'completed', completed_at: new Date().toISOString(), updated_at: new Date().toISOString() }).eq('id', task.id)
-    if (saveError) setError(saveError.message); else await load()
+    const changedAt = new Date().toISOString()
+    const { error: saveError } = await supabase.from('crm_tasks').update({ status: 'completed', completed_at: changedAt, updated_at: changedAt }).eq('id', task.id)
+    if (saveError) setError(saveError.message)
+    else {
+      await supabase.from('deals').update({ updated_at: changedAt }).eq('id', dealId)
+      await load()
+    }
   }
 
   async function changeHealthStatus(check: HealthCheck, status: string) {
@@ -172,8 +193,8 @@ export default function OpportunityWorkspace() {
     if (status === 'completed') update.completed_at = new Date().toISOString()
     const { error: saveError } = await supabase.from('it_health_checks').update(update).eq('id', check.id)
     if (saveError) { setError(saveError.message); return }
+    await supabase.from('deals').update({ updated_at: new Date().toISOString() }).eq('id', dealId)
     if (status === 'report_sent' && deal) {
-      await supabase.from('deals').update({ stage: 'report_sent', probability: 50, updated_at: new Date().toISOString() }).eq('id', dealId)
       await supabase.from('crm_activities').insert({ activity_type: 'health_check', summary: 'IT Resilience Check report sent.', company_id: deal.company_id, deal_id: dealId })
     }
     await load()
@@ -188,7 +209,9 @@ export default function OpportunityWorkspace() {
     const { error: saveError } = await supabase.from('proposals').update(update).eq('id', proposal.id)
     if (saveError) { setError(saveError.message); return }
     if (status === 'sent') {
-      await supabase.from('deals').update({ stage: 'proposal', probability: 75, updated_at: new Date().toISOString() }).eq('id', dealId)
+      const changedAt = new Date().toISOString()
+      await supabase.from('deals').update({ stage: 'proposal', probability: stageFor('proposal').probability, updated_at: changedAt }).eq('id', dealId)
+      if (deal.stage !== 'proposal') await supabase.from('crm_activities').insert({ activity_type: 'status_change', summary: `Deal moved to ${stageFor('proposal').label}.`, company_id: deal.company_id, deal_id: dealId, occurred_at: changedAt })
       const dates = [proposal.follow_up_2_on, proposal.follow_up_7_on, proposal.follow_up_14_on].filter(Boolean)
       if (dates.length) {
         await supabase.from('crm_tasks').insert(dates.map((date, index) => ({
@@ -201,9 +224,12 @@ export default function OpportunityWorkspace() {
       }
     }
     if (status === 'accepted') {
-      await supabase.from('deals').update({ stage: 'won', probability: 100, annual_value: proposal.annual_value, updated_at: new Date().toISOString() }).eq('id', dealId)
+      const changedAt = new Date().toISOString()
+      await supabase.from('deals').update({ stage: 'won', probability: stageFor('won').probability, annual_value: proposal.annual_value, updated_at: changedAt }).eq('id', dealId)
+      if (deal.stage !== 'won') await supabase.from('crm_activities').insert({ activity_type: 'status_change', summary: `Deal moved to ${stageFor('won').label}.`, company_id: deal.company_id, deal_id: dealId, occurred_at: changedAt })
     }
     await supabase.from('crm_activities').insert({ activity_type: 'proposal', summary: `Proposal status changed to ${status}.`, company_id: deal.company_id, deal_id: dealId })
+    await supabase.from('deals').update({ updated_at: new Date().toISOString() }).eq('id', dealId)
     await load()
   }
 
@@ -226,7 +252,7 @@ export default function OpportunityWorkspace() {
           <div className="mt-6 grid gap-5 md:grid-cols-2">
             <Field label="Opportunity name"><input required name="name" defaultValue={deal.name} className="form-input" /></Field>
             <Field label="Primary contact"><select name="primary_contact_id" defaultValue={deal.primary_contact_id ?? ''} className="form-input"><option value="">Not assigned</option>{contacts.map((contact) => <option key={contact.id} value={contact.id}>{contactName(contact)}{contact.role ? ` · ${contact.role}` : ''}</option>)}</select></Field>
-            <Field label="Stage"><select name="stage" defaultValue={deal.stage} className="form-input">{dealStages.filter((stage) => stage.key !== 'nurture' || deal.stage === 'nurture').map((stage) => <option key={stage.key} value={stage.key}>{stage.label}</option>)}</select></Field>
+            <Field label="Stage"><select name="stage" defaultValue={deal.stage} className="form-input">{dealStages.map((stage) => <option key={stage.key} value={stage.key}>{stage.label}</option>)}</select></Field>
             <Field label="Annual value (£)"><input name="annual_value" type="number" min="0" defaultValue={deal.annual_value ?? ''} className="form-input" /></Field>
             <Field label="Number of users"><input name="number_of_users" type="number" min="0" defaultValue={deal.number_of_users ?? company?.number_of_users ?? ''} className="form-input" /></Field>
             <Field label="Services"><input name="service_interest" defaultValue={deal.service_interest ?? ''} className="form-input" placeholder="Managed IT, cyber, Microsoft 365..." /></Field>
@@ -256,22 +282,22 @@ export default function OpportunityWorkspace() {
 
 function AddTask({ deal, onClose, onSaved }: { deal: Deal; onClose: () => void; onSaved: () => Promise<void> }) {
   const [error, setError] = useState('')
-  async function submit(event: FormEvent<HTMLFormElement>) { event.preventDefault(); const form = new FormData(event.currentTarget); const { error: saveError } = await supabase.from('crm_tasks').insert({ title: String(form.get('title') || '').trim(), due_date: String(form.get('due_date') || '') || null, priority: String(form.get('priority') || 'normal'), company_id: deal.company_id, deal_id: deal.id }); if (saveError) setError(saveError.message); else { await onSaved(); onClose() } }
+  async function submit(event: FormEvent<HTMLFormElement>) { event.preventDefault(); const form = new FormData(event.currentTarget); const { error: saveError } = await supabase.from('crm_tasks').insert({ title: String(form.get('title') || '').trim(), due_date: String(form.get('due_date') || '') || null, priority: String(form.get('priority') || 'normal'), company_id: deal.company_id, deal_id: deal.id }); if (saveError) setError(saveError.message); else { await supabase.from('deals').update({ updated_at: new Date().toISOString() }).eq('id', deal.id); await onSaved(); onClose() } }
   return <InlinePanel title="Add opportunity task" onClose={onClose}><form onSubmit={submit} className="grid gap-4 md:grid-cols-4"><input required name="title" className="form-input md:col-span-2" placeholder="What needs to happen?" /><input name="due_date" type="date" className="form-input" /><select name="priority" className="form-input"><option value="normal">Normal</option><option value="high">High</option><option value="urgent">Urgent</option><option value="low">Low</option></select><PanelActions error={error} onClose={onClose} label="Add task" /></form></InlinePanel>
 }
 function AddActivity({ deal, contacts, onClose, onSaved }: { deal: Deal; contacts: Contact[]; onClose: () => void; onSaved: () => Promise<void> }) {
   const [error, setError] = useState('')
-  async function submit(event: FormEvent<HTMLFormElement>) { event.preventDefault(); const form = new FormData(event.currentTarget); const { error: saveError } = await supabase.from('crm_activities').insert({ activity_type: String(form.get('activity_type') || 'note'), summary: String(form.get('summary') || '').trim(), outcome: String(form.get('outcome') || '').trim() || null, contact_id: String(form.get('contact_id') || '') || null, company_id: deal.company_id, deal_id: deal.id }); if (saveError) setError(saveError.message); else { await onSaved(); onClose() } }
+  async function submit(event: FormEvent<HTMLFormElement>) { event.preventDefault(); const form = new FormData(event.currentTarget); const changedAt = new Date().toISOString(); const { error: saveError } = await supabase.from('crm_activities').insert({ activity_type: String(form.get('activity_type') || 'note'), summary: String(form.get('summary') || '').trim(), outcome: String(form.get('outcome') || '').trim() || null, contact_id: String(form.get('contact_id') || '') || null, company_id: deal.company_id, deal_id: deal.id, occurred_at: changedAt }); if (saveError) setError(saveError.message); else { await supabase.from('deals').update({ updated_at: changedAt }).eq('id', deal.id); await onSaved(); onClose() } }
   return <InlinePanel title="Log opportunity activity" onClose={onClose}><form onSubmit={submit} className="grid gap-4 md:grid-cols-4"><select name="activity_type" className="form-input"><option value="note">Note</option><option value="call">Call</option><option value="email">Email</option><option value="meeting">Meeting</option><option value="health_check">Health check</option><option value="proposal">Proposal</option></select><select name="contact_id" className="form-input"><option value="">No contact</option>{contacts.map((contact) => <option key={contact.id} value={contact.id}>{contactName(contact)}</option>)}</select><input required name="summary" className="form-input md:col-span-2" placeholder="What happened?" /><input name="outcome" className="form-input md:col-span-2" placeholder="Outcome or agreed next step" /><PanelActions error={error} onClose={onClose} label="Log activity" /></form></InlinePanel>
 }
 function AddHealthCheck({ deal, contacts, onClose, onSaved }: { deal: Deal; contacts: Contact[]; onClose: () => void; onSaved: () => Promise<void> }) {
   const [error, setError] = useState('')
-  async function submit(event: FormEvent<HTMLFormElement>) { event.preventDefault(); const form = new FormData(event.currentTarget); const scheduled = String(form.get('scheduled_at') || '') || null; const { data, error: saveError } = await supabase.from('it_health_checks').insert({ company_id: deal.company_id, deal_id: deal.id, primary_contact_id: String(form.get('primary_contact_id') || '') || null, status: scheduled ? 'booked' : 'offered', scheduled_at: scheduled ? new Date(scheduled).toISOString() : null, key_findings: String(form.get('key_findings') || '').trim() || null, recommendations: String(form.get('recommendations') || '').trim() || null, report_url: String(form.get('report_url') || '').trim() || null }).select('id').single(); if (saveError) { setError(saveError.message); return } if (scheduled) await supabase.from('crm_tasks').insert({ title: 'Complete IT Resilience Check', due_date: scheduled.slice(0, 10), priority: 'high', company_id: deal.company_id, deal_id: deal.id }); await supabase.from('deals').update({ stage: 'health_check', probability: 40, updated_at: new Date().toISOString() }).eq('id', deal.id); await supabase.from('crm_activities').insert({ activity_type: 'health_check', summary: scheduled ? 'IT Resilience Check booked.' : 'IT Resilience Check offered.', company_id: deal.company_id, deal_id: deal.id, outcome: data?.id ?? null }); await onSaved(); onClose() }
+  async function submit(event: FormEvent<HTMLFormElement>) { event.preventDefault(); const form = new FormData(event.currentTarget); const scheduled = String(form.get('scheduled_at') || '') || null; const { data, error: saveError } = await supabase.from('it_health_checks').insert({ company_id: deal.company_id, deal_id: deal.id, primary_contact_id: String(form.get('primary_contact_id') || '') || null, status: scheduled ? 'booked' : 'offered', scheduled_at: scheduled ? new Date(scheduled).toISOString() : null, key_findings: String(form.get('key_findings') || '').trim() || null, recommendations: String(form.get('recommendations') || '').trim() || null, report_url: String(form.get('report_url') || '').trim() || null }).select('id').single(); if (saveError) { setError(saveError.message); return } if (scheduled) await supabase.from('crm_tasks').insert({ title: 'Complete IT Resilience Check', due_date: scheduled.slice(0, 10), priority: 'high', company_id: deal.company_id, deal_id: deal.id }); if (scheduled && deal.stage !== 'discovery') { const changedAt = new Date().toISOString(); await supabase.from('deals').update({ stage: 'discovery', probability: stageFor('discovery').probability, updated_at: changedAt }).eq('id', deal.id); await supabase.from('crm_activities').insert({ activity_type: 'status_change', summary: `Deal moved to ${stageFor('discovery').label}.`, company_id: deal.company_id, deal_id: deal.id, occurred_at: changedAt }) } await supabase.from('crm_activities').insert({ activity_type: 'health_check', summary: scheduled ? 'IT Resilience Check booked.' : 'IT Resilience Check offered.', company_id: deal.company_id, deal_id: deal.id, outcome: data?.id ?? null }); await onSaved(); onClose() }
   return <InlinePanel title="Create IT Resilience Check" onClose={onClose}><form onSubmit={submit} className="grid gap-4 md:grid-cols-2 lg:grid-cols-4"><select name="primary_contact_id" className="form-input"><option value="">No contact selected</option>{contacts.map((contact) => <option key={contact.id} value={contact.id}>{contactName(contact)}</option>)}</select><input name="scheduled_at" type="datetime-local" className="form-input" /><input name="report_url" type="url" className="form-input lg:col-span-2" placeholder="Report link (can add later)" /><textarea name="key_findings" rows={3} className="form-input resize-y lg:col-span-2" placeholder="Key findings" /><textarea name="recommendations" rows={3} className="form-input resize-y lg:col-span-2" placeholder="Recommendations" /><PanelActions error={error} onClose={onClose} label="Create health check" /></form></InlinePanel>
 }
 function AddProposal({ deal, onClose, onSaved }: { deal: Deal; onClose: () => void; onSaved: () => Promise<void> }) {
   const [error, setError] = useState('')
-  async function submit(event: FormEvent<HTMLFormElement>) { event.preventDefault(); const form = new FormData(event.currentTarget); const issuedOn = String(form.get('issued_on') || '') || null; const addDays = (days: number) => { if (!issuedOn) return null; const date = new Date(`${issuedOn}T00:00:00Z`); date.setUTCDate(date.getUTCDate() + days); return date.toISOString().slice(0, 10) }; const { error: saveError } = await supabase.from('proposals').insert({ company_id: deal.company_id, deal_id: deal.id, status: issuedOn ? 'sent' : 'draft', annual_value: Number(form.get('annual_value') || 0), contract_months: Number(form.get('contract_months') || 36), services: String(form.get('services') || '').split(',').map((value) => value.trim()).filter(Boolean), issued_on: issuedOn, decision_due: String(form.get('decision_due') || '') || null, document_url: String(form.get('document_url') || '').trim() || null, follow_up_2_on: addDays(2), follow_up_7_on: addDays(7), follow_up_14_on: addDays(14), notes: String(form.get('notes') || '').trim() || null }); if (saveError) { setError(saveError.message); return } if (issuedOn) { await supabase.from('deals').update({ stage: 'proposal', probability: 75, updated_at: new Date().toISOString() }).eq('id', deal.id); const followUps = [2, 7, 14].map((days) => ({ title: `Proposal follow-up ${days} days`, due_date: addDays(days), priority: days === 14 ? 'high' : 'normal', company_id: deal.company_id, deal_id: deal.id })); await supabase.from('crm_tasks').insert(followUps) } await supabase.from('crm_activities').insert({ activity_type: 'proposal', summary: issuedOn ? 'Proposal issued.' : 'Proposal draft created.', company_id: deal.company_id, deal_id: deal.id }); await onSaved(); onClose() }
+  async function submit(event: FormEvent<HTMLFormElement>) { event.preventDefault(); const form = new FormData(event.currentTarget); const issuedOn = String(form.get('issued_on') || '') || null; const addDays = (days: number) => { if (!issuedOn) return null; const date = new Date(`${issuedOn}T00:00:00Z`); date.setUTCDate(date.getUTCDate() + days); return date.toISOString().slice(0, 10) }; const { error: saveError } = await supabase.from('proposals').insert({ company_id: deal.company_id, deal_id: deal.id, status: issuedOn ? 'sent' : 'draft', annual_value: Number(form.get('annual_value') || 0), contract_months: Number(form.get('contract_months') || 36), services: String(form.get('services') || '').split(',').map((value) => value.trim()).filter(Boolean), issued_on: issuedOn, decision_due: String(form.get('decision_due') || '') || null, document_url: String(form.get('document_url') || '').trim() || null, follow_up_2_on: addDays(2), follow_up_7_on: addDays(7), follow_up_14_on: addDays(14), notes: String(form.get('notes') || '').trim() || null }); if (saveError) { setError(saveError.message); return } if (issuedOn) { const changedAt = new Date().toISOString(); await supabase.from('deals').update({ stage: 'proposal', probability: stageFor('proposal').probability, updated_at: changedAt }).eq('id', deal.id); if (deal.stage !== 'proposal') await supabase.from('crm_activities').insert({ activity_type: 'status_change', summary: `Deal moved to ${stageFor('proposal').label}.`, company_id: deal.company_id, deal_id: deal.id, occurred_at: changedAt }); const followUps = [2, 7, 14].map((days) => ({ title: `Proposal follow-up ${days} days`, due_date: addDays(days), priority: days === 14 ? 'high' : 'normal', company_id: deal.company_id, deal_id: deal.id })); await supabase.from('crm_tasks').insert(followUps) } await supabase.from('crm_activities').insert({ activity_type: 'proposal', summary: issuedOn ? 'Proposal delivered.' : 'Proposal draft created.', company_id: deal.company_id, deal_id: deal.id }); await onSaved(); onClose() }
   return <InlinePanel title="Create proposal" onClose={onClose}><form onSubmit={submit} className="grid gap-4 md:grid-cols-2 lg:grid-cols-4"><input required name="annual_value" type="number" min="0" defaultValue={deal.annual_value ?? ''} className="form-input" placeholder="Annual value (£)" /><input required name="contract_months" type="number" min="1" defaultValue={36} className="form-input" /><input name="issued_on" type="date" className="form-input" /><input name="decision_due" type="date" className="form-input" /><input name="services" className="form-input lg:col-span-2" defaultValue={deal.service_interest ?? ''} placeholder="Managed IT, cybersecurity, Microsoft 365" /><input name="document_url" type="url" className="form-input lg:col-span-2" placeholder="Proposal document link" /><textarea name="notes" rows={2} className="form-input resize-y lg:col-span-4" placeholder="Commercial notes" /><PanelActions error={error} onClose={onClose} label="Create proposal" /></form></InlinePanel>
 }
 

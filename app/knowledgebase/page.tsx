@@ -171,12 +171,12 @@ const sections: GuideSection[] = [
     content: (
       <>
         <p><LinkText href="/sales">Deal Pipeline</LinkText> is for genuine commercial opportunities, not every company in the database.</p>
-        <Workflow steps={['New', 'Conversation', 'Discovery', 'Health check', 'Report sent', 'Solution agreed', 'Proposal', 'Decision', 'Contract sent', 'Won']} />
+        <Workflow steps={['New opportunity', 'Conversation', 'Discovery booked', 'Proposal delivered', 'Decision pending', 'Nurtured, lost or won']} />
         <GuideList items={[
           'Create an opportunity only when there is enough fit or engagement to justify active sales work.',
           'Record annual value, users, source, current provider, renewal date, next action and next-action due date.',
           'Every open opportunity must have a concrete next action. “Follow up” is too vague; state what will be discussed and with whom.',
-          'Use Put on hold when the opportunity is suitable but timing is not active; choose when it should return to Today.',
+          'Mark a deal Nurtured when the opportunity is suitable but timing is not active. If it is untouched for 10 days, Today prompts another nurture action.',
           'When marking Lost, record the real loss reason so future marketing can improve.',
         ]} />
         <h3>IT Resilience Check</h3>

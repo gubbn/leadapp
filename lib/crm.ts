@@ -1,16 +1,12 @@
 export const dealStages = [
   { key: 'new', label: 'New opportunity', probability: 10 },
-  { key: 'conversation', label: 'Conversation', probability: 20 },
-  { key: 'discovery', label: 'Discovery booked', probability: 30 },
-  { key: 'health_check', label: 'Health check', probability: 40 },
-  { key: 'report_sent', label: 'Report delivered', probability: 50 },
-  { key: 'solution_agreed', label: 'Solution agreed', probability: 65 },
-  { key: 'proposal', label: 'Proposal issued', probability: 75 },
-  { key: 'decision', label: 'Decision pending', probability: 85 },
-  { key: 'contract_sent', label: 'Contract sent', probability: 95 },
-  { key: 'won', label: 'Won', probability: 100 },
+  { key: 'conversation', label: 'Conversation', probability: 25 },
+  { key: 'discovery', label: 'Discovery booked', probability: 40 },
+  { key: 'proposal', label: 'Proposal delivered', probability: 75 },
+  { key: 'decision', label: 'Decision pending', probability: 90 },
+  { key: 'nurture', label: 'Nurtured', probability: 10 },
   { key: 'lost', label: 'Lost', probability: 0 },
-  { key: 'nurture', label: 'On hold', probability: 10 },
+  { key: 'won', label: 'Won', probability: 100 },
 ] as const
 
 export type DealStage = (typeof dealStages)[number]['key']
@@ -19,8 +15,21 @@ export const activeDealStages = dealStages.filter(
   (stage) => !['won', 'lost', 'nurture'].includes(stage.key),
 )
 
+const legacyDealStages: Record<string, DealStage> = {
+  health_check: 'discovery',
+  report_sent: 'discovery',
+  solution_agreed: 'discovery',
+  contract_sent: 'decision',
+}
+
+export function normalizeDealStage(key: string): DealStage {
+  if (legacyDealStages[key]) return legacyDealStages[key]
+  return dealStages.some((stage) => stage.key === key) ? key as DealStage : 'new'
+}
+
 export function stageFor(key: string) {
-  return dealStages.find((stage) => stage.key === key) ?? dealStages[0]
+  const normalized = normalizeDealStage(key)
+  return dealStages.find((stage) => stage.key === normalized) ?? dealStages[0]
 }
 
 export function formatCurrency(value: number | string | null | undefined) {

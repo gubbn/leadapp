@@ -283,6 +283,8 @@ function QueuePanel({ company, panel, contacts, campaigns, onClose, onSaved }: {
     const form = new FormData(event.currentTarget)
     let result: { error: { message: string } | null }
     let message = ''
+    let createdDealId: string | null = null
+    let dealCreatedAt: string | null = null
 
     if (panel === 'enrich') {
       result = await supabase.from('companies').update({
@@ -326,7 +328,8 @@ function QueuePanel({ company, panel, contacts, campaigns, onClose, onSaved }: {
       })
       message = `${company.company_name} added to campaign.`
     } else {
-      result = await supabase.from('deals').insert({
+      dealCreatedAt = new Date().toISOString()
+      const dealResult = await supabase.from('deals').insert({
         company_id: company.id,
         primary_contact_id: text(form, 'contact_id'),
         name: text(form, 'name') || `${company.company_name} managed IT opportunity`,
@@ -339,7 +342,10 @@ function QueuePanel({ company, panel, contacts, campaigns, onClose, onSaved }: {
         next_action_due: text(form, 'next_action_due'),
         stage: 'new',
         probability: 10,
-      })
+        updated_at: dealCreatedAt,
+      }).select('id').single()
+      result = dealResult
+      createdDealId = dealResult.data?.id ?? null
       message = `Opportunity created for ${company.company_name}.`
     }
 
@@ -347,6 +353,21 @@ function QueuePanel({ company, panel, contacts, campaigns, onClose, onSaved }: {
       setError(result.error.message)
       setSaving(false)
       return
+    }
+    if (createdDealId && dealCreatedAt) {
+      const { error: activityError } = await supabase.from('crm_activities').insert({
+        activity_type: 'status_change',
+        summary: 'Deal created at New opportunity.',
+        company_id: company.id,
+        deal_id: createdDealId,
+        occurred_at: dealCreatedAt,
+      })
+      if (activityError) {
+        setError(`Opportunity created, but its initial status timestamp could not be logged: ${activityError.message}`)
+        setSaving(false)
+        await onSaved(message)
+        return
+      }
     }
     await onSaved(message)
   }
