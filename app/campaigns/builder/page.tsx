@@ -5,6 +5,11 @@ import Link from 'next/link'
 import { supabase } from '@/lib/supabaseClient'
 import { isRoleAddress, isValidEmail } from '@/lib/marketingImportHelpers'
 import AppHeader from '@/app/components/AppHeader'
+import {
+  hasAnyCompanyTag,
+  hasCustomerCompanyTag,
+  readCompanyTags,
+} from '@/lib/companyTags'
 
 type ExportRow = {
   contact_id: string | null
@@ -23,11 +28,17 @@ type ExportRow = {
   last_campaign_at?: string | null
   next_contact_opportunity: string | null
   outcome: string | null
+  company_tags?: string[]
 }
 
 type ContactCompanyLookup = {
   id: string
   company_id: string | null
+}
+
+type CompanyTagLookup = {
+  id: string
+  tags: string[] | null
 }
 
 type CampaignEmailStatus =
@@ -79,6 +90,8 @@ export default function CampaignBuilderPage() {
   const [selectedSizeBands, setSelectedSizeBands] = useState<string[]>([])
   const [selectedIndustries, setSelectedIndustries] = useState<string[]>([])
   const [selectedLocations, setSelectedLocations] = useState<string[]>([])
+  const [includedTags, setIncludedTags] = useState<string[]>([])
+  const [excludedTags, setExcludedTags] = useState<string[]>([])
   const [contactAgeFilter, setContactAgeFilter] =
     useState<ContactAgeFilter>('all')
   const [campaignAgeFilter, setCampaignAgeFilter] =
@@ -133,6 +146,12 @@ export default function CampaignBuilderPage() {
       .map((value) => ({ value, label: value }))
   }, [rows])
 
+  const tagOptions = useMemo(() => {
+    return Array.from(new Set(rows.flatMap((row) => readCompanyTags(row.company_tags))))
+      .sort()
+      .map((value) => ({ value, label: value }))
+  }, [rows])
+
   const emailCounts = useMemo(() => {
     return rows.reduce(
       (counts, row) => {
@@ -181,6 +200,9 @@ export default function CampaignBuilderPage() {
       const rowSizeBand = row.size_band || 'unknown'
       const rowIndustry = row.industry || ''
       const rowLocation = row.location || ''
+      const matchesIncludedTags =
+        includedTags.length === 0 || hasAnyCompanyTag(row.company_tags, includedTags)
+      const matchesExcludedTags = !hasAnyCompanyTag(row.company_tags, excludedTags)
 
       const matchesSize =
         selectedSizeBands.length === 0 ||
@@ -223,6 +245,8 @@ export default function CampaignBuilderPage() {
         matchesSize &&
         matchesIndustry &&
         matchesLocation &&
+        matchesIncludedTags &&
+        matchesExcludedTags &&
         matchesContactAge &&
         matchesCampaignAge &&
         matchesEmailRules &&
@@ -235,6 +259,8 @@ export default function CampaignBuilderPage() {
     selectedSizeBands,
     selectedIndustries,
     selectedLocations,
+    includedTags,
+    excludedTags,
     contactAgeFilter,
     campaignAgeFilter,
     includeRiskyEmails,
@@ -324,21 +350,29 @@ export default function CampaignBuilderPage() {
       ),
     )
     const lastCampaignByCompany = new Map<string, string>()
+    const tagsByCompany = new Map<string, string[]>()
 
     for (const chunk of chunkArray(companyIds, 500)) {
-      const { data: campaignRows, error: campaignError } = await supabase
-        .from('campaign_companies')
-        .select('company_id, created_at')
-        .in('company_id', chunk)
-        .order('created_at', { ascending: false })
+      const [campaignResult, companyResult] = await Promise.all([
+        supabase
+          .from('campaign_companies')
+          .select('company_id, created_at')
+          .in('company_id', chunk)
+          .order('created_at', { ascending: false }),
+        supabase
+          .from('companies')
+          .select('id, tags')
+          .in('id', chunk),
+      ])
 
-      if (campaignError) {
-        setErrorMessage(campaignError.message)
+      if (campaignResult.error || companyResult.error) {
+        const error = campaignResult.error || companyResult.error
+        setErrorMessage(error?.message || 'Company campaign data could not be loaded.')
         setLoading(false)
         return
       }
 
-      ;((campaignRows ?? []) as CampaignCompanyHistory[]).forEach((campaignRow) => {
+      ;((campaignResult.data ?? []) as CampaignCompanyHistory[]).forEach((campaignRow) => {
         if (
           campaignRow.company_id &&
           campaignRow.created_at &&
@@ -347,6 +381,9 @@ export default function CampaignBuilderPage() {
           lastCampaignByCompany.set(campaignRow.company_id, campaignRow.created_at)
         }
       })
+      ;((companyResult.data ?? []) as CompanyTagLookup[]).forEach((companyRow) => {
+        tagsByCompany.set(companyRow.id, readCompanyTags(companyRow.tags))
+      })
     }
 
     const enrichedRows = exportRows.map((row) => {
@@ -354,10 +391,11 @@ export default function CampaignBuilderPage() {
         row.company_id ||
         (row.contact_id ? contactCompanyMap.get(row.contact_id) || null : null)
       return {
-      ...row,
-      email: row.email || row.email_address || null,
-      company_id: companyId,
-      last_campaign_at: companyId ? lastCampaignByCompany.get(companyId) || null : null,
+        ...row,
+        email: row.email || row.email_address || null,
+        company_id: companyId,
+        last_campaign_at: companyId ? lastCampaignByCompany.get(companyId) || null : null,
+        company_tags: companyId ? tagsByCompany.get(companyId) || [] : [],
       }
     })
 
@@ -369,6 +407,8 @@ export default function CampaignBuilderPage() {
     setSelectedSizeBands([])
     setSelectedIndustries([])
     setSelectedLocations([])
+    setIncludedTags([])
+    setExcludedTags([])
     setContactAgeFilter('all')
     setCampaignAgeFilter('all')
     setIncludeRiskyEmails(true)
@@ -588,7 +628,7 @@ export default function CampaignBuilderPage() {
 
               <p className="mt-1 text-sm text-stone-500">
                 Filter by contact age, time since the last campaign, company
-                size, industry, location and email quality. Customers and
+                size, industry, location, tags and email quality. Customers and
                 quoted companies are excluded by default.
               </p>
             </div>
@@ -677,6 +717,24 @@ export default function CampaignBuilderPage() {
               options={locationOptions}
               selectedValues={selectedLocations}
               onChange={setSelectedLocations}
+            />
+          </div>
+
+          <div className="mt-4 grid gap-4 md:grid-cols-2">
+            <MultiSelectDropdown
+              label="Include any tag"
+              emptyLabel="Do not require a tag"
+              options={tagOptions}
+              selectedValues={includedTags}
+              onChange={setIncludedTags}
+            />
+
+            <MultiSelectDropdown
+              label="Exclude any tag"
+              emptyLabel="Do not exclude by tag"
+              options={tagOptions}
+              selectedValues={excludedTags}
+              onChange={setExcludedTags}
             />
           </div>
 
@@ -846,6 +904,7 @@ export default function CampaignBuilderPage() {
                   <th className="px-4 py-3">Company</th>
                   <th className="px-4 py-3">Email</th>
                   <th className="px-4 py-3">Email status</th>
+                  <th className="px-4 py-3">Tags</th>
                   <th className="px-4 py-3">Relationship</th>
                   <th className="px-4 py-3">Size</th>
                   <th className="px-4 py-3">Industry</th>
@@ -858,13 +917,13 @@ export default function CampaignBuilderPage() {
               <tbody>
                 {loading ? (
                   <tr>
-                    <td className="px-4 py-5 text-stone-500" colSpan={10}>
+                    <td className="px-4 py-5 text-stone-500" colSpan={11}>
                       Loading contacts...
                     </td>
                   </tr>
                 ) : filteredRows.length === 0 ? (
                   <tr>
-                    <td className="px-4 py-5 text-stone-500" colSpan={10}>
+                    <td className="px-4 py-5 text-stone-500" colSpan={11}>
                       No contacts match this campaign.
                     </td>
                   </tr>
@@ -893,6 +952,16 @@ export default function CampaignBuilderPage() {
                           <span className="text-xs text-stone-500">
                             {row.campaign_email_note}
                           </span>
+                        </div>
+                      </td>
+
+                      <td className="px-4 py-3">
+                        <div className="flex max-w-48 flex-wrap gap-1">
+                          {readCompanyTags(row.company_tags).length
+                            ? readCompanyTags(row.company_tags).map((tag) => (
+                                <span key={tag} className="rounded-full bg-red-50 px-2 py-0.5 text-[11px] font-bold text-red-700">{tag}</span>
+                              ))
+                            : <span className="text-stone-400">-</span>}
                         </div>
                       </td>
 
@@ -961,7 +1030,7 @@ export default function CampaignBuilderPage() {
 
 function addCampaignStatuses(row: ExportRow): CampaignRow {
   const emailStatus = getCampaignEmailStatus(row)
-  const relationshipStatus = getCampaignRelationshipStatus(row.outcome)
+  const relationshipStatus = getCampaignRelationshipStatus(row.outcome, row.company_tags)
 
   return {
     ...row,
@@ -1006,11 +1075,18 @@ function getCampaignEmailStatus(row: ExportRow): {
   }
 }
 
-function getCampaignRelationshipStatus(outcome: string | null): {
+function getCampaignRelationshipStatus(outcome: string | null, companyTags: unknown): {
   campaign_relationship_status: CampaignRelationshipStatus
   campaign_relationship_note: string
 } {
   const cleaned = outcome?.trim().toLowerCase() || ''
+
+  if (hasCustomerCompanyTag(companyTags)) {
+    return {
+      campaign_relationship_status: 'customer',
+      campaign_relationship_note: 'Marked as a customer by company tag.',
+    }
+  }
 
   if (cleaned === 'customer' || cleaned === 'won') {
     return {
@@ -1102,6 +1178,7 @@ function downloadCsvRows(campaignName: string, rows: CampaignRow[]) {
     'Email Note',
     'Relationship Status',
     'Relationship Note',
+    'Company Tags',
     'Role',
     'Industry',
     'Location',
@@ -1122,6 +1199,7 @@ function downloadCsvRows(campaignName: string, rows: CampaignRow[]) {
       row.campaign_email_note,
       row.campaign_relationship_status,
       row.campaign_relationship_note,
+      readCompanyTags(row.company_tags).join(' '),
       row.role,
       row.industry,
       row.location,

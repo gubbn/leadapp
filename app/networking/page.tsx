@@ -1,8 +1,10 @@
 'use client'
 
 import { ChangeEvent, useCallback, useEffect, useMemo, useState } from 'react'
+import Link from 'next/link'
 import AppHeader from '@/app/components/AppHeader'
 import { supabase } from '@/lib/supabaseClient'
+import { readCompanyTags } from '@/lib/companyTags'
 import {
   blankAttendeeDraft,
   networkingPersonKey,
@@ -11,6 +13,11 @@ import {
   parseNetworkingGroupName,
   type NetworkingAttendeeDraft,
 } from '@/lib/networkingImportHelpers'
+import {
+  buildMeetingCounts,
+  networkingMeetingPersonKey,
+  type MeetingContactIdentity,
+} from '@/lib/networkingMeetingCounts'
 
 type NetworkingGroup = {
   id: string
@@ -46,7 +53,12 @@ type NetworkingAttendee = {
   follow_up_due: string | null
 }
 
-type Company = { id: string; company_name: string }
+type Company = {
+  id: string
+  company_name: string
+  domain: string | null
+  tags?: string[] | null
+}
 type Contact = {
   id: string
   company_id: string | null
@@ -63,7 +75,17 @@ type Deal = {
   companies: { company_name: string | null } | { company_name: string | null }[] | null
 }
 
+type LbbCompanySyncResult = {
+  attendees: NetworkingAttendee[]
+  companies: Company[]
+  contacts: Contact[]
+  companiesAdded: number
+  attendeesLinked: number
+  contactsLinked: number
+}
+
 const TODAY = new Date().toISOString().slice(0, 10)
+let activeLbbCompanySync: Promise<LbbCompanySyncResult> | null = null
 
 export default function NetworkingPage() {
   const [groups, setGroups] = useState<NetworkingGroup[]>([])
@@ -77,17 +99,19 @@ export default function NetworkingPage() {
   const [setupRequired, setSetupRequired] = useState(false)
   const [importOpen, setImportOpen] = useState(false)
   const [selectedEventId, setSelectedEventId] = useState('')
+  const [syncMessage, setSyncMessage] = useState('')
 
   const load = useCallback(async () => {
     setLoading(true)
     setError('')
+    setSyncMessage('')
     setSetupRequired(false)
 
     const [groupResult, eventResult, attendeeResult, companyResult, contactResult, dealResult] = await Promise.all([
       supabase.from('networking_groups').select('id,name,location,website,notes').order('name'),
       supabase.from('networking_events').select('id,group_id,event_name,event_date,venue,source_file_name').order('event_date', { ascending: false }),
       supabase.from('networking_attendees').select('id,event_id,contact_id,company_id,deal_id,raw_name,raw_company,raw_role,raw_email,raw_phone,notes,relationship_temperature,follow_up_action,follow_up_due').order('created_at', { ascending: false }),
-      supabase.from('companies').select('id,company_name').order('company_name'),
+      supabase.from('companies').select('id,company_name,domain').order('company_name'),
       supabase.from('contacts').select('id,company_id,first_name,last_name,email,companies(company_name)').eq('is_active', true).order('last_name'),
       supabase.from('deals').select('id,company_id,name,stage,companies(company_name)').order('updated_at', { ascending: false }),
     ])
@@ -97,18 +121,44 @@ export default function NetworkingPage() {
       const message = networkingError.message.toLowerCase()
       setSetupRequired(networkingError.code === '42P01' || message.includes('networking_'))
       setError(networkingError.message)
-    } else {
-      setGroups((groupResult.data ?? []) as NetworkingGroup[])
-      setEvents((eventResult.data ?? []) as NetworkingEvent[])
-      setAttendees((attendeeResult.data ?? []) as NetworkingAttendee[])
     }
 
     if (companyResult.error || contactResult.error || dealResult.error) {
       setError((companyResult.error || contactResult.error || dealResult.error)?.message ?? 'CRM records could not be loaded.')
     }
-    setCompanies((companyResult.data ?? []) as Company[])
-    setContacts((contactResult.data ?? []) as Contact[])
+
+    const loadedGroups = (groupResult.data ?? []) as NetworkingGroup[]
+    const loadedEvents = (eventResult.data ?? []) as NetworkingEvent[]
+    const loadedAttendees = (attendeeResult.data ?? []) as NetworkingAttendee[]
+    const loadedCompanies = (companyResult.data ?? []) as Company[]
+    const loadedContacts = (contactResult.data ?? []) as Contact[]
+
+    setGroups(loadedGroups)
+    setEvents(loadedEvents)
+    setAttendees(loadedAttendees)
+    setCompanies(loadedCompanies)
+    setContacts(loadedContacts)
     setDeals((dealResult.data ?? []) as Deal[])
+
+    if (!networkingError && !companyResult.error && !contactResult.error) {
+      try {
+        const synced = await syncLbbCompanies(loadedAttendees, loadedCompanies, loadedContacts)
+        setAttendees(synced.attendees)
+        setCompanies(synced.companies)
+        setContacts(synced.contacts)
+
+        if (synced.companiesAdded || synced.attendeesLinked || synced.contactsLinked) {
+          setSyncMessage([
+            synced.companiesAdded ? `${synced.companiesAdded} ${synced.companiesAdded === 1 ? 'company' : 'companies'} added` : '',
+            synced.attendeesLinked ? `${synced.attendeesLinked} LBB ${synced.attendeesLinked === 1 ? 'entry' : 'entries'} linked` : '',
+            synced.contactsLinked ? `${synced.contactsLinked} ${synced.contactsLinked === 1 ? 'contact' : 'contacts'} updated` : '',
+          ].filter(Boolean).join(' · '))
+        }
+      } catch (caught) {
+        setError(caught instanceof Error ? caught.message : 'Existing LBB companies could not be synced.')
+      }
+    }
+
     setLoading(false)
   }, [])
 
@@ -120,18 +170,27 @@ export default function NetworkingPage() {
   const eventById = useMemo(() => new Map(events.map((event) => [event.id, event])), [events])
   const contactById = useMemo(() => new Map(contacts.map((contact) => [contact.id, contact])), [contacts])
   const companyById = useMemo(() => new Map(companies.map((company) => [company.id, company])), [companies])
+  const companyByName = useMemo(() => new Map(companies.map((company) => [normalise(company.company_name), company])), [companies])
   const dealById = useMemo(() => new Map(deals.map((deal) => [deal.id, deal])), [deals])
   const attendeeCounts = useMemo(() => {
     const counts = new Map<string, number>()
     attendees.forEach((attendee) => counts.set(attendee.event_id, (counts.get(attendee.event_id) ?? 0) + 1))
     return counts
   }, [attendees])
-  const attendeeKey = useCallback((attendee: NetworkingAttendee) => networkingPersonKey({
-    contactId: attendee.contact_id,
-    email: attendee.raw_email,
-    name: attendee.raw_name,
-    company: attendee.raw_company,
-  }), [])
+  const meetingContacts = useMemo<MeetingContactIdentity[]>(() => contacts.map((contact) => ({
+    id: contact.id,
+    email: contact.email,
+    name: contactName(contact),
+    companyName: relationCompanyName(contact.companies),
+  })), [contacts])
+  const attendeeKey = useCallback(
+    (attendee: NetworkingAttendee) => networkingMeetingPersonKey(attendee, meetingContacts),
+    [meetingContacts],
+  )
+  const meetingCounts = useMemo(
+    () => buildMeetingCounts(attendees, meetingContacts),
+    [attendees, meetingContacts],
+  )
   const uniquePeopleCount = useMemo(() => new Set(attendees.map(attendeeKey)).size, [attendeeKey, attendees])
   const linkedOpportunityCount = useMemo(() => new Set(attendees.filter((attendee) => attendee.deal_id).map(attendeeKey)).size, [attendeeKey, attendees])
   const peopleByGroupId = useMemo(() => {
@@ -191,6 +250,7 @@ export default function NetworkingPage() {
       <section className="mx-auto max-w-7xl px-4 py-8">
         {setupRequired ? <SetupCard /> : null}
         {!setupRequired && error ? <p className="mb-6 rounded-2xl border border-red-200 bg-red-50 p-4 text-sm font-bold text-red-700">{error}</p> : null}
+        {syncMessage ? <p className="mb-6 rounded-2xl border border-emerald-200 bg-emerald-50 p-4 text-sm font-bold text-emerald-800">LBB company sync complete: {syncMessage}.</p> : null}
 
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
           <Metric label="Networking groups" value={groups.length} note="Your regular rooms" />
@@ -274,11 +334,15 @@ export default function NetworkingPage() {
             const linkedCompany = attendee.company_id ? companyById.get(attendee.company_id) : null
             const linkedDeal = attendee.deal_id ? dealById.get(attendee.deal_id) : null
             const personLocations = locationsByPerson.get(attendeeKey(attendee)) ?? []
+            const meetingCount = meetingCounts.get(attendeeKey(attendee)) ?? 0
+            const profileCompanyId = attendee.company_id
+              || linkedContact?.company_id
+              || companyByName.get(normalise(attendee.raw_company ?? ''))?.id
             return <article key={attendee.id} className="grid gap-3 p-5 md:grid-cols-[1.15fr_1.2fr_1fr_auto] md:items-center">
-              <div><h3 className="font-black text-stone-950">{attendee.raw_name}</h3>{attendee.raw_company ? <p className="mt-1 text-sm text-stone-500">{attendee.raw_company}</p> : null}</div>
+              <div><h3 className="font-black text-stone-950">{attendee.raw_name}</h3>{attendee.raw_company ? profileCompanyId ? <Link href={`/companies/${profileCompanyId}`} className="mt-2 inline-flex items-center gap-1.5 rounded-full bg-red-50 px-3 py-1.5 text-sm font-black text-red-700 transition hover:bg-red-100 hover:text-red-800 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-red-600">{attendee.raw_company}<span aria-hidden="true">→</span><span className="sr-only">View company profile</span></Link> : <p className="mt-1 text-sm text-stone-500">{attendee.raw_company}</p> : null}</div>
               <div><p className="text-xs font-black uppercase tracking-wide text-stone-400">Groups / locations</p><div className="mt-2 flex flex-wrap gap-1.5">{personLocations.length ? personLocations.map((group) => <span key={group.id} title={group.location || group.name} className="rounded-full bg-red-50 px-2.5 py-1 text-[11px] font-black text-red-700">{group.location && normalise(group.location) !== normalise(group.name) ? `${group.name} · ${group.location}` : group.name}</span>) : <span className="text-sm font-bold text-stone-500">Not recorded</span>}</div>{event ? <p className="mt-2 text-[11px] font-bold text-stone-400">Last seen {formatDate(event.event_date)}</p> : null}</div>
               <div><p className="text-xs font-black uppercase tracking-wide text-stone-400">CRM connection</p><p className="mt-1 text-sm font-bold">{linkedDeal?.name || linkedContact && contactName(linkedContact) || linkedCompany?.company_name || 'Not linked yet'}</p></div>
-              <span className={`w-fit rounded-full px-3 py-1 text-xs font-black ${linkedDeal ? 'bg-red-100 text-red-700' : linkedContact || linkedCompany ? 'bg-amber-100 text-amber-800' : 'bg-stone-100 text-stone-500'}`}>{linkedDeal ? 'Opportunity' : linkedContact || linkedCompany ? 'CRM match' : 'Black book only'}</span>
+              <div className="flex flex-wrap gap-2 md:flex-col md:items-end"><span className="w-fit rounded-full bg-stone-950 px-3 py-1 text-xs font-black text-white">Met {meetingCount} {meetingCount === 1 ? 'time' : 'times'}</span><span className={`w-fit rounded-full px-3 py-1 text-xs font-black ${linkedDeal ? 'bg-red-100 text-red-700' : linkedContact || linkedCompany ? 'bg-amber-100 text-amber-800' : 'bg-stone-100 text-stone-500'}`}>{linkedDeal ? 'Opportunity' : linkedContact || linkedCompany ? 'CRM match' : 'Black book only'}</span></div>
             </article>
           })}</div> : <EmptyState title="No people to show" text="Choose another event or add a new attendee list." />}
         </section>
@@ -372,23 +436,14 @@ function ImportEventPanel({ groups, events, attendees, companies, contacts, deal
         savedGroupId = data.id
       }
 
-      const uploadedRoster = usableDrafts.map((draft) => networkingPersonKey({
-        contactId: draft.contactId || null,
-        email: draft.email,
-        name: draft.name,
-        company: draft.company,
-      }))
+      const resolvedDrafts = await resolveCrmRecords(usableDrafts, companies, contacts)
+      const uploadedRoster = resolvedDrafts.map(attendeeIdentityKey)
       const matchingEvent = events
         .filter((existingEvent) => existingEvent.group_id === savedGroupId)
         .find((existingEvent) => networkingRostersMatch(
           attendees
             .filter((attendee) => attendee.event_id === existingEvent.id)
-            .map((attendee) => networkingPersonKey({
-              contactId: attendee.contact_id,
-              email: attendee.raw_email,
-              name: attendee.raw_name,
-              company: attendee.raw_company,
-            })),
+            .map(attendeeIdentityKey),
           uploadedRoster,
         ))
 
@@ -398,6 +453,29 @@ function ImportEventPanel({ groups, events, attendees, companies, contacts, deal
           .update({ event_date: eventDate, updated_at: new Date().toISOString() })
           .eq('id', matchingEvent.id)
         if (updateError) throw updateError
+
+        const existingAttendees = attendees.filter((attendee) => attendee.event_id === matchingEvent.id)
+        for (const draft of resolvedDrafts) {
+          const existingAttendee = existingAttendees.find((attendee) => attendeeIdentityKey(attendee) === attendeeIdentityKey(draft))
+          if (!existingAttendee) continue
+          const { error: attendeeUpdateError } = await supabase
+            .from('networking_attendees')
+            .update({
+              contact_id: draft.contactId || null,
+              company_id: draft.companyId || null,
+              deal_id: draft.dealId || null,
+              raw_role: draft.role.trim() || null,
+              raw_email: draft.email.trim().toLowerCase() || null,
+              raw_phone: draft.phone.trim() || null,
+              notes: mergeNotes(existingAttendee.notes, attendeeNotes(draft)),
+              match_status: draft.contactId || draft.companyId || draft.dealId ? 'linked' : 'unmatched',
+              updated_at: new Date().toISOString(),
+            })
+            .eq('id', existingAttendee.id)
+          if (attendeeUpdateError) throw attendeeUpdateError
+        }
+
+        await saveCompanyNotes(resolvedDrafts)
         await onSaved()
         return
       }
@@ -412,7 +490,7 @@ function ImportEventPanel({ groups, events, attendees, companies, contacts, deal
       }).select('id').single()
       if (eventError) throw eventError
 
-      const { error: attendeeError } = await supabase.from('networking_attendees').insert(usableDrafts.map((draft) => ({
+      const { error: attendeeError } = await supabase.from('networking_attendees').insert(resolvedDrafts.map((draft) => ({
         event_id: savedEvent.id,
         contact_id: draft.contactId || null,
         company_id: draft.companyId || null,
@@ -422,10 +500,11 @@ function ImportEventPanel({ groups, events, attendees, companies, contacts, deal
         raw_role: draft.role.trim() || null,
         raw_email: draft.email.trim().toLowerCase() || null,
         raw_phone: draft.phone.trim() || null,
-        notes: [draft.website.trim() ? `Website: ${draft.website.trim()}` : '', draft.notes.trim()].filter(Boolean).join(' · ') || null,
+        notes: attendeeNotes(draft),
         match_status: draft.contactId || draft.companyId || draft.dealId ? 'linked' : 'unmatched',
       })))
       if (attendeeError) throw attendeeError
+      await saveCompanyNotes(resolvedDrafts)
       await onSaved()
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : 'The event could not be saved.')
@@ -444,28 +523,300 @@ function ImportEventPanel({ groups, events, attendees, companies, contacts, deal
     </div>
     <div className="border-b border-stone-800 p-6">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center"><label className="cursor-pointer rounded-xl bg-red-600 px-5 py-3 text-center text-sm font-black hover:bg-red-500">{reading ? 'Reading PDF…' : 'Upload attendee PDF'}<input type="file" accept="application/pdf,.pdf" onChange={handlePdf} disabled={reading} className="sr-only" /></label><button onClick={() => setDrafts((current) => [...current, blankAttendeeDraft(current.length)])} className="rounded-xl border border-stone-600 px-5 py-3 text-sm font-black text-stone-200 hover:bg-stone-800">+ Add person manually</button>{fileName ? <p className="text-sm font-bold text-stone-400">{fileName}{pageCount ? ` · ${pageCount} pages` : ''}</p> : null}</div>
-      <p className="mt-3 text-xs font-bold text-stone-500">Uploading the same people for the same group updates their existing met-at date instead of adding them again.</p>
+      <p className="mt-3 text-xs font-bold text-stone-500">Missing companies and contacts are added to the CRM automatically, and every company is tagged #screenpop. Notes are also saved in the company activity timeline. Uploading the same people for the same group updates their existing met-at date instead of adding them again.</p>
       {error ? <p className="mt-4 rounded-xl border border-red-900 bg-red-950/60 p-4 text-sm font-bold text-red-200">{error}</p> : null}
     </div>
     {drafts.length ? <div className="p-6"><div className="mb-4 flex items-end justify-between gap-4"><div><p className="text-xs font-black uppercase tracking-wide text-red-400">Review before saving</p><h3 className="mt-1 text-xl font-black">{drafts.length} people found</h3></div><p className="hidden text-xs text-stone-500 md:block">PDF layouts vary. Correct anything that landed in the wrong box.</p></div><div className="space-y-3">{drafts.map((draft, index) => {
       const visibleDeals = draft.companyId ? deals.filter((deal) => deal.company_id === draft.companyId) : deals
       const suggested = Boolean(draft.contactId || draft.companyId)
-      return <article key={draft.draftId} className="rounded-2xl border border-stone-700 bg-stone-900 p-4"><div className="mb-3 flex items-center justify-between"><p className="text-xs font-black uppercase tracking-wide text-stone-500">Person {index + 1}{suggested ? <span className="ml-2 text-amber-400">Possible CRM match</span> : null}</p><button onClick={() => setDrafts((current) => current.filter((item) => item.draftId !== draft.draftId))} className="text-xs font-black text-stone-500 hover:text-red-400">Remove</button></div><div className="grid gap-3 md:grid-cols-2 lg:grid-cols-3"><input value={draft.name} onChange={(event) => updateDraft(draft.draftId, 'name', event.target.value)} className="form-input" placeholder="Full name" aria-label={`Person ${index + 1} full name`} /><input value={draft.company} onChange={(event) => updateDraft(draft.draftId, 'company', event.target.value)} className="form-input" placeholder="Company" aria-label={`Person ${index + 1} company`} /><input value={draft.email} onChange={(event) => updateDraft(draft.draftId, 'email', event.target.value)} className="form-input" placeholder="Email" aria-label={`Person ${index + 1} email`} /><input value={draft.website} onChange={(event) => updateDraft(draft.draftId, 'website', event.target.value)} className="form-input" placeholder="Website" aria-label={`Person ${index + 1} website`} /><input value={draft.phone} onChange={(event) => updateDraft(draft.draftId, 'phone', event.target.value)} className="form-input" placeholder="Phone (optional)" aria-label={`Person ${index + 1} phone`} /></div><div className="mt-3 grid gap-3 md:grid-cols-3"><select value={draft.contactId} onChange={(event) => updateDraft(draft.draftId, 'contactId', event.target.value)} className="form-input"><option value="">No existing contact link</option>{contacts.map((contact) => <option key={contact.id} value={contact.id}>{contactName(contact)}{contact.email ? ` · ${contact.email}` : ''}</option>)}</select><select value={draft.companyId} onChange={(event) => updateDraft(draft.draftId, 'companyId', event.target.value)} className="form-input"><option value="">No existing company link</option>{companies.map((company) => <option key={company.id} value={company.id}>{company.company_name}</option>)}</select><select value={draft.dealId} onChange={(event) => updateDraft(draft.draftId, 'dealId', event.target.value)} className="form-input"><option value="">No opportunity link</option>{visibleDeals.map((deal) => <option key={deal.id} value={deal.id}>{deal.name} · {deal.stage}</option>)}</select></div>{draft.contactId && contactNames.get(draft.contactId) !== normalise(draft.name) ? <p className="mt-2 text-xs font-bold text-amber-300">Check this contact link: the names are not an exact match.</p> : null}</article>
+      return <article key={draft.draftId} className="rounded-2xl border border-stone-700 bg-stone-900 p-4"><div className="mb-3 flex items-center justify-between"><p className="text-xs font-black uppercase tracking-wide text-stone-500">Person {index + 1}{suggested ? <span className="ml-2 text-amber-400">Possible CRM match</span> : null}</p><button onClick={() => setDrafts((current) => current.filter((item) => item.draftId !== draft.draftId))} className="text-xs font-black text-stone-500 hover:text-red-400">Remove</button></div><div className="grid gap-3 md:grid-cols-2 lg:grid-cols-3"><input value={draft.name} onChange={(event) => updateDraft(draft.draftId, 'name', event.target.value)} className="form-input" placeholder="Full name" aria-label={`Person ${index + 1} full name`} /><input value={draft.company} onChange={(event) => updateDraft(draft.draftId, 'company', event.target.value)} className="form-input" placeholder="Company" aria-label={`Person ${index + 1} company`} /><input value={draft.role} onChange={(event) => updateDraft(draft.draftId, 'role', event.target.value)} className="form-input" placeholder="Role (optional)" aria-label={`Person ${index + 1} role`} /><input value={draft.email} onChange={(event) => updateDraft(draft.draftId, 'email', event.target.value)} className="form-input" placeholder="Email" aria-label={`Person ${index + 1} email`} /><input value={draft.website} onChange={(event) => updateDraft(draft.draftId, 'website', event.target.value)} className="form-input" placeholder="Website" aria-label={`Person ${index + 1} website`} /><input value={draft.phone} onChange={(event) => updateDraft(draft.draftId, 'phone', event.target.value)} className="form-input" placeholder="Phone (optional)" aria-label={`Person ${index + 1} phone`} /></div><textarea value={draft.notes} onChange={(event) => updateDraft(draft.draftId, 'notes', event.target.value)} rows={2} className="form-input mt-3" placeholder="Notes for this person (saved in their company file)" aria-label={`Person ${index + 1} notes`} /><div className="mt-3 grid gap-3 md:grid-cols-3"><select value={draft.contactId} onChange={(event) => updateDraft(draft.draftId, 'contactId', event.target.value)} className="form-input"><option value="">No existing contact link</option>{contacts.map((contact) => <option key={contact.id} value={contact.id}>{contactName(contact)}{contact.email ? ` · ${contact.email}` : ''}</option>)}</select><select value={draft.companyId} onChange={(event) => updateDraft(draft.draftId, 'companyId', event.target.value)} className="form-input"><option value="">No existing company link</option>{companies.map((company) => <option key={company.id} value={company.id}>{company.company_name}</option>)}</select><select value={draft.dealId} onChange={(event) => updateDraft(draft.draftId, 'dealId', event.target.value)} className="form-input"><option value="">No opportunity link</option>{visibleDeals.map((deal) => <option key={deal.id} value={deal.id}>{deal.name} · {deal.stage}</option>)}</select></div>{draft.contactId && contactNames.get(draft.contactId) !== normalise(draft.name) ? <p className="mt-2 text-xs font-bold text-amber-300">Check this contact link: the names are not an exact match.</p> : null}</article>
     })}</div><div className="mt-6 flex flex-col justify-end gap-3 sm:flex-row"><button onClick={onClose} className="rounded-xl px-5 py-3 text-sm font-black text-stone-400">Cancel</button><button onClick={() => void saveEvent()} disabled={saving} className="rounded-xl bg-red-600 px-6 py-3 text-sm font-black text-white hover:bg-red-500 disabled:opacity-50">{saving ? 'Saving the room…' : `Save event and ${drafts.filter((draft) => draft.name.trim()).length} people`}</button></div></div> : <div className="p-10 text-center"><p className="text-lg font-black">Start with the attendee list.</p><p className="mt-2 text-sm text-stone-500">You can also add people one at a time if there is no PDF.</p></div>}
   </section>
 }
 
 function suggestMatches(draft: NetworkingAttendeeDraft, contacts: Contact[], companies: Company[]) {
   const byEmail = draft.email ? contacts.find((contact) => contact.email?.toLowerCase() === draft.email.toLowerCase()) : null
-  const byName = contacts.find((contact) => normalise(contactName(contact)) === normalise(draft.name))
+  const matchingCompany = companies.find((item) => normalise(item.company_name) === normalise(draft.company))
+  const byName = contacts.find((contact) => normalise(contactName(contact)) === normalise(draft.name)
+    && (matchingCompany ? contact.company_id === matchingCompany.id : !draft.company.trim()))
   const contact = byEmail || byName
   const company = contact?.company_id
     ? companies.find((item) => item.id === contact.company_id)
-    : companies.find((item) => normalise(item.company_name) === normalise(draft.company))
+    : matchingCompany
   return { ...draft, contactId: contact?.id ?? '', companyId: company?.id ?? '' }
 }
 
+function syncLbbCompanies(
+  attendees: NetworkingAttendee[],
+  companies: Company[],
+  contacts: Contact[],
+) {
+  if (activeLbbCompanySync) return activeLbbCompanySync
+
+  activeLbbCompanySync = performLbbCompanySync(attendees, companies, contacts)
+    .finally(() => {
+      activeLbbCompanySync = null
+    })
+
+  return activeLbbCompanySync
+}
+
+async function performLbbCompanySync(
+  attendees: NetworkingAttendee[],
+  companies: Company[],
+  contacts: Contact[],
+): Promise<LbbCompanySyncResult> {
+  const syncedAttendees = attendees.map((attendee) => ({ ...attendee }))
+  const syncedCompanies = companies.map((company) => ({ ...company }))
+  const syncedContacts = contacts.map((contact) => ({ ...contact }))
+  const companyById = new Map(syncedCompanies.map((company) => [company.id, company]))
+  const companyByName = new Map(syncedCompanies.map((company) => [normalise(company.company_name), company]))
+  const taggedCompanyIds = new Set<string>()
+  let companiesAdded = 0
+  let attendeesLinked = 0
+  let contactsLinked = 0
+
+  for (let index = 0; index < syncedAttendees.length; index += 1) {
+    const attendee = syncedAttendees[index]
+    const companyName = attendee.raw_company?.trim() ?? ''
+    let company = attendee.company_id ? companyById.get(attendee.company_id) : undefined
+    if (!company && companyName) company = companyByName.get(normalise(companyName))
+
+    if (!company && companyName) {
+      const { data, error } = await supabase
+        .from('companies')
+        .insert({ company_name: companyName, tags: ['#screenpop'] })
+        .select('id,company_name,domain,tags')
+        .single()
+      if (error) {
+        if (isMissingCompanyTagsColumn(error)) throw new Error(companyTagsSetupMessage)
+        throw new Error(`Could not add ${companyName} from the LBB to Companies: ${error.message}`)
+      }
+
+      company = data as Company
+      syncedCompanies.push(company)
+      companyById.set(company.id, company)
+      companyByName.set(normalise(company.company_name), company)
+      taggedCompanyIds.add(company.id)
+      companiesAdded += 1
+    }
+
+    if (!company) continue
+
+    if (!taggedCompanyIds.has(company.id)) {
+      const taggedCompany = await ensureScreenpopCompanyTag(company)
+      const companyIndex = syncedCompanies.findIndex((candidate) => candidate.id === company?.id)
+      if (companyIndex >= 0) syncedCompanies[companyIndex] = taggedCompany
+      companyById.set(taggedCompany.id, taggedCompany)
+      companyByName.set(normalise(taggedCompany.company_name), taggedCompany)
+      taggedCompanyIds.add(taggedCompany.id)
+      company = taggedCompany
+    }
+
+    if (!attendee.company_id) {
+      const { data, error } = await supabase
+        .from('networking_attendees')
+        .update({ company_id: company.id, match_status: 'linked' })
+        .eq('id', attendee.id)
+        .is('company_id', null)
+        .select('id')
+      if (error) throw new Error(`Could not link ${attendee.raw_name} to ${company.company_name}: ${error.message}`)
+      if (data?.length) attendeesLinked += 1
+      syncedAttendees[index] = { ...attendee, company_id: company.id }
+    }
+
+    if (attendee.contact_id) {
+      const contactIndex = syncedContacts.findIndex((contact) => contact.id === attendee.contact_id)
+      const contact = contactIndex >= 0 ? syncedContacts[contactIndex] : null
+      if (contact && !contact.company_id) {
+        const { data, error } = await supabase
+          .from('contacts')
+          .update({ company_id: company.id })
+          .eq('id', contact.id)
+          .is('company_id', null)
+          .select('id')
+        if (error) throw new Error(`Could not link ${contactName(contact)} to ${company.company_name}: ${error.message}`)
+        if (data?.length) contactsLinked += 1
+        syncedContacts[contactIndex] = {
+          ...contact,
+          company_id: company.id,
+          companies: { company_name: company.company_name },
+        }
+      }
+    }
+  }
+
+  return {
+    attendees: syncedAttendees,
+    companies: syncedCompanies.sort((left, right) => left.company_name.localeCompare(right.company_name)),
+    contacts: syncedContacts,
+    companiesAdded,
+    attendeesLinked,
+    contactsLinked,
+  }
+}
+
+async function resolveCrmRecords(drafts: NetworkingAttendeeDraft[], companies: Company[], contacts: Contact[]) {
+  const knownCompanies = [...companies]
+  const knownContacts = [...contacts]
+  const resolved: NetworkingAttendeeDraft[] = []
+
+  for (const draft of drafts) {
+    const email = draft.email.trim().toLowerCase()
+    const domain = websiteDomain(draft.website)
+    let contact = knownContacts.find((item) => item.id === draft.contactId)
+      || (email ? knownContacts.find((item) => item.email?.toLowerCase() === email) : undefined)
+    let company = knownCompanies.find((item) => item.id === draft.companyId)
+      || (contact?.company_id ? knownCompanies.find((item) => item.id === contact?.company_id) : undefined)
+      || knownCompanies.find((item) => normalise(item.company_name) === normalise(draft.company))
+      || (domain ? knownCompanies.find((item) => item.domain?.toLowerCase() === domain) : undefined)
+
+    if (!company && draft.company.trim()) {
+      const { data, error } = await supabase
+        .from('companies')
+        .insert({ company_name: draft.company.trim(), domain, tags: ['#screenpop'] })
+        .select('id,company_name,domain,tags')
+        .single()
+      if (error) {
+        if (isMissingCompanyTagsColumn(error)) throw new Error(companyTagsSetupMessage)
+        throw new Error(`Could not add ${draft.company.trim()} to the CRM: ${error.message}`)
+      }
+      company = data as Company
+      knownCompanies.push(company)
+    }
+
+    if (company) {
+      company = await ensureScreenpopCompanyTag(company)
+      const companyIndex = knownCompanies.findIndex((item) => item.id === company?.id)
+      if (companyIndex >= 0) knownCompanies[companyIndex] = company
+    }
+
+    if (!contact) {
+      contact = knownContacts.find((item) => normalise(contactName(item)) === normalise(draft.name)
+        && item.company_id === (company?.id ?? null))
+    }
+
+    if (!contact) {
+      const { firstName, lastName } = splitContactName(draft.name)
+      const { data, error } = await supabase
+        .from('contacts')
+        .insert({
+          company_id: company?.id ?? null,
+          first_name: firstName,
+          last_name: lastName,
+          role: draft.role.trim() || null,
+          email: email || null,
+          telephone: draft.phone.trim() || null,
+          notes: draft.notes.trim() || null,
+        })
+        .select('id,company_id,first_name,last_name,email,companies(company_name)')
+        .single()
+      if (error) throw new Error(`Could not add ${draft.name.trim()} as a contact: ${error.message}`)
+      contact = data as Contact
+      knownContacts.push(contact)
+    }
+
+    resolved.push({
+      ...draft,
+      contactId: contact.id,
+      companyId: company?.id ?? contact.company_id ?? '',
+    })
+  }
+
+  return resolved
+}
+
+const companyTagsSetupMessage = 'Company tagging needs its one-time setup. Run docs/company-tags.sql in Supabase, then import the attendee list again.'
+
+async function ensureScreenpopCompanyTag(company: Company) {
+  let tags = company.tags
+
+  if (tags === undefined) {
+    const { data, error } = await supabase
+      .from('companies')
+      .select('tags')
+      .eq('id', company.id)
+      .single()
+    if (error) {
+      if (isMissingCompanyTagsColumn(error)) throw new Error(companyTagsSetupMessage)
+      throw new Error(`Could not check tags for ${company.company_name}: ${error.message}`)
+    }
+    tags = data.tags as string[] | null
+  }
+
+  const currentTags = readCompanyTags(tags)
+  if (currentTags.includes('#screenpop')) return { ...company, tags: currentTags }
+
+  const nextTags = readCompanyTags([...currentTags, '#screenpop'])
+  const { data, error } = await supabase
+    .from('companies')
+    .update({ tags: nextTags })
+    .eq('id', company.id)
+    .select('id,company_name,domain,tags')
+    .single()
+  if (error) {
+    if (isMissingCompanyTagsColumn(error)) throw new Error(companyTagsSetupMessage)
+    throw new Error(`Could not tag ${company.company_name} as #screenpop: ${error.message}`)
+  }
+
+  return data as Company
+}
+
+function isMissingCompanyTagsColumn(error: { code?: string; message?: string }) {
+  return error.code === '42703'
+    || error.code === 'PGRST204'
+    || Boolean(error.message?.toLowerCase().includes('tags') && error.message?.toLowerCase().includes('column'))
+}
+
+async function saveCompanyNotes(drafts: NetworkingAttendeeDraft[]) {
+  const notes = drafts
+    .filter((draft) => draft.companyId && draft.notes.trim())
+    .map((draft) => ({
+      company_id: draft.companyId,
+      contact_id: draft.contactId || null,
+      deal_id: draft.dealId || null,
+      activity_type: 'note',
+      summary: `Little Black Book — ${draft.name.trim()}: ${draft.notes.trim()}`,
+    }))
+  if (!notes.length) return
+  const { error } = await supabase.from('crm_activities').insert(notes)
+  if (error) throw new Error(`The event was saved, but its company notes could not be logged: ${error.message}`)
+}
+
+function attendeeIdentityKey(person: NetworkingAttendee | NetworkingAttendeeDraft) {
+  const email = 'raw_email' in person ? person.raw_email : person.email
+  const name = 'raw_name' in person ? person.raw_name : person.name
+  const company = 'raw_company' in person ? person.raw_company : person.company
+  return networkingPersonKey({ email, name, company })
+}
+
+function attendeeNotes(draft: NetworkingAttendeeDraft) {
+  return [draft.website.trim() ? `Website: ${draft.website.trim()}` : '', draft.notes.trim()].filter(Boolean).join(' · ') || null
+}
+
+function mergeNotes(current: string | null, incoming: string | null) {
+  if (!incoming) return current
+  if (!current) return incoming
+  return current.includes(incoming) ? current : `${current} · ${incoming}`
+}
+
+function websiteDomain(value: string) {
+  const cleaned = value.trim().toLowerCase()
+  if (!cleaned) return null
+  try {
+    return new URL(cleaned.match(/^https?:\/\//) ? cleaned : `https://${cleaned}`).hostname.replace(/^www\./, '') || null
+  } catch {
+    return null
+  }
+}
+
+function splitContactName(value: string) {
+  const parts = value.trim().split(/\s+/).filter(Boolean)
+  return { firstName: parts.shift() || 'Unknown', lastName: parts.join(' ') || null }
+}
+
 function contactName(contact: Contact) { return [contact.first_name, contact.last_name].filter(Boolean).join(' ') || contact.email || 'Unnamed contact' }
+function relationCompanyName(companies: Contact['companies']) { return (Array.isArray(companies) ? companies[0] : companies)?.company_name ?? '' }
 function normalise(value: string) { return value.trim().toLowerCase().replace(/[^a-z0-9]+/g, ' ') }
 function initials(value: string) { return value.split(/\s+/).slice(0, 2).map((part) => part[0]?.toUpperCase()).join('') || 'NB' }
 function formatDate(value: string) { return new Intl.DateTimeFormat('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }).format(new Date(`${value}T00:00:00`)) }

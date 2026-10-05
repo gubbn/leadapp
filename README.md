@@ -100,6 +100,14 @@ optionally link each person to an existing CRM contact, company, or sales
 opportunity before saving. Scanned PDFs can be entered manually from the same
 screen.
 
+## Company tags
+
+Run [`docs/company-tags.sql`](docs/company-tags.sql) in the Supabase SQL editor
+once, then add tags such as `#customer` or `#screenpop` while editing a company.
+The campaign builder can include or exclude companies using any saved tag;
+`#customer` marks a company as an existing customer, while `#screenpop`
+identifies companies added through the Little Black Book.
+
 You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
 
 This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.

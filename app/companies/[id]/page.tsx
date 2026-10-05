@@ -7,6 +7,18 @@ import { supabase } from '@/lib/supabaseClient'
 import AppHeader from '@/app/components/AppHeader'
 import CompanyLookupLinks from '@/app/components/CompanyLookupLinks'
 import { formatCurrency, stageFor } from '@/lib/crm'
+import {
+  companyTagsToInput,
+  hasCustomerCompanyTag,
+  parseCompanyTags,
+  readCompanyTags,
+  removeExistingCustomerTagsOnce,
+} from '@/lib/companyTags'
+import {
+  buildMeetingCounts,
+  type MeetingAttendeeIdentity,
+  type MeetingContactIdentity,
+} from '@/lib/networkingMeetingCounts'
 
 type DbRow = Record<string, unknown>
 
@@ -46,6 +58,7 @@ export default function CompanyDetailPage() {
   const [deals, setDeals] = useState<DbRow[]>([])
   const [tasks, setTasks] = useState<DbRow[]>([])
   const [activities, setActivities] = useState<DbRow[]>([])
+  const [networkingAttendees, setNetworkingAttendees] = useState<MeetingAttendeeIdentity[]>([])
   const [loading, setLoading] = useState(true)
   const [errorMessage, setErrorMessage] = useState('')
   const [warningMessage, setWarningMessage] = useState('')
@@ -61,8 +74,11 @@ export default function CompanyDetailPage() {
   }, [companyId])
 
   const relationshipStatus = useMemo(() => {
+    if (hasCustomerCompanyTag(company?.tags)) return 'customer'
+    const manualStatus = company ? getManualRelationshipStatus(company) : null
+    if (manualStatus) return manualStatus
     return getRelationshipStatus(contacts, campaignHistory)
-  }, [contacts, campaignHistory])
+  }, [company, contacts, campaignHistory])
 
   const stats = useMemo(() => {
     const selected = campaignHistory.length
@@ -95,12 +111,33 @@ export default function CompanyDetailPage() {
     }
   }, [campaignHistory])
 
+  const meetingCountsByContact = useMemo(() => {
+    const meetingContacts: MeetingContactIdentity[] = contacts.map((contact) => ({
+      id: contact.id,
+      email: getContactEmail(contact),
+      name: getContactName(contact),
+      companyName: company ? getCompanyName(company) : '',
+    }))
+    const meetingCounts = buildMeetingCounts(networkingAttendees, meetingContacts)
+
+    return new Map(
+      contacts.map((contact) => [contact.id, meetingCounts.get(`contact:${contact.id}`) ?? 0]),
+    )
+  }, [company, contacts, networkingAttendees])
+
   async function loadCompany() {
     setLoading(true)
     setErrorMessage('')
     setWarningMessage('')
 
     const warnings: string[] = []
+
+    try {
+      const removedCount = await removeExistingCustomerTagsOnce(supabase)
+      if (removedCount) warnings.push(`Removed the old customer tag from ${removedCount} ${removedCount === 1 ? 'company' : 'companies'}.`)
+    } catch (caught) {
+      warnings.push(`Old customer tags could not be removed: ${caught instanceof Error ? caught.message : 'Unknown error'}`)
+    }
 
     const { data: companyData, error: companyError } = await supabase
       .from('companies')
@@ -156,6 +193,17 @@ export default function CompanyDetailPage() {
           .map((row) => row as ContactRow)
           .sort((a, b) => getContactName(a).localeCompare(getContactName(b))),
       )
+    }
+
+    const { data: networkingAttendeeData, error: networkingAttendeesError } = await supabase
+      .from('networking_attendees')
+      .select('event_id,contact_id,raw_email,raw_name,raw_company')
+
+    if (networkingAttendeesError) {
+      warnings.push(`Meeting counts could not be loaded: ${networkingAttendeesError.message}`)
+      setNetworkingAttendees([])
+    } else {
+      setNetworkingAttendees((networkingAttendeeData ?? []) as MeetingAttendeeIdentity[])
     }
 
     const { data: campaignCompanyData, error: campaignCompanyError } =
@@ -343,6 +391,19 @@ export default function CompanyDetailPage() {
                   <DetailItem label="Last contact" value={formatDate(getCompanyLastContactDate(company))} />
                   <DetailItem label="Created" value={formatDate(getCompanyCreatedAt(company))} />
                   <DetailItem label="DNC" value={getCompanyDnc(company) ? 'Yes' : 'No'} />
+                </div>
+
+                <div className="mt-5">
+                  <p className="text-xs font-black uppercase tracking-wide text-stone-400">Tags</p>
+                  {readCompanyTags(company.tags).length ? (
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      {readCompanyTags(company.tags).map((tag) => (
+                        <span key={tag} className="rounded-full bg-red-50 px-3 py-1 text-xs font-black text-red-700">{tag}</span>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="mt-2 text-sm text-stone-500">No tags added.</p>
+                  )}
                 </div>
 
                 <div className="mt-6 border-t border-stone-100 pt-5">
@@ -540,6 +601,7 @@ export default function CompanyDetailPage() {
                       <th className="px-4 py-3">Email</th>
                       <th className="px-4 py-3">Role</th>
                       <th className="px-4 py-3">Phone</th>
+                      <th className="px-4 py-3">Meetings</th>
                       <th className="px-4 py-3">Outcome</th>
                       <th className="px-4 py-3">Source</th>
                     </tr>
@@ -548,7 +610,7 @@ export default function CompanyDetailPage() {
                   <tbody>
                     {contacts.length === 0 ? (
                       <tr>
-                        <td className="px-4 py-5 text-stone-500" colSpan={6}>
+                        <td className="px-4 py-5 text-stone-500" colSpan={7}>
                           No contacts found for this company.
                         </td>
                       </tr>
@@ -581,6 +643,12 @@ export default function CompanyDetailPage() {
 
                           <td className="px-4 py-3">
                             {getContactPhone(contact) || '-'}
+                          </td>
+
+                          <td className="px-4 py-3">
+                            <span className="inline-flex rounded-full bg-stone-950 px-3 py-1 text-xs font-black text-white">
+                              Met {meetingCountsByContact.get(contact.id) ?? 0} {(meetingCountsByContact.get(contact.id) ?? 0) === 1 ? 'time' : 'times'}
+                            </span>
                           </td>
 
                           <td className="px-4 py-3">
@@ -799,6 +867,19 @@ function getContactSource(contact: DbRow) {
   return getString(contact, ['contact_source', 'source'])
 }
 
+function getManualRelationshipStatus(company: DbRow): RelationshipStatus | null {
+  const value = cleanOutcome(getString(company, ['relationship_status']))
+  if (!value) return null
+  if (value === 'prospect') return 'prospect'
+  if (value === 'customer' || value === 'won') return 'customer'
+  if (value === 'quoted' || value === 'quote sent' || value === 'negotiating') return 'quoted'
+  if (value === 'bounced' || value === 'bounce') return 'bounced'
+  if (value === 'negative') return 'negative'
+  if (value === 'no answer' || value === 'no-answer') return 'no-answer'
+  if (value === 'other') return 'other'
+  return null
+}
+
 function getRelationshipStatus(
   contacts: ContactRow[],
   campaignHistory: CampaignHistoryRow[],
@@ -820,10 +901,6 @@ function getRelationshipStatus(
     ...campaignEmailStatuses,
     ...campaignOutcomes,
   ]
-
-  if (allOutcomes.includes('customer') || allOutcomes.includes('won')) {
-    return 'customer'
-  }
 
   if (
     allOutcomes.includes('quoted') ||
@@ -848,6 +925,8 @@ function getRelationshipStatus(
   const meaningfulOutcomes = allOutcomes.filter(
     (value) =>
       value &&
+      value !== 'customer' &&
+      value !== 'won' &&
       value !== 'none' &&
       value !== 'selected' &&
       value !== 'sent' &&
@@ -1034,6 +1113,8 @@ function CompanyDetailsEditor({
     sizeBand: getCompanySizeBand(company),
     domain: getCompanyDomain(company),
     lastContactDate: toDateInput(getCompanyLastContactDate(company)),
+    tags: companyTagsToInput(company.tags),
+    customer: hasCustomerCompanyTag(company.tags),
     dnc: getCompanyDnc(company),
   })
   const [logActivity, setLogActivity] = useState(true)
@@ -1049,6 +1130,7 @@ function CompanyDetailsEditor({
     setSaving(true)
     setError('')
 
+    const tagsWithoutCustomer = parseCompanyTags(draft.tags).filter((tag) => tag !== '#customer')
     const payload = {
       company_name: draft.companyName.trim(),
       industry: draft.industry.trim() || null,
@@ -1056,6 +1138,7 @@ function CompanyDetailsEditor({
       size_band: draft.sizeBand.trim() || null,
       domain: draft.domain.trim() || null,
       last_contact_date: draft.lastContactDate || null,
+      tags: draft.customer ? [...tagsWithoutCustomer, '#customer'].sort() : tagsWithoutCustomer,
       dnc: draft.dnc,
       updated_at: new Date().toISOString(),
     }
@@ -1126,6 +1209,11 @@ function CompanyDetailsEditor({
           <EditorField label="Location" value={draft.location} onChange={(value) => update('location', value)} placeholder="Village, town or city" />
           <EditorField label="Size band" value={draft.sizeBand} onChange={(value) => update('sizeBand', value)} placeholder="For example, 15–49" />
           <EditorField label="Website or domain" value={draft.domain} onChange={(value) => update('domain', value)} placeholder="example.co.uk" />
+          <div className="sm:col-span-2">
+            <EditorField label="Tags" value={draft.tags} onChange={(value) => update('tags', value)} placeholder="#customer #screenpop" />
+            <p className="mt-1.5 text-xs text-stone-500">Separate tags with spaces or commas. Tags are saved in lowercase with a #.</p>
+          </div>
+          <EditorCheckbox checked={draft.customer} onChange={(value) => update('customer', value)} title="Customer / won" description="Set this manually. LBB and campaign activity will not mark the company as a customer." highlighted />
           <label className="block">
             <span className="mb-1.5 block text-xs font-black uppercase tracking-wide text-stone-500">Last contact</span>
             <input type="date" value={draft.lastContactDate} onChange={(event) => update('lastContactDate', event.target.value)} className="w-full rounded-xl border border-stone-300 px-3 py-2.5 text-sm font-semibold outline-none focus:border-red-500 focus:ring-4 focus:ring-red-50" />
@@ -1307,15 +1395,20 @@ function companyChangeSummary(
     sizeBand: string
     domain: string
     lastContactDate: string
+    tags: string
+    customer: boolean
     dnc: boolean
   },
 ) {
+  const tagsWithoutCustomer = parseCompanyTags(draft.tags).filter((tag) => tag !== '#customer')
+  const effectiveTags = draft.customer ? [...tagsWithoutCustomer, '#customer'].sort() : tagsWithoutCustomer
   const fields: Array<[string, string | boolean, string | boolean]> = [
     ['Name', getCompanyName(company), draft.companyName.trim()],
     ['Industry', getCompanyIndustry(company), draft.industry.trim()],
     ['Location', getCompanyLocation(company), draft.location.trim()],
     ['Size band', getCompanySizeBand(company), draft.sizeBand.trim()],
     ['Domain', getCompanyDomain(company), draft.domain.trim()],
+    ['Tags', companyTagsToInput(company.tags), companyTagsToInput(effectiveTags)],
     ['Last contact', toDateInput(getCompanyLastContactDate(company)), draft.lastContactDate],
     ['DNC', getCompanyDnc(company), draft.dnc],
   ]

@@ -4,6 +4,13 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import Link from 'next/link'
 import { supabase } from '@/lib/supabaseClient'
 import AppHeader from '@/app/components/AppHeader'
+import {
+  companyTagsToInput,
+  hasCustomerCompanyTag,
+  parseCompanyTags,
+  readCompanyTags,
+  removeExistingCustomerTagsOnce,
+} from '@/lib/companyTags'
 
 type DbRow = Record<string, unknown>
 
@@ -43,6 +50,7 @@ type CompanyEditDraft = {
   sizeBand: string
   domain: string
   lastContactDate: string
+  tags: string
   dnc: boolean
   relationshipStatus: RelationshipStatus
 }
@@ -159,6 +167,7 @@ export default function CompaniesPage() {
           getCompanyIndustry(company.raw),
           getCompanyLocation(company.raw),
           getCompanyDomain(company.raw),
+          ...readCompanyTags(company.raw.tags),
           getManualRelationshipLabel(company.raw),
           contactSearchText,
           campaignSearchText,
@@ -224,6 +233,14 @@ export default function CompaniesPage() {
     setErrorMessage('')
     setWarningMessage('')
 
+    const warnings: string[] = []
+    try {
+      const removedCount = await removeExistingCustomerTagsOnce(supabase)
+      if (removedCount) setMessage(`Removed the old customer tag from ${removedCount} ${removedCount === 1 ? 'company' : 'companies'}.`)
+    } catch (caught) {
+      warnings.push(`Old customer tags could not be removed: ${caught instanceof Error ? caught.message : 'Unknown error'}`)
+    }
+
     const { data: companyData, error: companyError } = await supabase
       .from('companies')
       .select('*')
@@ -241,8 +258,6 @@ export default function CompaniesPage() {
     let contactRows: ContactRow[] = []
     let campaignHistoryRows: CampaignHistoryRow[] = []
     let campaignRows: DbRow[] = []
-    const warnings: string[] = []
-
     const { data: contactsData, error: contactsError } = await supabase
       .from('contacts')
       .select('*')
@@ -357,6 +372,7 @@ export default function CompaniesPage() {
       sizeBand: getCompanySizeBand(company.raw),
       domain: getCompanyDomain(company.raw),
       lastContactDate: toDateInputValue(getCompanyLastContactDate(company.raw)),
+      tags: companyTagsToInput(company.raw.tags),
       dnc: getCompanyDnc(company.raw),
       relationshipStatus: getRelationshipStatus(company),
     })
@@ -423,6 +439,7 @@ export default function CompaniesPage() {
       ['last_contact_date'],
       editDraft.lastContactDate,
     )
+    payload.tags = parseCompanyTags(editDraft.tags)
 
     payload.relationship_status = toDbRelationshipStatus(
       editDraft.relationshipStatus,
@@ -796,6 +813,12 @@ export default function CompaniesPage() {
                 <EditField label="Website or domain">
                   <EditorInput value={editDraft.domain} onChange={(value) => updateDraft('domain', value)} placeholder="example.co.uk" />
                 </EditField>
+                <div className="sm:col-span-2">
+                  <EditField label="Tags">
+                    <EditorInput value={editDraft.tags} onChange={(value) => updateDraft('tags', value)} placeholder="#customer #screenpop" />
+                  </EditField>
+                  <p className="mt-1.5 text-xs text-stone-500">Separate tags with spaces or commas. Tags are saved in lowercase with a #.</p>
+                </div>
                 <EditField label="Last contact">
                   <input
                     type="date"
@@ -933,6 +956,13 @@ export default function CompaniesPage() {
                                 Created{' '}
                                 {formatDate(getCompanyCreatedAt(company.raw))}
                               </div>
+                              {readCompanyTags(company.raw.tags).length ? (
+                                <div className="mt-2 flex max-w-xs flex-wrap gap-1">
+                                  {readCompanyTags(company.raw.tags).map((tag) => (
+                                    <span key={tag} className="rounded-full bg-red-50 px-2 py-0.5 text-[11px] font-bold text-red-700">{tag}</span>
+                                  ))}
+                                </div>
+                              ) : null}
                             </div>
                           )}
                         </td>
@@ -1263,6 +1293,10 @@ function getManualRelationshipLabel(company: DbRow) {
 }
 
 function getRelationshipStatus(company: CompanyView): RelationshipStatus {
+  if (hasCustomerCompanyTag(company.raw.tags)) {
+    return 'customer'
+  }
+
   const manualStatus = getManualRelationshipStatus(company.raw)
 
   if (manualStatus) {
@@ -1287,10 +1321,6 @@ function getRelationshipStatus(company: CompanyView): RelationshipStatus {
     ...campaignOutcomes,
   ]
 
-  if (allOutcomes.includes('customer') || allOutcomes.includes('won')) {
-    return 'customer'
-  }
-
   if (
     allOutcomes.includes('quoted') ||
     allOutcomes.includes('quote sent') ||
@@ -1314,6 +1344,8 @@ function getRelationshipStatus(company: CompanyView): RelationshipStatus {
   const meaningfulOutcomes = allOutcomes.filter(
     (value) =>
       value &&
+      value !== 'customer' &&
+      value !== 'won' &&
       value !== 'none' &&
       value !== 'selected' &&
       value !== 'sent' &&
@@ -1329,6 +1361,10 @@ function getRelationshipStatus(company: CompanyView): RelationshipStatus {
 }
 
 function getRelationshipSummary(company: CompanyView) {
+  if (hasCustomerCompanyTag(company.raw.tags)) {
+    return 'Customer tag'
+  }
+
   const manualStatus = getManualRelationshipStatus(company.raw)
 
   if (manualStatus) {
@@ -1671,6 +1707,7 @@ function describeCompanyChanges(
     ['Location', getCompanyLocation(company.raw), draft.location.trim()],
     ['Size band', getCompanySizeBand(company.raw), draft.sizeBand.trim()],
     ['Domain', getCompanyDomain(company.raw), draft.domain.trim()],
+    ['Tags', companyTagsToInput(company.raw.tags), companyTagsToInput(parseCompanyTags(draft.tags))],
     [
       'Last contact',
       toDateInputValue(getCompanyLastContactDate(company.raw)),
