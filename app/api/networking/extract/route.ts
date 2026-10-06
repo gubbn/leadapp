@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server'
+import 'pdf-parse/worker'
 import { PDFParse } from 'pdf-parse'
 import { createSupabaseServerClient } from '@/lib/supabaseServer'
 
@@ -41,7 +42,7 @@ async function extractAttendees(request: Request) {
     )
   }
 
-  const data = new Uint8Array(await file.arrayBuffer())
+  const data = await file.arrayBuffer()
   const signature = new TextDecoder('ascii').decode(data.slice(0, 5))
 
   if (signature !== '%PDF-') {

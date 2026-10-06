@@ -1,9 +1,9 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  // pdf-parse loads pdf.js and its worker at runtime. Keeping it external prevents
-  // Turbopack from relocating the worker away from the package at build time.
-  serverExternalPackages: ['pdf-parse', 'pdfjs-dist'],
+  // pdf-parse loads its worker and native canvas implementation at runtime.
+  // Keeping both external lets serverless deployments resolve their packaged files.
+  serverExternalPackages: ['pdf-parse', '@napi-rs/canvas'],
 };
 
 export default nextConfig;
