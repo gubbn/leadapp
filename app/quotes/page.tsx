@@ -30,6 +30,7 @@ export default function QuotesPage() {
   const [loading, setLoading] = useState(true)
   const [showForm, setShowForm] = useState(false)
   const [error, setError] = useState('')
+  const [savingId, setSavingId] = useState<string | null>(null)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -60,14 +61,28 @@ export default function QuotesPage() {
   }), [quotes])
 
   async function setStatus(quote: Quote, status: string) {
+    setSavingId(quote.id)
+    setError('')
     const update = {
       status,
       updated_at: new Date().toISOString(),
       ...(status === 'chased' ? { chase_due_date: addBusinessDays(today, 5) } : {}),
     }
-    const { error: saveError } = await supabase.from('quotes').update(update).eq('id', quote.id)
-    if (saveError) setError(saveError.message)
-    else await load()
+    const { data, error: saveError } = await supabase
+      .from('quotes')
+      .update(update)
+      .eq('id', quote.id)
+      .select('status,chase_due_date')
+      .single()
+
+    if (saveError) {
+      setError(saveError.message)
+    } else {
+      setQuotes((current) => current.map((item) => item.id === quote.id
+        ? { ...item, status: data.status, chase_due_date: data.chase_due_date }
+        : item))
+    }
+    setSavingId(null)
   }
 
   return <main className="min-h-screen bg-stone-100 text-stone-900"><AppHeader />
@@ -76,7 +91,7 @@ export default function QuotesPage() {
       {error ? <p className="mb-6 rounded-xl bg-red-50 p-4 text-sm font-bold text-red-700">{error}</p> : null}
       {showForm ? <QuoteForm companies={companies} contacts={contacts} onClose={() => setShowForm(false)} onSaved={load} /> : null}
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4"><Metric label="Open quotes" value={totals.open} /><Metric label="Chases due" value={totals.due} urgent={totals.due > 0} /><Metric label="One-off value" value={formatCurrency(totals.oneOff)} /><Metric label="Subscription value" value={formatCurrency(totals.subscriptions)} /></div>
-      <section className="mt-6 overflow-hidden rounded-2xl border border-stone-200 bg-white shadow-sm"><div className="flex items-end justify-between border-b border-stone-200 p-5"><div><p className="text-[10px] font-black uppercase tracking-[0.18em] text-red-600">Quote register</p><h2 className="mt-1 text-xl font-black text-stone-950">Quotes and chases</h2></div><Link href="/#tasks" className="text-xs font-black text-red-600">View Do next →</Link></div>{loading ? <p className="p-6 text-sm font-bold text-stone-500">Loading quotes...</p> : quotes.length ? <div className="overflow-x-auto"><table className="min-w-full text-left"><thead className="bg-stone-50 text-[10px] font-black uppercase tracking-wide text-stone-500"><tr><th className="px-5 py-3">Customer</th><th className="px-5 py-3">Contact</th><th className="px-5 py-3">Quote no.</th><th className="px-5 py-3">One-off</th><th className="px-5 py-3">Subscription</th><th className="px-5 py-3">Chase</th><th className="px-5 py-3">Status</th></tr></thead><tbody>{quotes.map((quote) => <tr key={quote.id} className="border-t border-stone-100"><td className="px-5 py-4 text-sm font-black text-stone-900">{companyName(quote.companies)}</td><td className="px-5 py-4 text-sm text-stone-600">{contactName(quote.contacts)}</td><td className="px-5 py-4 font-mono text-sm font-bold text-stone-700">{quote.quote_number}</td><td className="px-5 py-4 text-sm font-bold text-stone-800">{formatCurrency(quote.one_off_value)}</td><td className="px-5 py-4 text-sm font-bold text-stone-800">{formatCurrency(quote.subscription_value)}</td><td className={`px-5 py-4 text-sm font-black ${quote.chase_due_date <= today && isOpen(quote.status) ? 'text-red-600' : 'text-stone-700'}`}>{formatShortDate(quote.chase_due_date)}</td><td className="px-5 py-4"><select value={quote.status} onChange={(event) => void setStatus(quote, event.target.value)} className="rounded-lg border border-stone-200 bg-white px-2 py-1.5 text-xs font-black text-stone-700">{statuses.map((status) => <option key={status} value={status}>{status}</option>)}</select></td></tr>)}</tbody></table></div> : <p className="p-6 text-sm text-stone-500">No quotes recorded. Add the next issued quote here so its chase is never missed.</p>}</section>
+      <section className="mt-6 overflow-hidden rounded-2xl border border-stone-200 bg-white shadow-sm"><div className="flex items-end justify-between border-b border-stone-200 p-5"><div><p className="text-[10px] font-black uppercase tracking-[0.18em] text-red-600">Quote register</p><h2 className="mt-1 text-xl font-black text-stone-950">Quotes and chases</h2></div><Link href="/#tasks" className="text-xs font-black text-red-600">View Do next →</Link></div>{loading ? <p className="p-6 text-sm font-bold text-stone-500">Loading quotes...</p> : quotes.length ? <div className="overflow-x-auto"><table className="min-w-full text-left"><thead className="bg-stone-50 text-[10px] font-black uppercase tracking-wide text-stone-500"><tr><th className="px-5 py-3">Customer</th><th className="px-5 py-3">Contact</th><th className="px-5 py-3">Quote no.</th><th className="px-5 py-3">One-off</th><th className="px-5 py-3">Subscription</th><th className="px-5 py-3">Chase</th><th className="px-5 py-3">Status</th></tr></thead><tbody>{quotes.map((quote) => <tr key={quote.id} className="border-t border-stone-100"><td className="px-5 py-4 text-sm font-black text-stone-900">{companyName(quote.companies)}</td><td className="px-5 py-4 text-sm text-stone-600">{contactName(quote.contacts)}</td><td className="px-5 py-4 font-mono text-sm font-bold text-stone-700">{quote.quote_number}</td><td className="px-5 py-4 text-sm font-bold text-stone-800">{formatCurrency(quote.one_off_value)}</td><td className="px-5 py-4 text-sm font-bold text-stone-800">{formatCurrency(quote.subscription_value)}</td><td className={`px-5 py-4 text-sm font-black ${quote.chase_due_date <= today && isOpen(quote.status) ? 'text-red-600' : 'text-stone-700'}`}>{formatShortDate(quote.chase_due_date)}</td><td className="px-5 py-4"><div className="flex min-w-max items-center gap-2">{isOpen(quote.status) ? <button type="button" onClick={() => void setStatus(quote, 'chased')} disabled={savingId === quote.id} className="rounded-lg bg-red-600 px-3 py-1.5 text-xs font-black text-white shadow-sm hover:bg-red-700 disabled:cursor-wait disabled:opacity-60">{savingId === quote.id ? 'Saving...' : quote.status === 'chased' ? 'Chased again' : 'Mark chased'}</button> : null}<select aria-label={`Status for quote ${quote.quote_number}`} value={quote.status} onChange={(event) => void setStatus(quote, event.target.value)} disabled={savingId === quote.id} className="rounded-lg border border-stone-200 bg-white px-2 py-1.5 text-xs font-black text-stone-700 disabled:cursor-wait disabled:opacity-60">{statuses.map((status) => <option key={status} value={status}>{status}</option>)}</select></div></td></tr>)}</tbody></table></div> : <p className="p-6 text-sm text-stone-500">No quotes recorded. Add the next issued quote here so its chase is never missed.</p>}</section>
     </section>
   </main>
 }
