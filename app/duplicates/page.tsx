@@ -24,12 +24,10 @@ type DuplicateCompany = {
 
 export default function DuplicatesPage() {
   const [rows, setRows] = useState<DuplicateCompany[]>([])
+  const [resolvedGroups, setResolvedGroups] = useState<Set<string>>(new Set())
+  const [savingGroup, setSavingGroup] = useState('')
   const [loading, setLoading] = useState(true)
   const [errorMessage, setErrorMessage] = useState('')
-
-  useEffect(() => {
-    loadDuplicates()
-  }, [])
 
   const groupedDuplicates = useMemo(() => {
     const groups: Record<string, DuplicateCompany[]> = {}
@@ -51,28 +49,54 @@ export default function DuplicatesPage() {
         matchKey: companies[0]?.match_key ?? '',
         companies,
       }))
+      .filter((group) => !resolvedGroups.has(group.key))
       .sort((a, b) => a.matchKey.localeCompare(b.matchKey))
-  }, [rows])
+  }, [rows, resolvedGroups])
 
   async function loadDuplicates() {
     setLoading(true)
     setErrorMessage('')
 
-    const { data, error } = await supabase
-      .from('company_possible_duplicates')
-      .select('*')
-      .order('duplicate_type', { ascending: true })
-      .order('match_key', { ascending: true })
-      .order('company_name', { ascending: true })
+    const [duplicateResult, decisionResult] = await Promise.all([
+      supabase
+        .from('company_possible_duplicates')
+        .select('*')
+        .order('duplicate_type', { ascending: true })
+        .order('match_key', { ascending: true })
+        .order('company_name', { ascending: true }),
+      supabase
+        .from('company_duplicate_decisions')
+        .select('group_key')
+        .eq('decision', 'keep_separate'),
+    ])
 
-    if (error) {
-      setErrorMessage(error.message)
+    if (duplicateResult.error) {
+      setErrorMessage(duplicateResult.error.message)
     } else {
-      setRows((data ?? []) as DuplicateCompany[])
+      setRows((duplicateResult.data ?? []) as DuplicateCompany[])
+    }
+    if (!decisionResult.error) {
+      setResolvedGroups(new Set((decisionResult.data ?? []).map((row) => row.group_key)))
     }
 
     setLoading(false)
   }
+
+  async function keepSeparate(groupKey: string) {
+    setSavingGroup(groupKey)
+    setErrorMessage('')
+    const { error } = await supabase
+      .from('company_duplicate_decisions')
+      .upsert({ group_key: groupKey, decision: 'keep_separate', decided_at: new Date().toISOString() })
+    if (error) setErrorMessage(error.message)
+    else setResolvedGroups((current) => new Set([...current, groupKey]))
+    setSavingGroup('')
+  }
+
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    void loadDuplicates()
+  }, [])
 
   return (
     <main className="min-h-screen bg-stone-100 text-stone-900">
@@ -180,12 +204,12 @@ export default function DuplicatesPage() {
                     </p>
                   </div>
 
-                  <Link
-                    href="/companies"
-                    className="rounded-xl border border-stone-300 bg-white px-4 py-2 text-sm font-bold transition hover:bg-stone-50"
-                  >
-                    Open companies
-                  </Link>
+                  <div className="flex flex-wrap gap-2">
+                    <button type="button" onClick={() => void keepSeparate(group.key)} disabled={savingGroup === group.key} className="rounded-xl bg-stone-950 px-4 py-2 text-sm font-black text-white disabled:opacity-50">
+                      {savingGroup === group.key ? 'Saving…' : 'Keep as separate businesses'}
+                    </button>
+                    <Link href="/companies" className="rounded-xl border border-stone-300 bg-white px-4 py-2 text-sm font-bold transition hover:bg-stone-50">Open companies</Link>
+                  </div>
                 </div>
 
                 <div className="mt-5 overflow-hidden rounded-2xl border border-stone-200">

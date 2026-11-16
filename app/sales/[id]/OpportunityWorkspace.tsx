@@ -4,7 +4,7 @@ import Link from 'next/link'
 import { FormEvent, useCallback, useEffect, useMemo, useState } from 'react'
 import { useParams } from 'next/navigation'
 import { supabase } from '@/lib/supabaseClient'
-import { dealStages, DealStage, formatCurrency, formatShortDate, normalizeDealStage, stageFor } from '@/lib/crm'
+import { dealStages as allDealStages, DealStage, formatCurrency, formatShortDate, normalizeDealStage, stageFor } from '@/lib/crm'
 
 type Company = {
   id: string
@@ -31,6 +31,7 @@ type Deal = {
   next_action: string | null
   next_action_due: string | null
   loss_reason: string | null
+  abandoned_by?: 'us' | 'lead' | null
   notes: string | null
   companies: Company | Company[] | null
 }
@@ -87,8 +88,10 @@ export default function OpportunityWorkspace() {
   const [activities, setActivities] = useState<Activity[]>([])
   const [healthChecks, setHealthChecks] = useState<HealthCheck[]>([])
   const [proposals, setProposals] = useState<Proposal[]>([])
+  const [quotes, setQuotes] = useState<{ id: string; quote_number: string; status: string }[]>([])
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
+  const [draftStage, setDraftStage] = useState<DealStage | null>(null)
   const [error, setError] = useState('')
   const [success, setSuccess] = useState('')
   const [panel, setPanel] = useState<'task' | 'activity' | 'health' | 'proposal' | null>(null)
@@ -105,21 +108,26 @@ export default function OpportunityWorkspace() {
     const rawDeal = dealResult.data as Deal
     const normalizedStage = normalizeDealStage(rawDeal.stage)
     const loadedDeal = { ...rawDeal, stage: normalizedStage, probability: stageFor(normalizedStage).probability }
-    const [contactsResult, tasksResult, activitiesResult, healthResult, proposalResult] = await Promise.all([
+    const [contactsResult, tasksResult, activitiesResult, healthResult, proposalResult, quotesResult] = await Promise.all([
       supabase.from('contacts').select('id,first_name,last_name,role').eq('company_id', loadedDeal.company_id).eq('is_active', true),
       supabase.from('crm_tasks').select('id,title,due_date,priority,status').eq('deal_id', dealId).order('due_date', { ascending: true, nullsFirst: false }),
       supabase.from('crm_activities').select('id,activity_type,summary,outcome,occurred_at').eq('deal_id', dealId).order('occurred_at', { ascending: false }),
       supabase.from('it_health_checks').select('*').eq('deal_id', dealId).order('created_at', { ascending: false }),
       supabase.from('proposals').select('*').eq('deal_id', dealId).order('created_at', { ascending: false }),
+      supabase.from('quotes').select('id,quote_number,status').eq('deal_id', dealId).order('issued_on', { ascending: false }),
     ])
-    const childError = [contactsResult.error, tasksResult.error, activitiesResult.error, healthResult.error, proposalResult.error].find(Boolean)
+    const quoteError = quotesResult.error
+    const missingQuoteLink = quoteError?.code === '42703' && quoteError.message.includes('deal_id')
+    const childError = [contactsResult.error, tasksResult.error, activitiesResult.error, healthResult.error, proposalResult.error, missingQuoteLink ? null : quoteError].find(Boolean)
     if (childError) setError(childError.message)
     setDeal(loadedDeal)
+    setDraftStage(null)
     setContacts((contactsResult.data ?? []) as Contact[])
     setTasks((tasksResult.data ?? []) as Task[])
     setActivities((activitiesResult.data ?? []) as Activity[])
     setHealthChecks((healthResult.data ?? []) as HealthCheck[])
     setProposals((proposalResult.data ?? []) as Proposal[])
+    setQuotes(quotesResult.data ?? [])
     setLoading(false)
   }, [dealId])
 
@@ -139,6 +147,11 @@ export default function OpportunityWorkspace() {
     if (!deal) return
     const form = new FormData(event.currentTarget)
     const stage = normalizeDealStage(String(form.get('stage')))
+    const abandonedBy = form.get('abandoned_by')
+    if (stage === 'abandoned' && deal.abandoned_by !== undefined && abandonedBy !== 'us' && abandonedBy !== 'lead') {
+      setError('Choose whether the opportunity was abandoned by us or by the lead.')
+      return
+    }
     const changedAt = new Date().toISOString()
     setSaving(true); setError(''); setSuccess('')
     const payload = {
@@ -156,6 +169,7 @@ export default function OpportunityWorkspace() {
       next_action: String(form.get('next_action') || '').trim() || null,
       next_action_due: String(form.get('next_action_due') || '') || null,
       loss_reason: String(form.get('loss_reason') || '').trim() || null,
+      ...(deal.abandoned_by !== undefined ? { abandoned_by: stage === 'abandoned' ? abandonedBy : null } : {}),
       notes: String(form.get('notes') || '').trim() || null,
       updated_at: changedAt,
     }
@@ -236,6 +250,10 @@ export default function OpportunityWorkspace() {
   if (loading) return <div className="mx-auto max-w-7xl px-4 py-12 text-sm font-bold text-stone-500">Loading opportunity...</div>
   if (!deal) return <div className="mx-auto max-w-7xl px-4 py-12 text-sm font-bold text-red-600">{error || 'Opportunity not found.'}</div>
 
+  const dealStages = allDealStages.filter((stage) =>
+    stage.key !== 'abandoned' || deal.abandoned_by !== undefined || deal.stage === 'abandoned',
+  )
+
   return <>
     <section className="border-b border-stone-200 bg-gradient-to-br from-white via-stone-50 to-red-50"><div className="mx-auto max-w-7xl px-4 py-9"><Link href="/sales" className="text-sm font-black text-red-600">← Back to pipeline</Link><div className="mt-5 flex flex-col justify-between gap-5 lg:flex-row lg:items-end"><div><p className="text-xs font-black uppercase tracking-[0.18em] text-red-600">Opportunity · {stageFor(deal.stage).label}</p><h1 className="mt-2 text-4xl font-black tracking-tight text-stone-950">{deal.name}</h1><Link href={`/companies/${deal.company_id}`} className="mt-3 inline-block text-sm font-bold text-stone-500 hover:text-red-600">{company?.company_name}</Link></div><div className="flex flex-wrap gap-3"><QuickButton label="+ Task" onClick={() => setPanel('task')} /><QuickButton label="Log activity" onClick={() => setPanel('activity')} /><QuickButton label="Book health check" onClick={() => setPanel('health')} /><QuickButton label="Create proposal" onClick={() => setPanel('proposal')} dark /></div></div></div></section>
     <section className="mx-auto max-w-7xl px-4 py-8">
@@ -252,7 +270,10 @@ export default function OpportunityWorkspace() {
           <div className="mt-6 grid gap-5 md:grid-cols-2">
             <Field label="Opportunity name"><input required name="name" defaultValue={deal.name} className="form-input" /></Field>
             <Field label="Primary contact"><select name="primary_contact_id" defaultValue={deal.primary_contact_id ?? ''} className="form-input"><option value="">Not assigned</option>{contacts.map((contact) => <option key={contact.id} value={contact.id}>{contactName(contact)}{contact.role ? ` · ${contact.role}` : ''}</option>)}</select></Field>
-            <Field label="Stage"><select name="stage" defaultValue={deal.stage} className="form-input">{dealStages.map((stage) => <option key={stage.key} value={stage.key}>{stage.label}</option>)}</select></Field>
+            <Field label="Stage"><select name="stage" value={draftStage ?? deal.stage} onChange={(event) => setDraftStage(normalizeDealStage(event.target.value))} className="form-input">{dealStages.map((stage) => <option key={stage.key} value={stage.key}>{stage.label}</option>)}</select></Field>
+            {(draftStage ?? deal.stage) === 'abandoned' && deal.abandoned_by !== undefined ? (
+              <Field label="Abandoned by"><select required name="abandoned_by" defaultValue={deal.abandoned_by ?? ''} className="form-input"><option value="">Choose who abandoned</option><option value="us">By us</option><option value="lead">By lead</option></select></Field>
+            ) : null}
             <Field label="Annual value (£)"><input name="annual_value" type="number" min="0" defaultValue={deal.annual_value ?? ''} className="form-input" /></Field>
             <Field label="Number of users"><input name="number_of_users" type="number" min="0" defaultValue={deal.number_of_users ?? company?.number_of_users ?? ''} className="form-input" /></Field>
             <Field label="Services"><input name="service_interest" defaultValue={deal.service_interest ?? ''} className="form-input" placeholder="Managed IT, cyber, Microsoft 365..." /></Field>
@@ -268,6 +289,13 @@ export default function OpportunityWorkspace() {
           <div className="mt-6 flex justify-end"><button disabled={saving} className="rounded-xl bg-red-600 px-5 py-3 text-sm font-black text-white">{saving ? 'Saving...' : 'Save opportunity'}</button></div>
         </form>
         <div className="space-y-6">
+          <Card eyebrow="Revenue" title="Linked quotes">
+            {quotes.length ? quotes.map((quote) => (
+              <Link key={quote.id} href={`/quotes/${quote.id}`} className="flex justify-between rounded-xl bg-stone-50 p-4 text-sm font-bold hover:bg-red-50">
+                <span>{quote.quote_number}</span><span className="capitalize text-stone-600">{quote.status}</span>
+              </Link>
+            )) : <Empty text="No quotes linked to this opportunity." />}
+          </Card>
           <Card eyebrow="Next actions" title="Tasks">{openTasks.length ? openTasks.map((task) => <div key={task.id} className="flex items-start gap-3 rounded-xl bg-stone-50 p-4"><button onClick={() => void completeTask(task)} className="mt-0.5 h-5 w-5 rounded-full border-2 border-stone-300 hover:border-emerald-500" /><div><p className="text-sm font-black text-stone-900">{task.title}</p><p className="mt-1 text-xs text-stone-500">{formatShortDate(task.due_date)} · {task.priority}</p></div></div>) : <Empty text="No open tasks for this opportunity." />}</Card>
           <Card eyebrow="Relationship history" title="Activity">{activities.length ? activities.slice(0, 10).map((activity) => <div key={activity.id} className="border-l-2 border-red-100 pl-4"><span className="rounded-full bg-stone-100 px-2 py-1 text-[10px] font-black uppercase text-stone-500">{activity.activity_type.replace('_', ' ')}</span><p className="mt-2 text-sm font-bold leading-6 text-stone-800">{activity.summary}</p><p className="mt-1 text-[10px] font-bold text-stone-400">{new Date(activity.occurred_at).toLocaleString('en-GB')}</p></div>) : <Empty text="No activity logged for this opportunity." />}</Card>
         </div>

@@ -12,6 +12,7 @@ export async function proxy(request: NextRequest) {
     pathname === '/login' ||
     pathname.startsWith('/auth') ||
     pathname === '/api/networking/extract' ||
+    pathname === '/api/quote-nurture/run' ||
     pathname.startsWith('/_next') ||
     pathname === '/favicon.ico'
 

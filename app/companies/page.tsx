@@ -9,7 +9,6 @@ import {
   hasCustomerCompanyTag,
   parseCompanyTags,
   readCompanyTags,
-  removeExistingCustomerTagsOnce,
 } from '@/lib/companyTags'
 
 type DbRow = Record<string, unknown>
@@ -234,12 +233,6 @@ export default function CompaniesPage() {
     setWarningMessage('')
 
     const warnings: string[] = []
-    try {
-      const removedCount = await removeExistingCustomerTagsOnce(supabase)
-      if (removedCount) setMessage(`Removed the old customer tag from ${removedCount} ${removedCount === 1 ? 'company' : 'companies'}.`)
-    } catch (caught) {
-      warnings.push(`Old customer tags could not be removed: ${caught instanceof Error ? caught.message : 'Unknown error'}`)
-    }
 
     const { data: companyData, error: companyError } = await supabase
       .from('companies')
@@ -439,7 +432,7 @@ export default function CompaniesPage() {
       ['last_contact_date'],
       editDraft.lastContactDate,
     )
-    payload.tags = parseCompanyTags(editDraft.tags)
+    payload.tags = parseCompanyTags(editDraft.tags).filter((tag) => tag !== '#customer')
 
     payload.relationship_status = toDbRelationshipStatus(
       editDraft.relationshipStatus,
@@ -1522,6 +1515,7 @@ function MultiSelectDropdown({
   onChange: (values: string[]) => void
 }) {
   const [open, setOpen] = useState(false)
+  const [optionSearch, setOptionSearch] = useState('')
   const dropdownRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -1556,6 +1550,10 @@ function MultiSelectDropdown({
           selectedValues[0]
         : `${selectedValues.length} selected`
 
+  const visibleOptions = options.filter((option) =>
+    option.label.toLowerCase().includes(optionSearch.trim().toLowerCase()),
+  )
+
   return (
     <div ref={dropdownRef} className="relative block">
       <span className="text-xs font-black uppercase tracking-wide text-stone-500">
@@ -1575,6 +1573,14 @@ function MultiSelectDropdown({
         </summary>
 
         <div className="absolute z-20 mt-2 max-h-72 w-full overflow-y-auto rounded-xl border border-stone-200 bg-white p-2 shadow-xl">
+          <input
+            type="search"
+            value={optionSearch}
+            onChange={(event) => setOptionSearch(event.target.value)}
+            placeholder={`Search ${label.toLowerCase()}...`}
+            aria-label={`Search ${label.toLowerCase()} options`}
+            className="mb-2 w-full rounded-lg border border-stone-200 px-3 py-2 text-sm outline-none focus:border-red-500 focus:ring-2 focus:ring-red-50"
+          />
           {selectedValues.length > 0 ? (
             <button
               type="button"
@@ -1585,13 +1591,13 @@ function MultiSelectDropdown({
             </button>
           ) : null}
 
-          {options.length === 0 ? (
+          {visibleOptions.length === 0 ? (
             <p className="px-3 py-2 text-sm text-stone-500">
-              No options available.
+              No matching options.
             </p>
           ) : (
             <div className="space-y-1">
-              {options.map((option) => (
+              {visibleOptions.map((option) => (
                 <label
                   key={option.value}
                   className="flex cursor-pointer items-center gap-2 rounded-lg px-3 py-2 text-sm font-semibold text-stone-700 transition hover:bg-stone-50"

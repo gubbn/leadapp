@@ -5,6 +5,7 @@ export const dealStages = [
   { key: 'proposal', label: 'Proposal delivered', probability: 75 },
   { key: 'decision', label: 'Decision pending', probability: 90 },
   { key: 'nurture', label: 'Nurtured', probability: 10 },
+  { key: 'abandoned', label: 'Abandoned', probability: 0 },
   { key: 'lost', label: 'Lost', probability: 0 },
   { key: 'won', label: 'Won', probability: 100 },
 ] as const
@@ -12,7 +13,7 @@ export const dealStages = [
 export type DealStage = (typeof dealStages)[number]['key']
 
 export const activeDealStages = dealStages.filter(
-  (stage) => !['won', 'lost', 'nurture'].includes(stage.key),
+  (stage) => !['won', 'lost', 'nurture', 'abandoned'].includes(stage.key),
 )
 
 const legacyDealStages: Record<string, DealStage> = {

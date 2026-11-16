@@ -3,7 +3,7 @@
 import Link from 'next/link'
 import { FormEvent, useCallback, useEffect, useMemo, useState } from 'react'
 import { supabase } from '@/lib/supabaseClient'
-import { activeDealStages, dealStages, DealStage, formatCurrency, formatShortDate, normalizeDealStage, stageFor } from '@/lib/crm'
+import { activeDealStages, dealStages as allDealStages, DealStage, formatCurrency, formatShortDate, normalizeDealStage, stageFor } from '@/lib/crm'
 
 type Company = { id: string; company_name: string }
 type Deal = {
@@ -19,6 +19,7 @@ type Deal = {
   source: string | null
   updated_at: string
   stage_changed_at: string
+  abandoned_by?: 'us' | 'lead' | null
   companies: Company | Company[] | null
 }
 type StageActivity = { deal_id: string | null; occurred_at: string }
@@ -34,11 +35,12 @@ export default function SalesPipeline() {
   const load = useCallback(async () => {
     setLoading(true)
     const [dealResult, companyResult, stageActivityResult] = await Promise.all([
-      supabase.from('deals').select('id,company_id,name,stage,annual_value,number_of_users,next_action,next_action_due,probability,source,updated_at,companies(id,company_name)').order('updated_at', { ascending: false }),
+      // Older databases omit abandoned_by. Read the columns available on each row.
+      supabase.from('deals').select('*,companies(id,company_name)').order('updated_at', { ascending: false }),
       supabase.from('companies').select('id,company_name').order('company_name'),
       supabase.from('crm_activities').select('deal_id,occurred_at').eq('activity_type', 'status_change').not('deal_id', 'is', null).order('occurred_at', { ascending: false }),
     ])
-    if (dealResult.error || companyResult.error || stageActivityResult.error) setError((dealResult.error || companyResult.error || stageActivityResult.error)?.message ?? '')
+    setError((dealResult.error || companyResult.error || stageActivityResult.error)?.message ?? '')
     const latestStageChange = new Map<string, string>()
     for (const activity of (stageActivityResult.data ?? []) as StageActivity[]) {
       if (activity.deal_id && !latestStageChange.has(activity.deal_id)) latestStageChange.set(activity.deal_id, activity.occurred_at)
@@ -56,22 +58,29 @@ export default function SalesPipeline() {
     void load()
   }, [load])
 
-  const activeDeals = deals.filter((deal) => !['won', 'lost', 'nurture'].includes(deal.stage))
-  const closedDeals = deals.filter((deal) => ['won', 'lost', 'nurture'].includes(deal.stage))
+  const activeDeals = deals.filter((deal) => !['won', 'lost', 'nurture', 'abandoned'].includes(deal.stage))
+  const closedDeals = deals.filter((deal) => ['won', 'lost', 'nurture', 'abandoned'].includes(deal.stage))
   const pipelineValue = activeDeals.reduce((sum, deal) => sum + Number(deal.annual_value ?? 0), 0)
   const weightedValue = activeDeals.reduce((sum, deal) => sum + Number(deal.annual_value ?? 0) * deal.probability / 100, 0)
   const wonValue = deals.filter((deal) => deal.stage === 'won').reduce((sum, deal) => sum + Number(deal.annual_value ?? 0), 0)
-  const shownStages = view === 'active' ? activeDealStages : dealStages.filter((stage) => ['won', 'lost', 'nurture'].includes(stage.key))
+  const shownStages = view === 'active' ? activeDealStages : allDealStages.filter((stage) => ['won', 'lost', 'nurture', 'abandoned'].includes(stage.key))
 
-  async function moveDeal(deal: Deal, stage: DealStage) {
+  async function moveDeal(deal: Deal, stage: DealStage, abandonedBy: 'us' | 'lead' | null = null) {
+    if (stage === 'abandoned' && (deal.abandoned_by === undefined || abandonedBy === null)) return
     const probability = stageFor(stage).probability
     const changedAt = new Date().toISOString()
-    setDeals((current) => current.map((item) => item.id === deal.id ? { ...item, stage, probability, updated_at: changedAt, stage_changed_at: changedAt } : item))
-    const { error: saveError } = await supabase.from('deals').update({ stage, probability, updated_at: changedAt }).eq('id', deal.id)
-    if (saveError) { setError(saveError.message); await load(); return }
+    const update = {
+      stage,
+      probability,
+      ...(deal.abandoned_by !== undefined ? { abandoned_by: stage === 'abandoned' ? abandonedBy : null } : {}),
+      updated_at: changedAt,
+    }
+    setDeals((current) => current.map((item) => item.id === deal.id ? { ...item, ...update, stage_changed_at: changedAt } : item))
+    const { error: saveError } = await supabase.from('deals').update(update).eq('id', deal.id)
+    if (saveError) { await load(); setError(saveError.message); return }
     const { error: activityError } = await supabase.from('crm_activities').insert({
       activity_type: 'status_change',
-      summary: `Deal moved to ${stageFor(stage).label}.`,
+      summary: `Deal moved to ${stageFor(stage).label}${stage === 'abandoned' ? ` by ${abandonedBy === 'us' ? 'us' : 'the lead'}` : ''}.`,
       company_id: deal.company_id,
       deal_id: deal.id,
       occurred_at: changedAt,
@@ -85,16 +94,25 @@ export default function SalesPipeline() {
       {error ? <p className="mb-5 rounded-xl bg-red-50 p-4 text-sm font-bold text-red-700">{error}</p> : null}
       {showForm ? <DealForm companies={companies} onClose={() => setShowForm(false)} onSaved={load} /> : null}
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4"><Metric label="Open deals" value={activeDeals.length} /><Metric label="Pipeline value" value={formatCurrency(pipelineValue)} /><Metric label="Weighted forecast" value={formatCurrency(weightedValue)} /><Metric label="Won annual value" value={formatCurrency(wonValue)} /></div>
-      <div className="mt-6 flex gap-2"><button onClick={() => setView('active')} className={`rounded-xl px-4 py-2 text-sm font-black ${view === 'active' ? 'bg-stone-950 text-white' : 'bg-white text-stone-600'}`}>Active pipeline</button><button onClick={() => setView('closed')} className={`rounded-xl px-4 py-2 text-sm font-black ${view === 'closed' ? 'bg-stone-950 text-white' : 'bg-white text-stone-600'}`}>Nurtured, lost and won</button></div>
+      <div className="mt-6 flex gap-2"><button onClick={() => setView('active')} className={`rounded-xl px-4 py-2 text-sm font-black ${view === 'active' ? 'bg-stone-950 text-white' : 'bg-white text-stone-600'}`}>Active pipeline</button><button onClick={() => setView('closed')} className={`rounded-xl px-4 py-2 text-sm font-black ${view === 'closed' ? 'bg-stone-950 text-white' : 'bg-white text-stone-600'}`}>Nurtured, abandoned, lost and won</button></div>
       {loading ? <p className="mt-6 rounded-2xl bg-white p-8 text-sm font-bold text-stone-500">Loading pipeline...</p> : <div className="mt-5 overflow-x-auto pb-4"><div className="flex min-w-max gap-4">{shownStages.map((stage) => { const stageDeals = (view === 'active' ? activeDeals : closedDeals).filter((deal) => deal.stage === stage.key); const value = stageDeals.reduce((sum, deal) => sum + Number(deal.annual_value ?? 0), 0); return <section key={stage.key} className="w-72 shrink-0 rounded-2xl bg-stone-200/60 p-3"><div className="flex items-start justify-between gap-3 px-1 py-2"><div><h2 className="text-sm font-black text-stone-900">{stage.label}</h2><p className="mt-1 text-xs font-bold text-stone-500">{stageDeals.length} deals · {formatCurrency(value)}</p></div><span className="rounded-full bg-white px-2 py-1 text-[10px] font-black text-stone-500">{stage.probability}%</span></div><div className="mt-2 space-y-3">{stageDeals.length ? stageDeals.map((deal) => <DealCard key={deal.id} deal={deal} onMove={moveDeal} />) : <p className="rounded-xl border border-dashed border-stone-300 bg-white/60 p-4 text-xs text-stone-400">No deals in this stage.</p>}</div></section> })}</div></div>}
     </section>
   </>
 }
 
-function DealCard({ deal, onMove }: { deal: Deal; onMove: (deal: Deal, stage: DealStage) => Promise<void> }) {
+function DealCard({ deal, onMove }: { deal: Deal; onMove: (deal: Deal, stage: DealStage, abandonedBy?: 'us' | 'lead' | null) => Promise<void> }) {
+  const dealStages = allDealStages.filter((stage) =>
+    stage.key !== 'abandoned' || deal.abandoned_by !== undefined || deal.stage === 'abandoned',
+  )
   const company = Array.isArray(deal.companies) ? deal.companies[0] : deal.companies
   const overdue = deal.next_action_due && deal.next_action_due < new Date().toISOString().slice(0, 10)
-  return <article className="rounded-xl border border-stone-200 bg-white p-4 shadow-sm"><div className="flex items-start justify-between gap-3"><div><Link href={`/sales/${deal.id}`} className="text-sm font-black text-stone-950 hover:text-red-600">{deal.name}</Link><Link href={`/companies/${deal.company_id}`} className="mt-1 block text-xs font-bold text-red-600">{company?.company_name ?? 'Company'}</Link></div><p className="text-sm font-black text-stone-900">{formatCurrency(deal.annual_value)}</p></div><div className="mt-3 flex gap-2 text-[10px] font-black uppercase text-stone-500"><span className="rounded-full bg-stone-100 px-2 py-1">{deal.number_of_users ?? '?'} users</span>{deal.source ? <span className="rounded-full bg-stone-100 px-2 py-1">{deal.source}</span> : null}</div><div className={`mt-3 rounded-lg p-3 text-xs leading-5 ${overdue && deal.stage !== 'nurture' ? 'bg-red-50 font-bold text-red-700' : deal.stage === 'nurture' ? 'bg-amber-50 font-bold text-amber-800' : 'bg-stone-50 text-stone-600'}`}><p>{deal.stage === 'nurture' ? 'Continue nurturing this relationship' : deal.next_action || 'No next action set'}</p><p className="mt-1 text-[10px] font-black uppercase opacity-70">{deal.stage === 'nurture' ? `Last updated ${formatDateTime(deal.updated_at)}` : formatShortDate(deal.next_action_due)}</p></div><select value={deal.stage} onChange={(event) => void onMove(deal, event.target.value as DealStage)} className="form-input mt-3 text-xs">{dealStages.map((stage) => <option key={stage.key} value={stage.key}>{stage.label}</option>)}</select><p className="mt-2 text-[10px] font-bold text-stone-400">Stage changed {formatDateTime(deal.stage_changed_at)}</p></article>
+  const [pendingStage, setPendingStage] = useState<DealStage>(deal.stage)
+  const [abandonedBy, setAbandonedBy] = useState<'us' | 'lead' | ''>(deal.abandoned_by ?? '')
+  function chooseStage(stage: DealStage) {
+    setPendingStage(stage)
+    if (stage !== 'abandoned') void onMove(deal, stage)
+  }
+  return <article className="rounded-xl border border-stone-200 bg-white p-4 shadow-sm"><div className="flex items-start justify-between gap-3"><div><Link href={`/sales/${deal.id}`} className="text-sm font-black text-stone-950 hover:text-red-600">{deal.name}</Link><Link href={`/companies/${deal.company_id}`} className="mt-1 block text-xs font-bold text-red-600">{company?.company_name ?? 'Company'}</Link></div><p className="text-sm font-black text-stone-900">{formatCurrency(deal.annual_value)}</p></div><div className="mt-3 flex gap-2 text-[10px] font-black uppercase text-stone-500"><span className="rounded-full bg-stone-100 px-2 py-1">{deal.number_of_users ?? '?'} users</span>{deal.source ? <span className="rounded-full bg-stone-100 px-2 py-1">{deal.source}</span> : null}</div><div className={`mt-3 rounded-lg p-3 text-xs leading-5 ${overdue && deal.stage !== 'nurture' ? 'bg-red-50 font-bold text-red-700' : deal.stage === 'nurture' ? 'bg-amber-50 font-bold text-amber-800' : 'bg-stone-50 text-stone-600'}`}><p>{deal.stage === 'nurture' ? 'Continue nurturing this relationship' : deal.stage === 'abandoned' ? `Abandoned by ${deal.abandoned_by === 'us' ? 'us' : 'lead'}` : deal.next_action || 'No next action set'}</p><p className="mt-1 text-[10px] font-black uppercase opacity-70">{deal.stage === 'nurture' ? `Last updated ${formatDateTime(deal.updated_at)}` : formatShortDate(deal.next_action_due)}</p></div><select value={pendingStage} onChange={(event) => chooseStage(event.target.value as DealStage)} className="form-input mt-3 text-xs">{dealStages.map((stage) => <option key={stage.key} value={stage.key}>{stage.label}</option>)}</select>{pendingStage === 'abandoned' && deal.stage !== 'abandoned' ? <div className="mt-2 flex gap-2"><select value={abandonedBy} onChange={(event) => setAbandonedBy(event.target.value as 'us' | 'lead')} className="form-input text-xs"><option value="">Abandoned by…</option><option value="us">By us</option><option value="lead">By lead</option></select><button type="button" disabled={!abandonedBy} onClick={() => void onMove(deal, 'abandoned', abandonedBy || null)} className="rounded-lg bg-red-600 px-3 text-xs font-black text-white disabled:opacity-40">Confirm</button></div> : null}<p className="mt-2 text-[10px] font-bold text-stone-400">Stage changed {formatDateTime(deal.stage_changed_at)}</p></article>
 }
 
 function DealForm({ companies, onClose, onSaved }: { companies: Company[]; onClose: () => void; onSaved: () => Promise<void> }) {

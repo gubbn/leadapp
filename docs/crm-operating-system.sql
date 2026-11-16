@@ -19,6 +19,7 @@ create table if not exists public.deals (
       'proposal',
       'decision',
       'nurture',
+      'abandoned',
       'lost',
       'won'
     )),
@@ -36,6 +37,7 @@ create table if not exists public.deals (
   next_action text,
   next_action_due date,
   loss_reason text,
+  abandoned_by text check (abandoned_by is null or abandoned_by in ('us', 'lead')),
   notes text,
   created_by uuid references auth.users(id) on delete set null
     default auth.uid(),
@@ -61,7 +63,14 @@ where stage in ('health_check', 'report_sent', 'solution_agreed', 'contract_sent
 alter table public.deals drop constraint if exists deals_stage_check;
 alter table public.deals
   add constraint deals_stage_check
-  check (stage in ('new', 'conversation', 'discovery', 'proposal', 'decision', 'nurture', 'lost', 'won'));
+  check (stage in ('new', 'conversation', 'discovery', 'proposal', 'decision', 'nurture', 'abandoned', 'lost', 'won'));
+
+alter table public.deals
+  add column if not exists abandoned_by text;
+alter table public.deals drop constraint if exists deals_abandoned_by_check;
+alter table public.deals
+  add constraint deals_abandoned_by_check
+  check (abandoned_by is null or abandoned_by in ('us', 'lead'));
 
 create table if not exists public.crm_tasks (
   id uuid primary key default gen_random_uuid(),

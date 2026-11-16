@@ -56,10 +56,11 @@ const menus: MenuGroup[] = [
   {
     label: 'Relationships',
     description: 'Companies, people and prospecting',
-    match: ['/companies', '/contacts', '/networking', '/add', '/import', '/cleanup', '/duplicates', '/location-research', '/prospecting'],
+    match: ['/companies', '/customers', '/contacts', '/networking', '/add', '/import', '/cleanup', '/duplicates', '/location-research', '/prospecting'],
     icon: UsersRound,
     items: [
       { href: '/companies', label: 'Companies', description: 'Business records and context', icon: Building2 },
+      { href: '/customers', label: 'Customers', description: 'Won customer accounts', icon: Handshake },
       { href: '/contacts', label: 'Contacts', description: 'People and follow-ups', icon: ContactRound },
       { href: '/prospecting', label: 'Prospecting queue', description: 'Research and qualify leads', icon: Radar },
       { href: '/networking', label: 'Little black book', description: 'People met and where', icon: Network },

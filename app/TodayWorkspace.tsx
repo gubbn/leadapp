@@ -65,6 +65,7 @@ type Contact = {
 }
 type Quote = {
   id: string
+  deal_id?: string | null
   quote_number: string
   chase_due_date: string
   status: string
@@ -79,6 +80,15 @@ type NextAction = {
   kind: 'task' | 'opportunity' | 'contact' | 'customer' | 'quote'
   task?: Task
   deal?: Deal
+}
+
+async function loadOpenQuotes() {
+  const columns = 'id,quote_number,chase_due_date,status,companies(id,company_name)'
+  const withLinks = await supabase.from('quotes').select(`${columns},deal_id`)
+    .in('status', ['issued', 'chased']).order('chase_due_date')
+  if (withLinks.error?.code !== '42703' || !withLinks.error.message.includes('deal_id')) return withLinks
+  return supabase.from('quotes').select(columns)
+    .in('status', ['issued', 'chased']).order('chase_due_date')
 }
 
 const londonDate = new Intl.DateTimeFormat('en-CA', {
@@ -130,18 +140,14 @@ export default function TodayWorkspace() {
         supabase
           .from('deals')
           .select('id,name,stage,annual_value,next_action,next_action_due,updated_at,companies(id,company_name)')
-          .not('stage', 'in', '("won","lost")')
+          .not('stage', 'in', '("won","lost","abandoned")')
           .order('updated_at', { ascending: false }),
         supabase
           .from('crm_activities')
           .select('id,activity_type,summary,outcome,occurred_at,companies(id,company_name)')
           .order('occurred_at', { ascending: false })
           .limit(8),
-        supabase
-          .from('quotes')
-          .select('id,quote_number,chase_due_date,status,companies(id,company_name)')
-          .in('status', ['issued', 'chased'])
-          .order('chase_due_date'),
+        loadOpenQuotes(),
       ])
 
     const firstError = [
@@ -184,7 +190,18 @@ export default function TodayWorkspace() {
     [deals],
   )
   const nextActions = useMemo<NextAction[]>(() => {
-    const datedTasks = tasks.map((task) => ({
+    const quotedDealIds = new Set<string>()
+    const dueQuotes = quotes.filter((quote) => {
+      if (quote.chase_due_date > today) return false
+      if (!quote.deal_id) return true
+      if (quotedDealIds.has(quote.deal_id)) return false
+      quotedDealIds.add(quote.deal_id)
+      return true
+    })
+    const datedTasks = tasks.filter((task) => {
+      const taskDeal = Array.isArray(task.deals) ? task.deals[0] : task.deals
+      return !taskDeal?.id || !quotedDealIds.has(taskDeal.id)
+    }).map((task) => ({
       id: `task-${task.id}`,
       title: task.title,
       detail: companyName(task.companies),
@@ -194,6 +211,7 @@ export default function TodayWorkspace() {
       task,
     }))
     const datedDeals = visibleDeals.flatMap((deal) => {
+      if (quotedDealIds.has(deal.id)) return []
       const stage = normalizeDealStage(deal.stage)
       if (stage === 'nurture') return [{
         id: `deal-${deal.id}`,
@@ -224,12 +242,12 @@ export default function TodayWorkspace() {
         kind: 'customer' as const,
       }] : [],
     )
-    const quoteChases = quotes.filter((quote) => quote.chase_due_date <= today).map((quote) => ({
+    const quoteChases = dueQuotes.map((quote) => ({
       id: `quote-${quote.id}`,
       title: `Chase quote ${quote.quote_number}`,
       detail: `${companyName(quote.companies)} · quote follow-up`,
       dueDate: quote.chase_due_date,
-      href: '/quotes',
+      href: `/quotes/${quote.id}`,
       kind: 'quote' as const,
     }))
     const companiesWithUpdates = new Set([
@@ -238,7 +256,7 @@ export default function TodayWorkspace() {
       ...companies
         .filter((company) => company.relationship_status === 'customer' && company.customer_contract_end)
         .map((company) => companyIdentityFromName(company.company_name)),
-      ...quotes.filter((quote) => quote.chase_due_date <= today).map((quote) => companyIdentity(quote.companies)),
+      ...dueQuotes.map((quote) => companyIdentity(quote.companies)),
     ].filter(Boolean))
     const datedContacts = contacts.flatMap((contact) => {
       if (!contact.next_contact_opportunity) return []

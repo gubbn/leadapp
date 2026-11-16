@@ -61,6 +61,7 @@ export default function LocationResearchPage() {
   const [countyDrafts, setCountyDrafts] = useState<Record<string, string>>({})
   const [savingCounty, setSavingCounty] = useState('')
   const [countyFilter, setCountyFilter] = useState<'all' | 'unknown'>('unknown')
+  const [search, setSearch] = useState('')
   const [message, setMessage] = useState('')
   const [loading, setLoading] = useState(true)
 
@@ -97,9 +98,11 @@ export default function LocationResearchPage() {
           county: counties.length === 1 ? counties[0] : counties.length > 1 ? 'Mixed' : '',
         }
       })
-      .filter((group) => countyFilter === 'all' || !group.county)
+      .filter((group) => (countyFilter === 'all' || !group.county) &&
+        [group.label, group.county, ...group.companies.map((company) => value(company, ['company_name']))]
+          .some((entry) => entry.toLowerCase().includes(search.trim().toLowerCase())))
       .sort((a, b) => a.label.localeCompare(b.label))
-  }, [companies, countyFilter])
+  }, [companies, countyFilter, search])
 
   const countyCounts = useMemo(() => {
     const counts = new Map<string, number>()
@@ -179,6 +182,8 @@ export default function LocationResearchPage() {
                 Each village, town or city appears once. Saving a county updates every company with that location.
               </p>
             </div>
+            <input type="search" aria-label="Search locations" value={search} onChange={(event) => setSearch(event.target.value)}
+              placeholder="Town, county or company" className="form-input lg:max-w-xs" />
             <select
               value={countyFilter}
               onChange={(event) => setCountyFilter(event.target.value as 'all' | 'unknown')}
@@ -237,7 +242,7 @@ export default function LocationResearchPage() {
             ))}
             {!loading && locationGroups.length === 0 ? (
               <p className="py-8 text-center text-sm font-semibold text-stone-500">
-                {countyFilter === 'unknown' ? 'Every known location has a county.' : 'No saved locations yet.'}
+                {search.trim() ? 'No matching locations.' : countyFilter === 'unknown' ? 'Every known location has a county.' : 'No saved locations yet.'}
               </p>
             ) : null}
           </div>

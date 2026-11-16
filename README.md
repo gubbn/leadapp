@@ -108,6 +108,25 @@ The campaign builder can include or exclude companies using any saved tag;
 `#customer` marks a company as an existing customer, while `#screenpop`
 identifies companies added through the Little Black Book.
 
+## CRM customer, quote and pipeline enhancements
+
+After the base CRM and quote scripts have been applied, run
+[`docs/crm-enhancements.sql`](docs/crm-enhancements.sql) once in the Supabase SQL
+editor. It adds the abandoned outcome, quote-to-opportunity links, and persistent
+"keep separate" decisions for duplicate companies.
+
+For quote nurture, apply [`docs/quote-nurture.sql`](docs/quote-nurture.sql) next
+and configure Microsoft 365 sending and a random `QUOTE_NURTURE_SECRET` in
+`.env.local`. Run `docker compose --profile quote-nurture up --build` to check
+for due emails every five minutes. Outside Docker, run
+`node --env-file=.env.local scripts/run-quote-nurture.mjs` alongside the app.
+
+Open an individual quote to enter the message and calendar-day delay for each
+step and enable sending. Pause nurture when a recipient replies. Follow-ups run
+in order, at most one per quote per day. The lost-quote email uses the recorded
+loss date. A failed or interrupted send is shown on the quote for review and
+does not retry automatically, because Microsoft 365 may already have accepted it.
+
 You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
 
 This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.

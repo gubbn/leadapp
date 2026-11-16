@@ -2,7 +2,7 @@
 
 import { type FormEvent, useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
-import { useParams } from 'next/navigation'
+import { useParams, useRouter } from 'next/navigation'
 import { supabase } from '@/lib/supabaseClient'
 import AppHeader from '@/app/components/AppHeader'
 import CompanyLookupLinks from '@/app/components/CompanyLookupLinks'
@@ -12,7 +12,6 @@ import {
   hasCustomerCompanyTag,
   parseCompanyTags,
   readCompanyTags,
-  removeExistingCustomerTagsOnce,
 } from '@/lib/companyTags'
 import {
   buildMeetingCounts,
@@ -46,6 +45,7 @@ type RelationshipStatus =
 
 export default function CompanyDetailPage() {
   const params = useParams()
+  const router = useRouter()
   const companyId = Array.isArray(params.id)
     ? params.id[0]
     : String(params.id || '')
@@ -58,6 +58,7 @@ export default function CompanyDetailPage() {
   const [deals, setDeals] = useState<DbRow[]>([])
   const [tasks, setTasks] = useState<DbRow[]>([])
   const [activities, setActivities] = useState<DbRow[]>([])
+  const [quotes, setQuotes] = useState<DbRow[]>([])
   const [networkingAttendees, setNetworkingAttendees] = useState<MeetingAttendeeIdentity[]>([])
   const [loading, setLoading] = useState(true)
   const [errorMessage, setErrorMessage] = useState('')
@@ -65,6 +66,7 @@ export default function CompanyDetailPage() {
   const [successMessage, setSuccessMessage] = useState('')
   const [editingDetails, setEditingDetails] = useState(false)
   const [addingContact, setAddingContact] = useState(false)
+  const [confirmingDelete, setConfirmingDelete] = useState(false)
 
   // Existing detail-page loader is intentionally triggered when the route id changes.
   useEffect(() => {
@@ -132,12 +134,6 @@ export default function CompanyDetailPage() {
 
     const warnings: string[] = []
 
-    try {
-      const removedCount = await removeExistingCustomerTagsOnce(supabase)
-      if (removedCount) warnings.push(`Removed the old customer tag from ${removedCount} ${removedCount === 1 ? 'company' : 'companies'}.`)
-    } catch (caught) {
-      warnings.push(`Old customer tags could not be removed: ${caught instanceof Error ? caught.message : 'Unknown error'}`)
-    }
 
     const { data: companyData, error: companyError } = await supabase
       .from('companies')
@@ -153,7 +149,7 @@ export default function CompanyDetailPage() {
 
     setCompany(companyData as CompanyRow)
 
-    const [dealsResult, tasksResult, activitiesResult] = await Promise.all([
+    const [dealsResult, tasksResult, activitiesResult, quotesResult] = await Promise.all([
       supabase
         .from('deals')
         .select('*')
@@ -169,14 +165,21 @@ export default function CompanyDetailPage() {
         .select('*')
         .eq('company_id', companyId)
         .order('occurred_at', { ascending: false }),
+      supabase
+        .from('quotes')
+        .select('id,quote_number,status,issued_on,chase_due_date,one_off_value,subscription_value')
+        .eq('company_id', companyId)
+        .order('issued_on', { ascending: false }),
     ])
 
     if (dealsResult.error) warnings.push(`Deals could not be loaded: ${dealsResult.error.message}`)
     if (tasksResult.error) warnings.push(`Tasks could not be loaded: ${tasksResult.error.message}`)
     if (activitiesResult.error) warnings.push(`Activities could not be loaded: ${activitiesResult.error.message}`)
+    if (quotesResult.error) warnings.push(`Quotes could not be loaded: ${quotesResult.error.message}`)
     setDeals((dealsResult.data ?? []) as DbRow[])
     setTasks((tasksResult.data ?? []) as DbRow[])
     setActivities((activitiesResult.data ?? []) as DbRow[])
+    setQuotes((quotesResult.data ?? []) as DbRow[])
 
     const { data: contactData, error: contactsError } = await supabase
       .from('contacts')
@@ -370,7 +373,7 @@ export default function CompanyDetailPage() {
                     </p>
                   </div>
 
-                  <div className="flex items-center gap-2">
+                  <div className="flex flex-wrap items-center gap-2">
                     <RelationshipBadge status={relationshipStatus} />
                     <button
                       type="button"
@@ -378,6 +381,13 @@ export default function CompanyDetailPage() {
                       className="rounded-lg bg-stone-950 px-3 py-2 text-xs font-black text-white hover:bg-stone-800"
                     >
                       Edit details
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setConfirmingDelete(true)}
+                      className="rounded-lg border border-red-200 bg-white px-3 py-2 text-xs font-black text-red-700 hover:bg-red-50"
+                    >
+                      Delete company
                     </button>
                   </div>
                 </div>
@@ -471,7 +481,7 @@ export default function CompanyDetailPage() {
                     <div key={getString(deal, ['id'])} className="rounded-xl border border-stone-200 p-4">
                       <div className="flex items-start justify-between gap-4">
                         <div>
-                          <p className="text-sm font-black text-stone-900">{getString(deal, ['name'])}</p>
+                          <Link href={`/sales/${getString(deal, ['id'])}`} className="text-sm font-black text-stone-900 hover:text-red-600">{getString(deal, ['name'])}</Link>
                           <p className="mt-1 text-xs font-bold text-red-600">{stageFor(getString(deal, ['stage'])).label}</p>
                         </div>
                         <p className="text-sm font-black text-stone-900">{formatCurrency(getString(deal, ['annual_value']))}</p>
@@ -486,6 +496,23 @@ export default function CompanyDetailPage() {
                       No opportunity exists yet. Create one from the Sales pipeline.
                     </p>
                   )}
+                </div>
+                <div className="mt-6 border-t border-stone-100 pt-5">
+                  <div className="flex items-center justify-between gap-3">
+                    <h3 className="text-sm font-black text-stone-950">Quotes</h3>
+                    <Link href="/quotes" className="text-xs font-black text-red-600">Open quote register →</Link>
+                  </div>
+                  <div className="mt-3 space-y-2">
+                    {quotes.length ? quotes.map((quote) => (
+                      <Link key={getString(quote, ['id'])} href={`/quotes/${getString(quote, ['id'])}`} className="flex items-center justify-between gap-4 rounded-xl bg-stone-50 p-3 hover:bg-red-50">
+                        <span>
+                          <span className="block text-sm font-black text-stone-900">{getString(quote, ['quote_number'])}</span>
+                          <span className="block text-xs text-stone-500">{getString(quote, ['status'])} · issued {formatDate(getString(quote, ['issued_on']))}</span>
+                        </span>
+                        <span className="text-sm font-black text-stone-900">{formatCurrency(Number(quote.one_off_value ?? 0) + Number(quote.subscription_value ?? 0))}</span>
+                      </Link>
+                    )) : <p className="rounded-xl border border-dashed border-stone-300 p-4 text-sm text-stone-500">No quotes linked to this company.</p>}
+                  </div>
                 </div>
               </section>
 
@@ -554,6 +581,14 @@ export default function CompanyDetailPage() {
                   }
                   setEditingDetails(false)
                 }}
+              />
+            ) : null}
+
+            {confirmingDelete ? (
+              <DeleteCompanyDialog
+                company={company}
+                onClose={() => setConfirmingDelete(false)}
+                onDeleted={() => router.push('/companies')}
               />
             ) : null}
 
@@ -875,7 +910,7 @@ function getManualRelationshipStatus(company: DbRow): RelationshipStatus | null 
   if (value === 'quoted' || value === 'quote sent' || value === 'negotiating') return 'quoted'
   if (value === 'bounced' || value === 'bounce') return 'bounced'
   if (value === 'negative') return 'negative'
-  if (value === 'no answer' || value === 'no-answer') return 'no-answer'
+  if (value === 'no answer' || value === 'no-answer' || value === 'no_answer') return 'no-answer'
   if (value === 'other') return 'other'
   return null
 }
@@ -1114,7 +1149,7 @@ function CompanyDetailsEditor({
     domain: getCompanyDomain(company),
     lastContactDate: toDateInput(getCompanyLastContactDate(company)),
     tags: companyTagsToInput(company.tags),
-    customer: hasCustomerCompanyTag(company.tags),
+    relationshipStatus: (hasCustomerCompanyTag(company.tags) ? 'customer' : getManualRelationshipStatus(company) ?? '') as RelationshipStatus | '',
     dnc: getCompanyDnc(company),
   })
   const [logActivity, setLogActivity] = useState(true)
@@ -1130,7 +1165,6 @@ function CompanyDetailsEditor({
     setSaving(true)
     setError('')
 
-    const tagsWithoutCustomer = parseCompanyTags(draft.tags).filter((tag) => tag !== '#customer')
     const payload = {
       company_name: draft.companyName.trim(),
       industry: draft.industry.trim() || null,
@@ -1138,7 +1172,8 @@ function CompanyDetailsEditor({
       size_band: draft.sizeBand.trim() || null,
       domain: draft.domain.trim() || null,
       last_contact_date: draft.lastContactDate || null,
-      tags: draft.customer ? [...tagsWithoutCustomer, '#customer'].sort() : tagsWithoutCustomer,
+      tags: parseCompanyTags(draft.tags).filter((tag) => tag !== '#customer'),
+      relationship_status: draft.relationshipStatus === 'no-answer' ? 'no_answer' : draft.relationshipStatus || null,
       dnc: draft.dnc,
       updated_at: new Date().toISOString(),
     }
@@ -1209,11 +1244,23 @@ function CompanyDetailsEditor({
           <EditorField label="Location" value={draft.location} onChange={(value) => update('location', value)} placeholder="Village, town or city" />
           <EditorField label="Size band" value={draft.sizeBand} onChange={(value) => update('sizeBand', value)} placeholder="For example, 15–49" />
           <EditorField label="Website or domain" value={draft.domain} onChange={(value) => update('domain', value)} placeholder="example.co.uk" />
+          <label className="block">
+            <span className="mb-1.5 block text-xs font-black uppercase tracking-wide text-stone-500">Relationship</span>
+            <select value={draft.relationshipStatus} onChange={(event) => update('relationshipStatus', event.target.value as RelationshipStatus)} className="w-full rounded-xl border border-stone-300 bg-white px-3 py-2.5 text-sm font-semibold outline-none focus:border-red-500 focus:ring-4 focus:ring-red-50">
+              <option value="">Use relationship activity</option>
+              <option value="prospect">Prospect</option>
+              <option value="quoted">Quoted / negotiating</option>
+              <option value="customer">Customer / won</option>
+              <option value="bounced">Bounced</option>
+              <option value="negative">Negative</option>
+              <option value="no-answer">No answer</option>
+              <option value="other">Other</option>
+            </select>
+          </label>
           <div className="sm:col-span-2">
             <EditorField label="Tags" value={draft.tags} onChange={(value) => update('tags', value)} placeholder="#customer #screenpop" />
             <p className="mt-1.5 text-xs text-stone-500">Separate tags with spaces or commas. Tags are saved in lowercase with a #.</p>
           </div>
-          <EditorCheckbox checked={draft.customer} onChange={(value) => update('customer', value)} title="Customer / won" description="Set this manually. LBB and campaign activity will not mark the company as a customer." highlighted />
           <label className="block">
             <span className="mb-1.5 block text-xs font-black uppercase tracking-wide text-stone-500">Last contact</span>
             <input type="date" value={draft.lastContactDate} onChange={(event) => update('lastContactDate', event.target.value)} className="w-full rounded-xl border border-stone-300 px-3 py-2.5 text-sm font-semibold outline-none focus:border-red-500 focus:ring-4 focus:ring-red-50" />
@@ -1380,6 +1427,55 @@ function EditorCheckbox({ checked, onChange, title, description, highlighted = f
   )
 }
 
+function DeleteCompanyDialog({
+  company,
+  onClose,
+  onDeleted,
+}: {
+  company: CompanyRow
+  onClose: () => void
+  onDeleted: () => void
+}) {
+  const companyName = typeof company.company_name === 'string' ? company.company_name : ''
+  const [confirmation, setConfirmation] = useState('')
+  const [deleting, setDeleting] = useState(false)
+  const [error, setError] = useState('')
+
+  async function removeCompany(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (!companyName || confirmation !== companyName || deleting) return
+    setDeleting(true)
+    setError('')
+    const { error: deleteError } = await supabase.from('companies').delete()
+      .eq('id', company.id).eq('company_name', confirmation).select('id').single()
+    if (deleteError) {
+      setError(deleteError.message)
+      setDeleting(false)
+      return
+    }
+    onDeleted()
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-stone-950/55 p-4 backdrop-blur-sm" role="dialog" aria-modal="true" aria-labelledby="delete-company-title">
+      <form onSubmit={removeCompany} className="w-full max-w-lg rounded-3xl bg-white p-6 shadow-2xl sm:p-8">
+        <p className="text-xs font-black uppercase tracking-[0.18em] text-red-600">Permanent deletion</p>
+        <h2 id="delete-company-title" className="mt-2 text-2xl font-black text-stone-950">Delete {companyName}?</h2>
+        <p className="mt-3 text-sm leading-6 text-stone-600">This removes the company and its linked CRM records. Type the company name exactly to confirm.</p>
+        <label className="mt-5 block">
+          <span className="mb-1.5 block text-xs font-black uppercase tracking-wide text-stone-500">Company name</span>
+          <input autoFocus value={confirmation} onChange={(event) => setConfirmation(event.target.value)} className="w-full rounded-xl border border-stone-300 px-3 py-2.5 text-sm font-semibold outline-none focus:border-red-500 focus:ring-4 focus:ring-red-50" />
+        </label>
+        {error ? <p className="mt-4 rounded-xl bg-red-50 p-3 text-sm font-bold text-red-700">{error}</p> : null}
+        <div className="mt-6 flex justify-end gap-3">
+          <button type="button" onClick={onClose} disabled={deleting} className="rounded-xl border border-stone-300 px-5 py-3 text-sm font-black text-stone-700">Cancel</button>
+          <button type="submit" disabled={deleting || !companyName || confirmation !== companyName} className="rounded-xl bg-red-600 px-5 py-3 text-sm font-black text-white disabled:cursor-not-allowed disabled:opacity-40">{deleting ? 'Deleting…' : 'Delete company'}</button>
+        </div>
+      </form>
+    </div>
+  )
+}
+
 function toDateInput(value: string) {
   if (!value) return ''
   const parsed = new Date(value)
@@ -1396,12 +1492,11 @@ function companyChangeSummary(
     domain: string
     lastContactDate: string
     tags: string
-    customer: boolean
+    relationshipStatus: RelationshipStatus | ''
     dnc: boolean
   },
 ) {
-  const tagsWithoutCustomer = parseCompanyTags(draft.tags).filter((tag) => tag !== '#customer')
-  const effectiveTags = draft.customer ? [...tagsWithoutCustomer, '#customer'].sort() : tagsWithoutCustomer
+  const effectiveTags = parseCompanyTags(draft.tags).filter((tag) => tag !== '#customer')
   const fields: Array<[string, string | boolean, string | boolean]> = [
     ['Name', getCompanyName(company), draft.companyName.trim()],
     ['Industry', getCompanyIndustry(company), draft.industry.trim()],
@@ -1409,6 +1504,7 @@ function companyChangeSummary(
     ['Size band', getCompanySizeBand(company), draft.sizeBand.trim()],
     ['Domain', getCompanyDomain(company), draft.domain.trim()],
     ['Tags', companyTagsToInput(company.tags), companyTagsToInput(effectiveTags)],
+    ['Relationship', getManualRelationshipStatus(company) ?? 'prospect', draft.relationshipStatus],
     ['Last contact', toDateInput(getCompanyLastContactDate(company)), draft.lastContactDate],
     ['DNC', getCompanyDnc(company), draft.dnc],
   ]

@@ -2,6 +2,7 @@ create table if not exists public.quotes (
   id uuid primary key default gen_random_uuid(),
   company_id uuid not null references public.companies(id) on delete cascade,
   contact_id uuid not null references public.contacts(id) on delete restrict,
+  deal_id uuid references public.deals(id) on delete set null,
   quote_number text not null unique check (char_length(trim(quote_number)) between 1 and 100),
   one_off_value numeric(12,2) not null default 0 check (one_off_value >= 0),
   subscription_value numeric(12,2) not null default 0 check (subscription_value >= 0),
@@ -39,3 +40,7 @@ create index quotes_chase_due_date_idx on public.quotes(chase_due_date)
   where status in ('issued', 'chased');
 create index quotes_company_id_idx on public.quotes(company_id);
 create index quotes_contact_id_idx on public.quotes(contact_id);
+
+alter table public.quotes
+  add column if not exists deal_id uuid references public.deals(id) on delete set null;
+create index if not exists quotes_deal_id_idx on public.quotes(deal_id);
