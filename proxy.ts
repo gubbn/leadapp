@@ -1,5 +1,7 @@
 import { type NextRequest, NextResponse } from 'next/server'
 import { createServerClient } from '@supabase/ssr'
+import { getAuthConfig } from '@/lib/authConfig'
+import { canAccessWorkspace } from '@/lib/authPolicy'
 
 export async function proxy(request: NextRequest) {
   let supabaseResponse = NextResponse.next({
@@ -10,7 +12,7 @@ export async function proxy(request: NextRequest) {
 
   const isPublicRoute =
     pathname === '/login' ||
-    pathname.startsWith('/auth') ||
+    pathname.startsWith('/auth/') ||
     pathname === '/api/networking/extract' ||
     pathname === '/api/quote-nurture/run' ||
     pathname.startsWith('/_next') ||
@@ -24,7 +26,7 @@ export async function proxy(request: NextRequest) {
   const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
 
   if (!supabaseUrl || !supabaseAnonKey) {
-    return supabaseResponse
+    return NextResponse.json({ error: 'Sign-in is not configured.' }, { status: 503 })
   }
 
   const supabase = createServerClient(supabaseUrl, supabaseAnonKey, {
@@ -57,6 +59,13 @@ export async function proxy(request: NextRequest) {
     )
 
     user = userResult.data.user
+    const authConfig = getAuthConfig()
+    if (user && authConfig.ssoEnabled) {
+      const claimsResult = await withTimeout(supabase.auth.getClaims(), 8000)
+      if (claimsResult.error || !claimsResult.data || !canAccessWorkspace(claimsResult.data.claims, authConfig.masterUserId)) {
+        user = null
+      }
+    }
   } catch {
     user = null
   }
@@ -64,16 +73,14 @@ export async function proxy(request: NextRequest) {
   if (!user) {
     const redirectUrl = request.nextUrl.clone()
     redirectUrl.pathname = '/login'
-    redirectUrl.searchParams.set('next', pathname)
+    redirectUrl.search = ''
+    redirectUrl.searchParams.set('next', `${pathname}${request.nextUrl.search}`)
 
-    return NextResponse.redirect(redirectUrl)
-  }
-
-  if (user && pathname === '/login') {
-    const redirectUrl = request.nextUrl.clone()
-    redirectUrl.pathname = '/'
-
-    return NextResponse.redirect(redirectUrl)
+    const response = pathname.startsWith('/api/')
+      ? NextResponse.json({ error: 'Sign in with an authorised account.' }, { status: 401 })
+      : NextResponse.redirect(redirectUrl)
+    supabaseResponse.cookies.getAll().forEach((cookie) => response.cookies.set(cookie))
+    return response
   }
 
   return supabaseResponse

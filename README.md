@@ -51,6 +51,10 @@ Open [http://localhost:3000](http://localhost:3000) with your browser to see the
 
 ## Microsoft 365 campaign automation
 
+For staff Microsoft 365 sign-in with one independent emergency password account,
+follow [the SSO setup guide](docs/m365-sso.md). Keep `AUTH_MODE` unset until the
+master account, tenant-scoped provider, and Supabase token hook have been tested.
+
 Campaign automation uses Microsoft Graph to send mail from a Microsoft 365
 mailbox. Add these values to `.env.local` before sending test mail:
 
