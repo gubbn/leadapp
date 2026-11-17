@@ -7,6 +7,7 @@ import { supabase } from '@/lib/supabaseClient'
 import AppHeader from '@/app/components/AppHeader'
 import CompanyLookupLinks from '@/app/components/CompanyLookupLinks'
 import { formatCurrency, stageFor } from '@/lib/crm'
+import { isValidEmail } from '@/lib/marketingImportHelpers'
 import {
   companyTagsToInput,
   hasCustomerCompanyTag,
@@ -616,6 +617,21 @@ export default function CompanyDetailPage() {
                 company={company}
                 contact={managingContact}
                 onClose={() => setManagingContact(null)}
+                onUpdated={(updatedContact) => {
+                  setContacts((current) =>
+                    current
+                      .map((contact) =>
+                        contact.id === updatedContact.id ? updatedContact : contact,
+                      )
+                      .sort((a, b) =>
+                        getContactName(a).localeCompare(getContactName(b)),
+                      ),
+                  )
+                  setManagingContact(null)
+                  setSuccessMessage(
+                    `${getContactName(updatedContact) || 'Contact'} updated.`,
+                  )
+                }}
                 onMoved={(targetCompanyName) => {
                   setContacts((current) =>
                     current.filter((contact) => contact.id !== managingContact.id),
@@ -1457,12 +1473,14 @@ function ContactManagementDialog({
   company,
   contact,
   onClose,
+  onUpdated,
   onMoved,
   onDeleted,
 }: {
   company: CompanyRow
   contact: ContactRow
   onClose: () => void
+  onUpdated: (contact: ContactRow) => void
   onMoved: (targetCompanyName: string) => void
   onDeleted: () => void
 }) {
@@ -1475,8 +1493,18 @@ function ContactManagementDialog({
     industry: '',
     location: '',
   })
+  const [contactDraft, setContactDraft] = useState({
+    firstName: getString(contact, ['first_name']),
+    lastName: getString(contact, ['last_name']),
+    email: getContactEmail(contact),
+    role: getContactRole(contact),
+    telephone: getContactPhone(contact),
+    notes: getString(contact, ['notes']),
+  })
   const [deleteConfirmation, setDeleteConfirmation] = useState('')
-  const [savingAction, setSavingAction] = useState<'move' | 'create' | 'delete' | null>(null)
+  const [savingAction, setSavingAction] = useState<
+    'edit' | 'move' | 'create' | 'delete' | null
+  >(null)
   const [error, setError] = useState('')
 
   const contactName = getContactName(contact) || getContactEmail(contact) || 'Unnamed contact'
@@ -1508,6 +1536,52 @@ function ContactManagementDialog({
       cancelled = true
     }
   }, [company.id])
+
+  async function saveContactDetails(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    const firstName = contactDraft.firstName.trim()
+    const email = contactDraft.email.trim().toLowerCase()
+
+    if (!firstName) {
+      setError('First name is required.')
+      return
+    }
+
+    if (email && !isValidEmail(email)) {
+      setError('Enter a valid email address or leave it blank.')
+      return
+    }
+
+    setSavingAction('edit')
+    setError('')
+
+    const { data, error: updateError } = await supabase
+      .from('contacts')
+      .update({
+        first_name: firstName,
+        last_name: contactDraft.lastName.trim() || null,
+        email: email || null,
+        role: contactDraft.role.trim() || null,
+        telephone: contactDraft.telephone.trim() || null,
+        notes: contactDraft.notes.trim() || null,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', contact.id)
+      .eq('company_id', company.id)
+      .select('*')
+      .single()
+
+    if (updateError || !data) {
+      setError(
+        updateError?.message ||
+          'No contact was updated. Supabase permissions may be blocking the change.',
+      )
+      setSavingAction(null)
+      return
+    }
+
+    onUpdated(data as ContactRow)
+  }
 
   async function updateContactCompany(
     targetCompanyId: string,
@@ -1692,6 +1766,82 @@ function ContactManagementDialog({
             ✕
           </button>
         </div>
+
+        <form onSubmit={saveContactDetails} className="mt-7 rounded-2xl border border-stone-200 bg-white p-5 shadow-sm">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+            <div>
+              <p className="text-xs font-black uppercase tracking-wide text-red-600">
+                Contact details
+              </p>
+              <h3 className="mt-1 text-lg font-black text-stone-950">
+                Edit this contact
+              </h3>
+            </div>
+            <button
+              type="submit"
+              disabled={busy || !contactDraft.firstName.trim()}
+              className="rounded-xl bg-red-600 px-5 py-3 text-sm font-black text-white hover:bg-red-700 disabled:opacity-40"
+            >
+              {savingAction === 'edit' ? 'Saving details…' : 'Save contact details'}
+            </button>
+          </div>
+
+          <div className="mt-5 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+            <EditorField
+              label="First name"
+              value={contactDraft.firstName}
+              onChange={(value) =>
+                setContactDraft((current) => ({ ...current, firstName: value }))
+              }
+            />
+            <EditorField
+              label="Last name"
+              value={contactDraft.lastName}
+              onChange={(value) =>
+                setContactDraft((current) => ({ ...current, lastName: value }))
+              }
+            />
+            <EditorField
+              label="Email"
+              value={contactDraft.email}
+              onChange={(value) =>
+                setContactDraft((current) => ({ ...current, email: value }))
+              }
+              placeholder="name@company.co.uk"
+            />
+            <EditorField
+              label="Role"
+              value={contactDraft.role}
+              onChange={(value) =>
+                setContactDraft((current) => ({ ...current, role: value }))
+              }
+              placeholder="Managing Director"
+            />
+            <EditorField
+              label="Telephone"
+              value={contactDraft.telephone}
+              onChange={(value) =>
+                setContactDraft((current) => ({ ...current, telephone: value }))
+              }
+            />
+            <label className="block sm:col-span-2 lg:col-span-1">
+              <span className="mb-1.5 block text-xs font-black uppercase tracking-wide text-stone-500">
+                Notes
+              </span>
+              <textarea
+                value={contactDraft.notes}
+                onChange={(event) =>
+                  setContactDraft((current) => ({
+                    ...current,
+                    notes: event.target.value,
+                  }))
+                }
+                rows={3}
+                className="w-full rounded-xl border border-stone-300 px-3 py-2.5 text-sm font-semibold outline-none focus:border-red-500 focus:ring-4 focus:ring-red-50"
+              />
+            </label>
+          </div>
+        </form>
 
         <div className="mt-7 grid gap-5 lg:grid-cols-2">
           <form onSubmit={moveToExistingCompany} className="rounded-2xl border border-stone-200 bg-stone-50 p-5">

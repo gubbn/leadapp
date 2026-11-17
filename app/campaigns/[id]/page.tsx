@@ -451,6 +451,116 @@ export default function CampaignDetailPage() {
     }
   }
 
+  async function toggleContactDnc(row: CampaignCompanyView) {
+    const contactId =
+      getString(row.raw, ['contact_id']) || getString(row.contact || {}, ['id'])
+    const companyId = getString(row.raw, ['company_id'])
+
+    if (!contactId || !row.contact || !companyId) {
+      setErrorMessage(
+        'This campaign row must be linked to both a contact and company before setting DNC.',
+      )
+      return
+    }
+
+    const originalDnc = getContactDnc(row.contact)
+    const nextDnc = !getContactDnc(row.contact)
+    setSavingId(row.id)
+    setMessage('')
+    setErrorMessage('')
+
+    let companyDnc = nextDnc
+
+    if (!nextDnc) {
+      const { data: otherDncContacts, error: otherContactsError } = await supabase
+        .from('contacts')
+        .select('id')
+        .eq('company_id', companyId)
+        .eq('dnc', true)
+        .neq('id', contactId)
+        .limit(1)
+
+      if (otherContactsError) {
+        setErrorMessage(
+          `DNC could not be changed because other company contacts could not be checked: ${otherContactsError.message}`,
+        )
+        setSavingId(null)
+        return
+      }
+
+      companyDnc = (otherDncContacts ?? []).length > 0
+    }
+
+    const { data: updatedContact, error: contactError } = await supabase
+      .from('contacts')
+      .update({
+        dnc: nextDnc,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', contactId)
+      .select('*')
+      .single()
+
+    if (contactError || !updatedContact) {
+      setErrorMessage(
+        contactError?.message ||
+          'No contact was updated. Supabase permissions may be blocking the DNC change.',
+      )
+      setSavingId(null)
+      return
+    }
+
+    const { data: updatedCompany, error: companyError } = await supabase
+      .from('companies')
+      .update({
+        dnc: companyDnc,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', companyId)
+      .select('id, dnc')
+      .single()
+
+    if (companyError || !updatedCompany) {
+      const rollback = await supabase
+        .from('contacts')
+        .update({ dnc: originalDnc })
+        .eq('id', contactId)
+
+      setErrorMessage(
+        rollback.error
+          ? `The company DNC update failed (${companyError?.message || 'no company was updated'}) and the contact rollback also failed (${rollback.error.message}). Review both records before continuing.`
+          : companyError?.message ||
+              'The company DNC update failed, so the contact change was rolled back.',
+      )
+      setSavingId(null)
+      return
+    }
+
+    setRows((current) =>
+      current.map((currentRow) =>
+        ({
+          ...currentRow,
+          contact:
+            getString(currentRow.contact || {}, ['id']) === contactId
+              ? (updatedContact as DbRow)
+              : currentRow.contact,
+          company:
+            getString(currentRow.raw, ['company_id']) === companyId
+              ? { ...(currentRow.company || {}), dnc: companyDnc }
+              : currentRow.company,
+        }),
+      ),
+    )
+    setMessage(
+      nextDnc
+        ? `${getContactName(updatedContact as DbRow) || 'Contact'} and ${getCompanyName(row.company || {}) || 'the company'} marked as do not contact.`
+        : companyDnc
+          ? `${getContactName(updatedContact as DbRow) || 'Contact'} removed from do not contact. The company remains DNC because another linked contact is still DNC.`
+          : `${getContactName(updatedContact as DbRow) || 'Contact'} and ${getCompanyName(row.company || {}) || 'the company'} removed from do not contact.`,
+    )
+    setSavingId(null)
+  }
+
   async function saveNotes(rowId: string) {
     const success = await updateCampaignRow(rowId, {
       notes: noteDrafts[rowId] || null,
@@ -1071,6 +1181,37 @@ export default function CampaignDetailPage() {
                                 </div>
                               </div>
 
+                              <div className="mt-4 border-t border-stone-200 pt-4">
+                                <p className="text-[10px] font-black uppercase tracking-wide text-stone-500">
+                                  Contact preference
+                                </p>
+
+                                <button
+                                  type="button"
+                                  onClick={() => toggleContactDnc(row)}
+                                  disabled={
+                                    bulkSaving ||
+                                    savingId === row.id ||
+                                    !row.contact
+                                  }
+                                  className={`mt-2 rounded-lg border px-3 py-2 text-xs font-black disabled:cursor-not-allowed disabled:opacity-50 ${
+                                    getContactDnc(row.contact || {})
+                                      ? 'border-red-300 bg-red-600 text-white hover:bg-red-700'
+                                      : 'border-red-200 bg-red-50 text-red-700 hover:bg-red-100'
+                                  }`}
+                                >
+                                  {getContactDnc(row.contact || {})
+                                    ? 'DNC on — remove DNC'
+                                    : 'Turn on DNC'}
+                                </button>
+
+                                {!row.contact ? (
+                                  <p className="mt-2 text-xs text-stone-500">
+                                    Link a contact before setting DNC.
+                                  </p>
+                                ) : null}
+                              </div>
+
                               {openContactFormId === row.id ? (
                                 <div className="mt-4 rounded-2xl border border-stone-200 bg-stone-50 p-4">
                                   <p className="text-sm font-black text-stone-950">
@@ -1232,6 +1373,26 @@ function getContactRole(contact: DbRow) {
 
 function getContactOutcome(contact: DbRow) {
   return getString(contact, ['outcome', 'status'])
+}
+
+function getContactDnc(contact: DbRow) {
+  return getBoolean(contact, ['dnc', 'is_dnc', 'do_not_contact'])
+}
+
+function getBoolean(row: DbRow, keys: string[]) {
+  for (const key of keys) {
+    const value = row[key]
+
+    if (typeof value === 'boolean') return value
+    if (typeof value === 'number') return value === 1
+    if (typeof value === 'string') {
+      const cleaned = value.trim().toLowerCase()
+      if (['true', 'yes', '1', 'y'].includes(cleaned)) return true
+      if (['false', 'no', '0', 'n'].includes(cleaned)) return false
+    }
+  }
+
+  return false
 }
 
 function getEmailStatus(row: CampaignCompanyView) {
