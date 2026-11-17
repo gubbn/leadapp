@@ -54,6 +54,7 @@ export default function CampaignDetailPage() {
   const [contactColumnKeys, setContactColumnKeys] = useState<string[]>([])
   const [loading, setLoading] = useState(true)
   const [savingId, setSavingId] = useState<string | null>(null)
+  const [bulkSaving, setBulkSaving] = useState(false)
   const [filter, setFilter] = useState<FilterValue>('all')
   const [message, setMessage] = useState('')
   const [errorMessage, setErrorMessage] = useState('')
@@ -65,10 +66,6 @@ export default function CampaignDetailPage() {
     Record<string, NewContactForm>
   >({})
   const [noteDrafts, setNoteDrafts] = useState<Record<string, string>>({})
-
-  useEffect(() => {
-    loadCampaign()
-  }, [campaignId])
 
   const stats = useMemo(() => {
     const selected = rows.length
@@ -120,6 +117,32 @@ export default function CampaignDetailPage() {
 
     return rows.filter((row) => getEmailStatus(row) === filter)
   }, [rows, filter])
+
+  async function fetchRowsByIds(table: string, ids: string[]) {
+    const rows: DbRow[] = []
+    const chunks = chunkArray(ids, 500)
+
+    for (const chunk of chunks) {
+      const { data, error } = await supabase
+        .from(table)
+        .select('*')
+        .in('id', chunk)
+
+      if (error) {
+        return {
+          rows,
+          error: error.message,
+        }
+      }
+
+      rows.push(...((data ?? []) as DbRow[]))
+    }
+
+    return {
+      rows,
+      error: '',
+    }
+  }
 
   async function loadCampaign() {
     setLoading(true)
@@ -254,31 +277,13 @@ export default function CampaignDetailPage() {
     setLoading(false)
   }
 
-  async function fetchRowsByIds(table: string, ids: string[]) {
-    const rows: DbRow[] = []
-    const chunks = chunkArray(ids, 500)
-
-    for (const chunk of chunks) {
-      const { data, error } = await supabase
-        .from(table)
-        .select('*')
-        .in('id', chunk)
-
-      if (error) {
-        return {
-          rows,
-          error: error.message,
-        }
-      }
-
-      rows.push(...((data ?? []) as DbRow[]))
-    }
-
-    return {
-      rows,
-      error: '',
-    }
-  }
+  useEffect(() => {
+    // Supabase is the external data source synchronized by this effect.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    void loadCampaign()
+    // loadCampaign is intentionally rerun only when the route campaign changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [campaignId])
 
   async function updateCampaignRow(rowId: string, updates: DbRow) {
     setSavingId(rowId)
@@ -357,6 +362,83 @@ export default function CampaignDetailPage() {
     if (success) {
       setMessage(`Email status updated to ${status.replaceAll('_', ' ')}.`)
     }
+  }
+
+  async function markAllEmailStatusesSent() {
+    if (rows.length === 0) {
+      setErrorMessage('This campaign does not contain any contacts to update.')
+      return
+    }
+
+    const confirmed = window.confirm(
+      `Mark all ${rows.length} campaign contact${rows.length === 1 ? '' : 's'} as sent? This replaces existing email statuses, including bounced and out-of-office.`,
+    )
+
+    if (!confirmed) return
+
+    setBulkSaving(true)
+    setMessage('')
+    setErrorMessage('')
+
+    const updates = {
+      email_status: 'sent',
+      updated_at: new Date().toISOString(),
+    }
+
+    let { data, error } = await supabase
+      .from('campaign_companies')
+      .update(updates)
+      .eq('campaign_id', campaignId)
+      .select('id, email_status')
+
+    if (error && error.message.includes('updated_at')) {
+      const fallbackResult = await supabase
+        .from('campaign_companies')
+        .update({ email_status: 'sent' })
+        .eq('campaign_id', campaignId)
+        .select('id, email_status')
+
+      data = fallbackResult.data
+      error = fallbackResult.error
+    }
+
+    if (error) {
+      setErrorMessage(error.message)
+      setBulkSaving(false)
+      return
+    }
+
+    const updatedIds = new Set(
+      ((data ?? []) as DbRow[])
+        .map((row) => getString(row, ['id']))
+        .filter(Boolean),
+    )
+
+    if (updatedIds.size !== rows.length) {
+      setRows((current) =>
+        current.map((row) =>
+          updatedIds.has(row.id)
+            ? { ...row, raw: { ...row.raw, email_status: 'sent' } }
+            : row,
+        ),
+      )
+      setErrorMessage(
+        `Only ${updatedIds.size} of ${rows.length} campaign contacts were updated. Supabase permissions may be blocking some rows.`,
+      )
+      setBulkSaving(false)
+      return
+    }
+
+    setRows((current) =>
+      current.map((row) => ({
+        ...row,
+        raw: { ...row.raw, email_status: 'sent' },
+      })),
+    )
+    setMessage(
+      `All ${rows.length} campaign contact${rows.length === 1 ? ' is' : 's are'} now marked as sent.`,
+    )
+    setBulkSaving(false)
   }
 
   async function markOutcome(rowId: string, outcome: string) {
@@ -609,7 +691,7 @@ export default function CampaignDetailPage() {
         </div>
       </section>
 
-      <section className="mx-auto max-w-7xl px-4 py-8">
+      <section className="mx-auto max-w-[1600px] px-4 py-8">
         {errorMessage ? (
           <p className="mb-6 rounded-xl bg-red-50 p-4 text-sm font-semibold text-red-700">
             {errorMessage}
@@ -735,18 +817,38 @@ export default function CampaignDetailPage() {
             </div>
 
             <div className="mt-6 overflow-hidden rounded-2xl border border-stone-200 bg-white shadow-sm">
-              <div className="border-b border-stone-200 p-5">
-                <h2 className="text-xl font-black text-stone-950">
-                  Selected companies
-                </h2>
+              <div className="flex flex-col gap-4 border-b border-stone-200 p-5 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <h2 className="text-xl font-black text-stone-950">
+                    Selected companies
+                  </h2>
 
-                <p className="mt-1 text-sm text-stone-500">
-                  Showing {filteredRows.length} of {rows.length} campaign rows.
-                </p>
+                  <p className="mt-1 text-sm text-stone-500">
+                    Showing {filteredRows.length} of {rows.length} campaign rows.
+                  </p>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={markAllEmailStatusesSent}
+                  disabled={bulkSaving || rows.length === 0}
+                  className="shrink-0 rounded-xl border border-blue-200 bg-blue-50 px-4 py-2.5 text-sm font-black text-blue-700 hover:bg-blue-100 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {bulkSaving ? 'Marking all as sent...' : 'Mark all as sent'}
+                </button>
               </div>
 
               <div className="overflow-x-auto">
-                <table className="min-w-full text-left text-sm">
+                <table className="w-full min-w-[1180px] table-fixed text-left text-sm">
+                  <colgroup>
+                    <col className="w-[14%]" />
+                    <col className="w-[10%]" />
+                    <col className="w-[17%]" />
+                    <col className="w-[9%]" />
+                    <col className="w-[9%]" />
+                    <col className="w-[18%]" />
+                    <col className="w-[23%]" />
+                  </colgroup>
                   <thead className="bg-stone-50 text-xs uppercase tracking-wide text-stone-500">
                     <tr>
                       <th className="px-4 py-3">Company</th>
@@ -818,7 +920,7 @@ export default function CampaignDetailPage() {
                               </div>
                             </td>
 
-                            <td className="px-4 py-4">
+                            <td className="break-words px-4 py-4">
                               {getString(row.raw, ['email_address_used']) ||
                                 getContactEmail(row.contact || {}) ||
                                 '-'}
@@ -832,7 +934,7 @@ export default function CampaignDetailPage() {
                               <StatusPill value={effectiveOutcome} />
                             </td>
 
-                            <td className="min-w-72 px-4 py-4">
+                            <td className="px-4 py-4">
                               <textarea
                                 value={noteDrafts[row.id] || ''}
                                 onChange={(event) =>
@@ -849,21 +951,36 @@ export default function CampaignDetailPage() {
                               <button
                                 type="button"
                                 onClick={() => saveNotes(row.id)}
-                                disabled={savingId === row.id}
+                                disabled={bulkSaving || savingId === row.id}
                                 className="mt-2 rounded-lg border border-stone-300 bg-white px-3 py-2 text-xs font-bold text-stone-700 hover:bg-stone-50 disabled:opacity-50"
                               >
                                 Save notes
                               </button>
                             </td>
 
-                            <td className="min-w-72 px-4 py-4">
-                              <div className="flex flex-wrap gap-2">
+                            <td className="bg-stone-50/40 px-4 py-4">
+                              <p className="text-[10px] font-black uppercase tracking-wide text-stone-500">
+                                Email status
+                              </p>
+
+                              <div className="mt-2 flex flex-wrap gap-2">
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    markEmailStatus(row.id, 'selected')
+                                  }
+                                  disabled={bulkSaving || savingId === row.id}
+                                  className="rounded-lg border border-stone-300 bg-white px-3 py-2 text-xs font-bold text-stone-700 hover:bg-stone-100 disabled:opacity-50"
+                                >
+                                  Selected
+                                </button>
+
                                 <button
                                   type="button"
                                   onClick={() =>
                                     markEmailStatus(row.id, 'sent')
                                   }
-                                  disabled={savingId === row.id}
+                                  disabled={bulkSaving || savingId === row.id}
                                   className="rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-xs font-bold text-blue-700 hover:bg-blue-100 disabled:opacity-50"
                                 >
                                   Sent
@@ -874,7 +991,7 @@ export default function CampaignDetailPage() {
                                   onClick={() =>
                                     markEmailStatus(row.id, 'bounced')
                                   }
-                                  disabled={savingId === row.id}
+                                  disabled={bulkSaving || savingId === row.id}
                                   className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs font-bold text-red-700 hover:bg-red-100 disabled:opacity-50"
                                 >
                                   Bounced
@@ -885,45 +1002,18 @@ export default function CampaignDetailPage() {
                                   onClick={() =>
                                     markEmailStatus(row.id, 'out_of_office')
                                   }
-                                  disabled={savingId === row.id}
+                                  disabled={bulkSaving || savingId === row.id}
                                   className="rounded-lg border border-purple-200 bg-purple-50 px-3 py-2 text-xs font-bold text-purple-700 hover:bg-purple-100 disabled:opacity-50"
                                 >
                                   Out of office
                                 </button>
-
-<button
-  type="button"
-  onClick={() => markOutcome(row.id, 'quoted')}
-  disabled={savingId === row.id}
-  className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-bold text-amber-800 hover:bg-amber-100 disabled:opacity-50"
->
-  Quoted
-</button>
-
-<button
-  type="button"
-  onClick={() => markOutcome(row.id, 'customer')}
-  disabled={savingId === row.id}
-  className="rounded-lg border border-green-200 bg-green-50 px-3 py-2 text-xs font-bold text-green-700 hover:bg-green-100 disabled:opacity-50"
->
-  Customer
-</button>
-
-<button
-  type="button"
-  onClick={() => markOutcome(row.id, 'none')}
-  disabled={savingId === row.id}
-  className="rounded-lg border border-stone-300 bg-white px-3 py-2 text-xs font-bold text-stone-700 hover:bg-stone-50 disabled:opacity-50"
->
-  Clear outcome
-</button>
 
                                 <button
                                   type="button"
                                   onClick={() =>
                                     markEmailStatus(row.id, 'no_response')
                                   }
-                                  disabled={savingId === row.id}
+                                  disabled={bulkSaving || savingId === row.id}
                                   className="rounded-lg border border-stone-300 bg-white px-3 py-2 text-xs font-bold text-stone-700 hover:bg-stone-50 disabled:opacity-50"
                                 >
                                   No response
@@ -939,11 +1029,46 @@ export default function CampaignDetailPage() {
                                           : row.id,
                                       )
                                     }
-                                    className="rounded-lg border border-stone-300 bg-white px-3 py-2 text-xs font-bold text-stone-700 hover:bg-stone-50"
+                                    className="rounded-lg border border-stone-300 bg-white px-3 py-2 text-xs font-bold text-stone-700 hover:bg-stone-100"
                                   >
                                     Add OOO contact
                                   </button>
                                 ) : null}
+                              </div>
+
+                              <div className="mt-4 border-t border-stone-200 pt-4">
+                                <p className="text-[10px] font-black uppercase tracking-wide text-stone-500">
+                                  Outcome
+                                </p>
+
+                                <div className="mt-2 flex flex-wrap gap-2">
+                                  <button
+                                    type="button"
+                                    onClick={() => markOutcome(row.id, 'quoted')}
+                                    disabled={bulkSaving || savingId === row.id}
+                                    className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-bold text-amber-800 hover:bg-amber-100 disabled:opacity-50"
+                                  >
+                                    Quoted
+                                  </button>
+
+                                  <button
+                                    type="button"
+                                    onClick={() => markOutcome(row.id, 'customer')}
+                                    disabled={bulkSaving || savingId === row.id}
+                                    className="rounded-lg border border-green-200 bg-green-50 px-3 py-2 text-xs font-bold text-green-700 hover:bg-green-100 disabled:opacity-50"
+                                  >
+                                    Customer
+                                  </button>
+
+                                  <button
+                                    type="button"
+                                    onClick={() => markOutcome(row.id, 'none')}
+                                    disabled={bulkSaving || savingId === row.id}
+                                    className="rounded-lg border border-stone-300 bg-white px-3 py-2 text-xs font-bold text-stone-700 hover:bg-stone-100 disabled:opacity-50"
+                                  >
+                                    Clear outcome
+                                  </button>
+                                </div>
                               </div>
 
                               {openContactFormId === row.id ? (
@@ -1037,7 +1162,7 @@ export default function CampaignDetailPage() {
                                     onClick={() =>
                                       addContactFromOutOfOffice(row)
                                     }
-                                    disabled={savingId === row.id}
+                                    disabled={bulkSaving || savingId === row.id}
                                     className="mt-3 rounded-xl bg-red-600 px-4 py-2 text-sm font-bold text-white hover:bg-red-700 disabled:opacity-50"
                                   >
                                     {savingId === row.id

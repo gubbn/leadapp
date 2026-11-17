@@ -269,19 +269,27 @@ export default function CampaignBuilderPage() {
     excludeQuotedCompanies,
   ])
 
-  const selectedCompanyRows = useMemo(() => {
-    const rowsByCompany: Record<string, CampaignRow> = {}
+  const selectedCampaignRows = useMemo(() => {
+    const rowsByContact = new Map<string, CampaignRow>()
 
-    filteredRows.forEach((row) => {
+    filteredRows.forEach((row, index) => {
       if (!row.company_id) return
 
-      if (!rowsByCompany[row.company_id]) {
-        rowsByCompany[row.company_id] = row
-      }
+      const contactKey =
+        row.contact_id ||
+        `${row.company_id}:${row.email?.trim().toLowerCase() || index}`
+
+      if (!rowsByContact.has(contactKey)) rowsByContact.set(contactKey, row)
     })
 
-    return Object.values(rowsByCompany)
+    return Array.from(rowsByContact.values())
   }, [filteredRows])
+
+  const selectedCompanyCount = useMemo(
+    () =>
+      new Set(selectedCampaignRows.map((row) => row.company_id)).size,
+    [selectedCampaignRows],
+  )
 
   const rowsWithoutCompanyId = useMemo(() => {
     return filteredRows.filter((row) => !row.company_id).length
@@ -457,7 +465,7 @@ export default function CampaignBuilderPage() {
       return
     }
 
-    if (selectedCompanyRows.length === 0) {
+    if (selectedCampaignRows.length === 0) {
       setErrorMessage(
         'No selected rows have a company ID, so this campaign cannot be saved. Check that contacts are linked to companies.',
       )
@@ -476,8 +484,8 @@ export default function CampaignBuilderPage() {
         campaign_name: cleanedCampaignName,
         description: `Created from campaign builder with ${filteredRows.length} exported contact${
           filteredRows.length === 1 ? '' : 's'
-        } and ${selectedCompanyRows.length} selected compan${
-          selectedCompanyRows.length === 1 ? 'y' : 'ies'
+        } and ${selectedCompanyCount} selected compan${
+          selectedCompanyCount === 1 ? 'y' : 'ies'
         }.`,
       })
       .select('id, name, campaign_name')
@@ -489,7 +497,7 @@ export default function CampaignBuilderPage() {
       return
     }
 
-    const campaignCompanyPayload = selectedCompanyRows.map((row) => ({
+    const campaignCompanyPayload = selectedCampaignRows.map((row) => ({
       campaign_id: campaignData.id,
       company_id: row.company_id,
       contact_id: row.contact_id || null,
@@ -518,10 +526,10 @@ export default function CampaignBuilderPage() {
 
     setLastSavedCampaignId(campaignData.id)
     setMessage(
-      `Saved "${cleanedCampaignName}" with ${selectedCompanyRows.length} compan${
-        selectedCompanyRows.length === 1 ? 'y' : 'ies'
-      } and ${filteredRows.length} exported contact${
-        filteredRows.length === 1 ? '' : 's'
+      `Saved "${cleanedCampaignName}" with ${selectedCampaignRows.length} contact${
+        selectedCampaignRows.length === 1 ? '' : 's'
+      } across ${selectedCompanyCount} compan${
+        selectedCompanyCount === 1 ? 'y' : 'ies'
       }${shouldDownload ? ', then downloaded the CSV' : ''}.`,
     )
 
@@ -568,7 +576,7 @@ export default function CampaignBuilderPage() {
         <div className="grid gap-4 md:grid-cols-5">
           <SummaryCard label="Total contacts" value={rows.length} />
           <SummaryCard label="Campaign contacts" value={filteredRows.length} />
-          <SummaryCard label="Selected companies" value={selectedCompanyRows.length} />
+          <SummaryCard label="Selected companies" value={selectedCompanyCount} />
           <SummaryCard label="Customers" value={customerCount} urgent={customerCount > 0} />
           <SummaryCard label="Quoted" value={quotedCount} urgent={quotedCount > 0} />
         </div>
@@ -657,7 +665,7 @@ export default function CampaignBuilderPage() {
                 disabled={
                   savingCampaign ||
                   filteredRows.length === 0 ||
-                  selectedCompanyRows.length === 0 ||
+                  selectedCampaignRows.length === 0 ||
                   !campaignName.trim()
                 }
                 className="rounded-xl border border-red-200 bg-red-50 px-4 py-2 text-sm font-bold text-red-700 hover:bg-red-100 disabled:cursor-not-allowed disabled:opacity-50"
@@ -671,7 +679,7 @@ export default function CampaignBuilderPage() {
                 disabled={
                   savingCampaign ||
                   filteredRows.length === 0 ||
-                  selectedCompanyRows.length === 0 ||
+                  selectedCampaignRows.length === 0 ||
                   !campaignName.trim()
                 }
                 className="rounded-xl bg-red-600 px-4 py-2 text-sm font-bold text-white shadow-sm hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-50"

@@ -13,6 +13,7 @@ type SavedCampaign = {
   description: string | null
   created_at: string | null
   updated_at: string | null
+  archived_at?: string | null
 }
 
 type CampaignCompanyLite = {
@@ -59,6 +60,8 @@ export default function CampaignHistoryPage() {
   const [loading, setLoading] = useState(true)
   const [errorMessage, setErrorMessage] = useState('')
   const [message, setMessage] = useState('')
+  const [showArchived, setShowArchived] = useState(false)
+  const [archivingId, setArchivingId] = useState<string | null>(null)
   const [uploading, setUploading] = useState(false)
   const [importPreview, setImportPreview] = useState<ImportPreview | null>(null)
   const [importCampaignName, setImportCampaignName] = useState('')
@@ -71,28 +74,38 @@ export default function CampaignHistoryPage() {
     loadCampaignHistory()
   }, [])
 
+  const archivedCount = campaigns.filter((campaign) => campaign.archived_at).length
+
+  const visibleCampaigns = useMemo(
+    () =>
+      campaigns.filter(
+        (campaign) => showArchived || !campaign.archived_at,
+      ),
+    [campaigns, showArchived],
+  )
+
   const totals = useMemo(() => {
-    const selected = campaigns.reduce(
+    const selected = visibleCampaigns.reduce(
       (total, campaign) => total + campaign.selected_count,
       0,
     )
 
-    const bounced = campaigns.reduce(
+    const bounced = visibleCampaigns.reduce(
       (total, campaign) => total + campaign.bounced_count,
       0,
     )
 
-    const outOfOffice = campaigns.reduce(
+    const outOfOffice = visibleCampaigns.reduce(
       (total, campaign) => total + campaign.out_of_office_count,
       0,
     )
 
-    const quoted = campaigns.reduce(
+    const quoted = visibleCampaigns.reduce(
       (total, campaign) => total + campaign.quoted_count,
       0,
     )
 
-    const customers = campaigns.reduce(
+    const customers = visibleCampaigns.reduce(
       (total, campaign) => total + campaign.customer_count,
       0,
     )
@@ -105,7 +118,7 @@ export default function CampaignHistoryPage() {
       customers,
       success: quoted + customers,
     }
-  }, [campaigns])
+  }, [visibleCampaigns])
 
   async function loadCampaignHistory() {
     setLoading(true)
@@ -113,7 +126,7 @@ export default function CampaignHistoryPage() {
 
     const { data: campaignData, error: campaignError } = await supabase
       .from('campaigns')
-      .select('id, name, description, created_at, updated_at')
+      .select('*')
       .order('created_at', { ascending: false })
 
     if (campaignError) {
@@ -191,6 +204,53 @@ export default function CampaignHistoryPage() {
 
     setCampaigns(summaries)
     setLoading(false)
+  }
+
+  async function setCampaignArchived(campaign: SavedCampaignSummary, archived: boolean) {
+    const action = archived ? 'archive' : 'restore'
+    const confirmed = window.confirm(
+      `${archived ? 'Archive' : 'Restore'} “${campaign.name}”? ${
+        archived
+          ? 'It will be hidden until archived campaigns are shown.'
+          : 'It will return to the main campaign history.'
+      }`,
+    )
+
+    if (!confirmed) return
+
+    setArchivingId(campaign.id)
+    setMessage('')
+    setErrorMessage('')
+
+    const archivedAt = archived ? new Date().toISOString() : null
+    const { data, error } = await supabase
+      .from('campaigns')
+      .update({ archived_at: archivedAt, updated_at: new Date().toISOString() })
+      .eq('id', campaign.id)
+      .select('id, archived_at')
+      .single()
+
+    if (error || !data) {
+      setErrorMessage(
+        error?.message || `The campaign could not be ${action}d.`,
+      )
+      setArchivingId(null)
+      return
+    }
+
+    setCampaigns((current) =>
+      current.map((item) =>
+        item.id === campaign.id
+          ? { ...item, archived_at: data.archived_at }
+          : item,
+      ),
+    )
+    setMessage(
+      archived
+        ? `“${campaign.name}” was archived.`
+        : `“${campaign.name}” was restored to campaign history.`,
+    )
+    setArchivingId(null)
   }
 
   async function handleCsvUpload(event: ChangeEvent<HTMLInputElement>) {
@@ -486,7 +546,7 @@ export default function CampaignHistoryPage() {
 
       <section className="mx-auto max-w-7xl px-4 py-8">
         <div className="grid gap-4 md:grid-cols-6">
-          <SummaryCard label="Campaigns" value={campaigns.length} />
+          <SummaryCard label="Campaigns" value={visibleCampaigns.length} />
           <SummaryCard label="Selected" value={totals.selected} />
           <SummaryCard label="Bounced" value={totals.bounced} urgent={totals.bounced > 0} />
           <SummaryCard label="Out of office" value={totals.outOfOffice} urgent={totals.outOfOffice > 0} />
@@ -661,15 +721,27 @@ export default function CampaignHistoryPage() {
         ) : null}
 
         <div className="mt-6 overflow-hidden rounded-2xl border border-stone-200 bg-white shadow-sm">
-          <div className="border-b border-stone-200 p-5">
-            <h2 className="text-xl font-black text-stone-950">
-              Saved campaigns
-            </h2>
+          <div className="flex flex-col gap-4 border-b border-stone-200 p-5 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <h2 className="text-xl font-black text-stone-950">
+                Saved campaigns
+              </h2>
 
-            <p className="mt-1 text-sm text-stone-500">
-              Open a campaign to mark bounced emails, out-of-office replies,
-              quotes and customers.
-            </p>
+              <p className="mt-1 text-sm text-stone-500">
+                Open a campaign to mark bounced emails, out-of-office replies,
+                quotes and customers.
+              </p>
+            </div>
+
+            <label className="flex cursor-pointer items-center gap-3 rounded-xl border border-stone-200 bg-stone-50 px-4 py-2.5 text-sm font-bold text-stone-700">
+              <input
+                type="checkbox"
+                checked={showArchived}
+                onChange={(event) => setShowArchived(event.target.checked)}
+                className="h-4 w-4 accent-red-600"
+              />
+              Show archived ({archivedCount})
+            </label>
           </div>
 
           <div className="overflow-x-auto">
@@ -696,25 +768,37 @@ export default function CampaignHistoryPage() {
                       Loading saved campaigns...
                     </td>
                   </tr>
-                ) : campaigns.length === 0 ? (
+                ) : visibleCampaigns.length === 0 ? (
                   <tr>
                     <td className="px-4 py-5 text-stone-500" colSpan={10}>
-                      No campaigns have been saved yet.
+                      {campaigns.length === 0
+                        ? 'No campaigns have been saved yet.'
+                        : 'No active campaigns. Turn on “Show archived” to view archived campaigns.'}
                     </td>
                   </tr>
                 ) : (
-                  campaigns.map((campaign) => (
+                  visibleCampaigns.map((campaign) => (
                     <tr
                       key={campaign.id}
-                      className="border-t border-stone-100 align-top"
+                      className={`border-t border-stone-100 align-top ${
+                        campaign.archived_at ? 'bg-stone-50/80' : ''
+                      }`}
                     >
                       <td className="px-4 py-3">
-                        <Link
-                          href={`/campaigns/${campaign.id}`}
-                          className="font-black text-stone-950 hover:text-red-600"
-                        >
-                          {campaign.name}
-                        </Link>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <Link
+                            href={`/campaigns/${campaign.id}`}
+                            className="font-black text-stone-950 hover:text-red-600"
+                          >
+                            {campaign.name}
+                          </Link>
+
+                          {campaign.archived_at ? (
+                            <span className="rounded-full bg-stone-200 px-2 py-0.5 text-[10px] font-black uppercase tracking-wide text-stone-600">
+                              Archived
+                            </span>
+                          ) : null}
+                        </div>
 
                         {campaign.description ? (
                           <p className="mt-1 max-w-md text-xs text-stone-500">
@@ -750,12 +834,29 @@ export default function CampaignHistoryPage() {
                       </td>
 
                       <td className="px-4 py-3">
-                        <Link
-                          href={`/campaigns/${campaign.id}`}
-                          className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs font-bold text-red-700 hover:bg-red-100"
-                        >
-                          Open campaign
-                        </Link>
+                        <div className="flex flex-col items-start gap-2">
+                          <Link
+                            href={`/campaigns/${campaign.id}`}
+                            className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs font-bold text-red-700 hover:bg-red-100"
+                          >
+                            Open campaign
+                          </Link>
+
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setCampaignArchived(campaign, !campaign.archived_at)
+                            }
+                            disabled={archivingId === campaign.id}
+                            className="rounded-lg border border-stone-300 bg-white px-3 py-2 text-xs font-bold text-stone-600 hover:bg-stone-100 disabled:opacity-50"
+                          >
+                            {archivingId === campaign.id
+                              ? 'Saving...'
+                              : campaign.archived_at
+                                ? 'Restore'
+                                : 'Archive'}
+                          </button>
+                        </div>
                       </td>
                     </tr>
                   ))
