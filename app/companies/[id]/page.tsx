@@ -29,6 +29,11 @@ type ContactRow = DbRow & {
   id: string
 }
 
+type CompanyOption = {
+  id: string
+  company_name: string
+}
+
 type CampaignHistoryRow = DbRow & {
   id: string
   campaign?: DbRow | null
@@ -66,6 +71,7 @@ export default function CompanyDetailPage() {
   const [successMessage, setSuccessMessage] = useState('')
   const [editingDetails, setEditingDetails] = useState(false)
   const [addingContact, setAddingContact] = useState(false)
+  const [managingContact, setManagingContact] = useState<ContactRow | null>(null)
   const [confirmingDelete, setConfirmingDelete] = useState(false)
 
   // Existing detail-page loader is intentionally triggered when the route id changes.
@@ -605,6 +611,32 @@ export default function CompanyDetailPage() {
               />
             ) : null}
 
+            {managingContact ? (
+              <ContactManagementDialog
+                company={company}
+                contact={managingContact}
+                onClose={() => setManagingContact(null)}
+                onMoved={(targetCompanyName) => {
+                  setContacts((current) =>
+                    current.filter((contact) => contact.id !== managingContact.id),
+                  )
+                  setManagingContact(null)
+                  setSuccessMessage(
+                    `${getContactName(managingContact) || 'Contact'} moved to ${targetCompanyName}.`,
+                  )
+                }}
+                onDeleted={() => {
+                  setContacts((current) =>
+                    current.filter((contact) => contact.id !== managingContact.id),
+                  )
+                  setManagingContact(null)
+                  setSuccessMessage(
+                    `${getContactName(managingContact) || 'Contact'} deleted.`,
+                  )
+                }}
+              />
+            ) : null}
+
             <section className="mt-6 overflow-hidden rounded-2xl border border-stone-200 bg-white shadow-sm">
               <div className="flex flex-wrap items-start justify-between gap-3 border-b border-stone-200 p-5">
                 <div>
@@ -639,13 +671,14 @@ export default function CompanyDetailPage() {
                       <th className="px-4 py-3">Meetings</th>
                       <th className="px-4 py-3">Outcome</th>
                       <th className="px-4 py-3">Source</th>
+                      <th className="px-4 py-3">Actions</th>
                     </tr>
                   </thead>
 
                   <tbody>
                     {contacts.length === 0 ? (
                       <tr>
-                        <td className="px-4 py-5 text-stone-500" colSpan={7}>
+                        <td className="px-4 py-5 text-stone-500" colSpan={8}>
                           No contacts found for this company.
                         </td>
                       </tr>
@@ -692,6 +725,20 @@ export default function CompanyDetailPage() {
 
                           <td className="px-4 py-3">
                             {getContactSource(contact) || '-'}
+                          </td>
+
+                          <td className="px-4 py-3">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setErrorMessage('')
+                                setSuccessMessage('')
+                                setManagingContact(contact)
+                              }}
+                              className="rounded-lg border border-stone-300 bg-white px-3 py-2 text-xs font-black text-stone-700 hover:bg-stone-100"
+                            >
+                              Manage
+                            </button>
                           </td>
                         </tr>
                       ))
@@ -1402,6 +1449,382 @@ function AddContactEditor({
           </button>
         </div>
       </form>
+    </div>
+  )
+}
+
+function ContactManagementDialog({
+  company,
+  contact,
+  onClose,
+  onMoved,
+  onDeleted,
+}: {
+  company: CompanyRow
+  contact: ContactRow
+  onClose: () => void
+  onMoved: (targetCompanyName: string) => void
+  onDeleted: () => void
+}) {
+  const [companies, setCompanies] = useState<CompanyOption[]>([])
+  const [selectedCompanyId, setSelectedCompanyId] = useState('')
+  const [loadingCompanies, setLoadingCompanies] = useState(true)
+  const [newCompany, setNewCompany] = useState({
+    name: '',
+    domain: '',
+    industry: '',
+    location: '',
+  })
+  const [deleteConfirmation, setDeleteConfirmation] = useState('')
+  const [savingAction, setSavingAction] = useState<'move' | 'create' | 'delete' | null>(null)
+  const [error, setError] = useState('')
+
+  const contactName = getContactName(contact) || getContactEmail(contact) || 'Unnamed contact'
+  const deleteConfirmationLabel =
+    getContactName(contact) || getContactEmail(contact) || 'DELETE'
+
+  useEffect(() => {
+    let cancelled = false
+
+    async function loadCompanies() {
+      const { data, error: companiesError } = await supabase
+        .from('companies')
+        .select('id, company_name')
+        .neq('id', company.id)
+        .order('company_name', { ascending: true })
+
+      if (cancelled) return
+
+      if (companiesError) {
+        setError(`Companies could not be loaded: ${companiesError.message}`)
+      } else {
+        setCompanies((data ?? []) as CompanyOption[])
+      }
+      setLoadingCompanies(false)
+    }
+
+    void loadCompanies()
+    return () => {
+      cancelled = true
+    }
+  }, [company.id])
+
+  async function updateContactCompany(
+    targetCompanyId: string,
+    targetCompanyName: string,
+    createdCompanyId?: string,
+  ) {
+    let { data, error: moveError } = await supabase
+      .from('contacts')
+      .update({
+        company_id: targetCompanyId,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', contact.id)
+      .eq('company_id', company.id)
+      .select('id')
+      .single()
+
+    if (moveError && moveError.message.includes('updated_at')) {
+      const fallback = await supabase
+        .from('contacts')
+        .update({ company_id: targetCompanyId })
+        .eq('id', contact.id)
+        .eq('company_id', company.id)
+        .select('id')
+        .single()
+
+      data = fallback.data
+      moveError = fallback.error
+    }
+
+    if (moveError || !data) {
+      if (createdCompanyId) {
+        await supabase.from('companies').delete().eq('id', createdCompanyId)
+      }
+      setError(
+        moveError?.message ||
+          'No contact was moved. Supabase permissions may be blocking the update.',
+      )
+      setSavingAction(null)
+      return
+    }
+
+    onMoved(targetCompanyName)
+  }
+
+  async function moveToExistingCompany(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    const target = companies.find((item) => item.id === selectedCompanyId)
+
+    if (!target) {
+      setError('Choose the company this contact should move to.')
+      return
+    }
+
+    setSavingAction('move')
+    setError('')
+    await updateContactCompany(target.id, target.company_name)
+  }
+
+  async function createCompanyAndMove(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    const companyName = newCompany.name.trim()
+
+    if (!companyName) {
+      setError('Enter a name for the new company.')
+      return
+    }
+
+    setSavingAction('create')
+    setError('')
+
+    const { data: existingCompany, error: lookupError } = await supabase
+      .from('companies')
+      .select('id, company_name')
+      .ilike('company_name', companyName)
+      .maybeSingle()
+
+    if (lookupError) {
+      setError(lookupError.message)
+      setSavingAction(null)
+      return
+    }
+
+    if (existingCompany) {
+      setError(
+        `“${existingCompany.company_name}” already exists. Choose it from the existing-company list instead.`,
+      )
+      setSelectedCompanyId(existingCompany.id)
+      setSavingAction(null)
+      return
+    }
+
+    const { data: createdCompany, error: createError } = await supabase
+      .from('companies')
+      .insert({
+        company_name: companyName,
+        domain: newCompany.domain.trim() || null,
+        industry: newCompany.industry.trim() || null,
+        location: newCompany.location.trim() || null,
+        size_band: 'unknown',
+      })
+      .select('id, company_name')
+      .single()
+
+    if (createError || !createdCompany) {
+      setError(createError?.message || 'The new company could not be created.')
+      setSavingAction(null)
+      return
+    }
+
+    await updateContactCompany(
+      createdCompany.id,
+      createdCompany.company_name,
+      createdCompany.id,
+    )
+  }
+
+  async function deleteContact(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+
+    if (deleteConfirmation !== deleteConfirmationLabel) {
+      setError(`Type “${deleteConfirmationLabel}” exactly to confirm deletion.`)
+      return
+    }
+
+    setSavingAction('delete')
+    setError('')
+
+    const { data, error: deleteError } = await supabase
+      .from('contacts')
+      .delete()
+      .eq('id', contact.id)
+      .eq('company_id', company.id)
+      .select('id')
+      .single()
+
+    if (deleteError || !data) {
+      setError(
+        deleteError?.code === '23503'
+          ? 'This contact is still linked to a protected record, such as a quote, and cannot be deleted. Move the contact instead, or resolve the linked record first.'
+          : deleteError?.message ||
+              'No contact was deleted. Supabase permissions may be blocking the deletion.',
+      )
+      setSavingAction(null)
+      return
+    }
+
+    onDeleted()
+  }
+
+  const busy = savingAction !== null
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-stone-950/45 p-4 backdrop-blur-sm"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="contact-management-title"
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget && !busy) onClose()
+      }}
+    >
+      <div className="max-h-[calc(100vh-2rem)] w-full max-w-4xl overflow-y-auto rounded-3xl bg-white p-6 shadow-2xl sm:p-8">
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <p className="text-xs font-black uppercase tracking-[0.18em] text-red-600">
+              Contact management
+            </p>
+            <h2 id="contact-management-title" className="mt-2 text-2xl font-black text-stone-950">
+              Manage {contactName}
+            </h2>
+            <p className="mt-2 text-sm text-stone-500">
+              Currently linked to {getCompanyName(company)}.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={busy}
+            className="rounded-xl border border-stone-200 px-3 py-2 font-black text-stone-500 hover:bg-stone-50 disabled:opacity-50"
+          >
+            ✕
+          </button>
+        </div>
+
+        <div className="mt-7 grid gap-5 lg:grid-cols-2">
+          <form onSubmit={moveToExistingCompany} className="rounded-2xl border border-stone-200 bg-stone-50 p-5">
+            <p className="text-xs font-black uppercase tracking-wide text-stone-500">
+              Existing company
+            </p>
+            <h3 className="mt-1 text-lg font-black text-stone-950">
+              Move this contact
+            </h3>
+            <label className="mt-5 block">
+              <span className="mb-1.5 block text-xs font-black uppercase tracking-wide text-stone-500">
+                New company
+              </span>
+              <select
+                value={selectedCompanyId}
+                onChange={(event) => setSelectedCompanyId(event.target.value)}
+                disabled={busy || loadingCompanies}
+                className="w-full rounded-xl border border-stone-300 bg-white px-3 py-2.5 text-sm font-semibold outline-none focus:border-red-500 focus:ring-4 focus:ring-red-50 disabled:opacity-50"
+              >
+                <option value="">
+                  {loadingCompanies ? 'Loading companies…' : 'Choose a company'}
+                </option>
+                {companies.map((item) => (
+                  <option key={item.id} value={item.id}>
+                    {item.company_name}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <p className="mt-3 text-xs leading-5 text-stone-500">
+              Historical campaigns, quotes and activities stay with the company where they were recorded.
+            </p>
+            <button
+              type="submit"
+              disabled={busy || !selectedCompanyId}
+              className="mt-5 w-full rounded-xl bg-stone-950 px-5 py-3 text-sm font-black text-white hover:bg-stone-800 disabled:opacity-40"
+            >
+              {savingAction === 'move' ? 'Moving contact…' : 'Move contact'}
+            </button>
+          </form>
+
+          <form onSubmit={createCompanyAndMove} className="rounded-2xl border border-red-100 bg-red-50 p-5">
+            <p className="text-xs font-black uppercase tracking-wide text-red-600">
+              New company
+            </p>
+            <h3 className="mt-1 text-lg font-black text-stone-950">
+              Create a company and move
+            </h3>
+            <div className="mt-5 grid gap-3 sm:grid-cols-2">
+              <div className="sm:col-span-2">
+                <EditorField
+                  label="Company name"
+                  value={newCompany.name}
+                  onChange={(value) =>
+                    setNewCompany((current) => ({ ...current, name: value }))
+                  }
+                />
+              </div>
+              <EditorField
+                label="Website or domain"
+                value={newCompany.domain}
+                onChange={(value) =>
+                  setNewCompany((current) => ({ ...current, domain: value }))
+                }
+                placeholder="example.co.uk"
+              />
+              <EditorField
+                label="Industry"
+                value={newCompany.industry}
+                onChange={(value) =>
+                  setNewCompany((current) => ({ ...current, industry: value }))
+                }
+              />
+              <div className="sm:col-span-2">
+                <EditorField
+                  label="Location"
+                  value={newCompany.location}
+                  onChange={(value) =>
+                    setNewCompany((current) => ({ ...current, location: value }))
+                  }
+                />
+              </div>
+            </div>
+            <button
+              type="submit"
+              disabled={busy || !newCompany.name.trim()}
+              className="mt-5 w-full rounded-xl bg-red-600 px-5 py-3 text-sm font-black text-white hover:bg-red-700 disabled:opacity-40"
+            >
+              {savingAction === 'create'
+                ? 'Creating company and moving…'
+                : 'Create company and move contact'}
+            </button>
+          </form>
+        </div>
+
+        <form onSubmit={deleteContact} className="mt-5 rounded-2xl border border-red-200 bg-white p-5">
+          <p className="text-xs font-black uppercase tracking-wide text-red-600">
+            Danger zone
+          </p>
+          <div className="mt-2 grid gap-4 lg:grid-cols-[1fr_1fr_auto] lg:items-end">
+            <div>
+              <h3 className="font-black text-stone-950">Delete contact permanently</h3>
+              <p className="mt-1 text-sm leading-6 text-stone-500">
+                Protected linked records will prevent deletion. This cannot be undone.
+              </p>
+            </div>
+            <label className="block">
+              <span className="mb-1.5 block text-xs font-black uppercase tracking-wide text-stone-500">
+                Type {deleteConfirmationLabel} to confirm
+              </span>
+              <input
+                value={deleteConfirmation}
+                onChange={(event) => setDeleteConfirmation(event.target.value)}
+                disabled={busy}
+                className="w-full rounded-xl border border-red-200 px-3 py-2.5 text-sm font-semibold outline-none focus:border-red-500 focus:ring-4 focus:ring-red-50"
+              />
+            </label>
+            <button
+              type="submit"
+              disabled={busy || deleteConfirmation !== deleteConfirmationLabel}
+              className="rounded-xl bg-red-600 px-5 py-3 text-sm font-black text-white hover:bg-red-700 disabled:opacity-40"
+            >
+              {savingAction === 'delete' ? 'Deleting…' : 'Delete contact'}
+            </button>
+          </div>
+        </form>
+
+        {error ? (
+          <p className="mt-5 rounded-xl bg-red-50 p-3 text-sm font-bold text-red-700">
+            {error}
+          </p>
+        ) : null}
+      </div>
     </div>
   )
 }
