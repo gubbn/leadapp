@@ -437,6 +437,7 @@ function ImportEventPanel({ groups, events, attendees, companies, contacts, deal
       }
 
       const resolvedDrafts = await resolveCrmRecords(usableDrafts, companies, contacts)
+      await qualifyLbbCompanies(resolvedDrafts)
       const uploadedRoster = resolvedDrafts.map(attendeeIdentityKey)
       const matchingEvent = events
         .filter((existingEvent) => existingEvent.group_id === savedGroupId)
@@ -523,7 +524,7 @@ function ImportEventPanel({ groups, events, attendees, companies, contacts, deal
     </div>
     <div className="border-b border-stone-800 p-6">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center"><label className="cursor-pointer rounded-xl bg-red-600 px-5 py-3 text-center text-sm font-black hover:bg-red-500">{reading ? 'Reading PDF…' : 'Upload attendee PDF'}<input type="file" accept="application/pdf,.pdf" onChange={handlePdf} disabled={reading} className="sr-only" /></label><button onClick={() => setDrafts((current) => [...current, blankAttendeeDraft(current.length)])} className="rounded-xl border border-stone-600 px-5 py-3 text-sm font-black text-stone-200 hover:bg-stone-800">+ Add person manually</button>{fileName ? <p className="text-sm font-bold text-stone-400">{fileName}{pageCount ? ` · ${pageCount} pages` : ''}</p> : null}</div>
-      <p className="mt-3 text-xs font-bold text-stone-500">Missing companies and contacts are added to the CRM automatically, and every company is tagged #screenpop. Notes are also saved in the company activity timeline. Uploading the same people for the same group updates their existing met-at date instead of adding them again.</p>
+      <p className="mt-3 text-xs font-bold text-stone-500">Missing companies and contacts are added to the CRM automatically. Linked companies are tagged #screenpop, and eligible companies in Research move to Qualified. Notes are saved in the company activity timeline. Uploading the same people for the same group updates their existing met-at date.</p>
       {error ? <p className="mt-4 rounded-xl border border-red-900 bg-red-950/60 p-4 text-sm font-bold text-red-200">{error}</p> : null}
     </div>
     {drafts.length ? <div className="p-6"><div className="mb-4 flex items-end justify-between gap-4"><div><p className="text-xs font-black uppercase tracking-wide text-red-400">Review before saving</p><h3 className="mt-1 text-xl font-black">{drafts.length} people found</h3></div><p className="hidden text-xs text-stone-500 md:block">PDF layouts vary. Correct anything that landed in the wrong box.</p></div><div className="space-y-3">{drafts.map((draft, index) => {
@@ -727,6 +728,24 @@ async function resolveCrmRecords(drafts: NetworkingAttendeeDraft[], companies: C
 }
 
 const companyTagsSetupMessage = 'Company tagging needs its one-time setup. Run docs/company-tags.sql in Supabase, then import the attendee list again.'
+
+async function qualifyLbbCompanies(drafts: NetworkingAttendeeDraft[]) {
+  const companyIds = [...new Set(drafts.map((draft) => draft.companyId).filter(Boolean))]
+  const updatedAt = new Date().toISOString()
+
+  for (let offset = 0; offset < companyIds.length; offset += 100) {
+    const { error } = await supabase
+      .from('companies')
+      .update({ prospecting_status: 'qualified', prospecting_updated_at: updatedAt })
+      .in('id', companyIds.slice(offset, offset + 100))
+      .or('prospecting_status.eq.research,prospecting_status.is.null')
+      .or('dnc.eq.false,dnc.is.null')
+
+    if (error) {
+      throw new Error(`Could not qualify the linked LBB companies: ${error.message}`)
+    }
+  }
+}
 
 async function ensureScreenpopCompanyTag(company: Company) {
   let tags = company.tags
