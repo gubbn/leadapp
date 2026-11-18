@@ -87,6 +87,7 @@ const sizeBandOptions: MultiSelectOption[] = [
 export default function CampaignBuilderPage() {
   const [rows, setRows] = useState<CampaignRow[]>([])
   const [campaignName, setCampaignName] = useState('')
+  const [campaignDetails, setCampaignDetails] = useState('')
   const [selectedSizeBands, setSelectedSizeBands] = useState<string[]>([])
   const [selectedIndustries, setSelectedIndustries] = useState<string[]>([])
   const [selectedLocations, setSelectedLocations] = useState<string[]>([])
@@ -482,7 +483,7 @@ export default function CampaignBuilderPage() {
       .insert({
         name: cleanedCampaignName,
         campaign_name: cleanedCampaignName,
-        description: `Created from campaign builder with ${filteredRows.length} exported contact${
+        description: campaignDetails.trim() || `Created from campaign builder with ${filteredRows.length} exported contact${
           filteredRows.length === 1 ? '' : 's'
         } and ${selectedCompanyCount} selected compan${
           selectedCompanyCount === 1 ? 'y' : 'ies'
@@ -727,6 +728,19 @@ export default function CampaignBuilderPage() {
               onChange={setSelectedLocations}
             />
           </div>
+
+          <label className="mt-4 block">
+            <span className="text-xs font-black uppercase tracking-wide text-stone-500">
+              Campaign details (optional)
+            </span>
+            <textarea
+              value={campaignDetails}
+              onChange={(event) => setCampaignDetails(event.target.value)}
+              rows={4}
+              placeholder="Describe the campaign’s purpose, audience and offer."
+              className="mt-1 w-full rounded-xl border border-stone-300 bg-white px-3 py-2 text-sm outline-none focus:border-red-500 focus:ring-4 focus:ring-red-50"
+            />
+          </label>
 
           <div className="mt-4 grid gap-4 md:grid-cols-2">
             <MultiSelectDropdown

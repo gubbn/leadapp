@@ -1,6 +1,6 @@
 'use client'
 
-import { ChangeEvent, useEffect, useMemo, useState } from 'react'
+import { ChangeEvent, type FormEvent, useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import { supabase } from '@/lib/supabaseClient'
 import AppHeader from '@/app/components/AppHeader'
@@ -62,6 +62,13 @@ export default function CampaignHistoryPage() {
   const [message, setMessage] = useState('')
   const [showArchived, setShowArchived] = useState(false)
   const [archivingId, setArchivingId] = useState<string | null>(null)
+  const [detailsEditor, setDetailsEditor] = useState<{
+    id: string
+    original: string | null
+    draft: string
+  } | null>(null)
+  const [savingDetails, setSavingDetails] = useState(false)
+  const [detailsError, setDetailsError] = useState('')
   const [uploading, setUploading] = useState(false)
   const [importPreview, setImportPreview] = useState<ImportPreview | null>(null)
   const [importCampaignName, setImportCampaignName] = useState('')
@@ -204,6 +211,52 @@ export default function CampaignHistoryPage() {
 
     setCampaigns(summaries)
     setLoading(false)
+  }
+
+  async function saveCampaignDetails(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (!detailsEditor || savingDetails) return
+
+    const { id, original, draft } = detailsEditor
+    const description = draft.trim() || null
+    if (description === original) {
+      setDetailsEditor(null)
+      return
+    }
+
+    setSavingDetails(true)
+    setDetailsError('')
+    setMessage('')
+
+    const update = supabase
+      .from('campaigns')
+      .update({ description, updated_at: new Date().toISOString() })
+      .eq('id', id)
+
+    const { data, error } = await (original === null
+      ? update.is('description', null)
+      : update.eq('description', original)
+    )
+      .select('description, updated_at')
+      .maybeSingle()
+
+    setSavingDetails(false)
+    if (error || !data) {
+      setDetailsError(
+        error?.message || 'The details could not be saved. The campaign may have changed or you may lack editing access.',
+      )
+      return
+    }
+
+    setCampaigns((current) =>
+      current.map((campaign) =>
+        campaign.id === id
+          ? { ...campaign, description: data.description, updated_at: data.updated_at }
+          : campaign,
+      ),
+    )
+    setDetailsEditor(null)
+    setMessage('Campaign details saved.')
   }
 
   async function setCampaignArchived(campaign: SavedCampaignSummary, archived: boolean) {
@@ -737,7 +790,14 @@ export default function CampaignHistoryPage() {
               <input
                 type="checkbox"
                 checked={showArchived}
-                onChange={(event) => setShowArchived(event.target.checked)}
+                disabled={savingDetails}
+                onChange={(event) => {
+                  const checked = event.target.checked
+                  setShowArchived(checked)
+                  if (!checked && campaigns.some((campaign) => campaign.id === detailsEditor?.id && campaign.archived_at)) {
+                    setDetailsEditor(null)
+                  }
+                }}
                 className="h-4 w-4 accent-red-600"
               />
               Show archived ({archivedCount})
@@ -800,11 +860,57 @@ export default function CampaignHistoryPage() {
                           ) : null}
                         </div>
 
-                        {campaign.description ? (
-                          <p className="mt-1 max-w-md text-xs text-stone-500">
-                            {campaign.description}
-                          </p>
-                        ) : null}
+                        {detailsEditor?.id === campaign.id ? (
+                          <form onSubmit={saveCampaignDetails} className="mt-3 min-w-56 max-w-md">
+                            <label className="block text-xs font-semibold text-stone-700">
+                              Campaign details
+                              <textarea
+                                value={detailsEditor.draft}
+                                onChange={(event) =>
+                                  setDetailsEditor({ ...detailsEditor, draft: event.target.value })
+                                }
+                                disabled={savingDetails}
+                                rows={4}
+                                className="mt-1 block w-full rounded-lg border border-stone-300 bg-white px-3 py-2 text-sm font-normal focus:border-red-500 focus:outline-none"
+                              />
+                            </label>
+                            {detailsError ? (
+                              <p role="alert" className="mt-2 text-xs text-red-700">{detailsError}</p>
+                            ) : null}
+                            <div className="mt-2 flex flex-wrap gap-2">
+                              <button type="submit" disabled={savingDetails} className="rounded-lg bg-red-600 px-3 py-2 text-xs font-bold text-white hover:bg-red-700 disabled:opacity-50">
+                                {savingDetails ? 'Saving…' : 'Save details'}
+                              </button>
+                              <button type="button" disabled={savingDetails} onClick={() => setDetailsEditor(null)} className="rounded-lg border border-stone-300 px-3 py-2 text-xs font-bold text-stone-700 hover:bg-stone-100 disabled:opacity-50">
+                                Cancel
+                              </button>
+                            </div>
+                          </form>
+                        ) : (
+                          <>
+                            {campaign.description ? (
+                              <p className="mt-1 max-w-md whitespace-pre-wrap [overflow-wrap:anywhere] text-xs text-stone-500">
+                                {campaign.description}
+                              </p>
+                            ) : null}
+                            <button
+                              type="button"
+                              aria-label={`Edit details for ${campaign.name}`}
+                              disabled={detailsEditor !== null || archivingId === campaign.id}
+                              onClick={() => {
+                                setDetailsError('')
+                                setDetailsEditor({
+                                  id: campaign.id,
+                                  original: campaign.description,
+                                  draft: campaign.description ?? '',
+                                })
+                              }}
+                              className="mt-2 text-xs font-bold text-red-700 hover:underline disabled:opacity-50"
+                            >
+                              {campaign.description ? 'Edit details' : 'Add details'}
+                            </button>
+                          </>
+                        )}
                       </td>
 
                       <td className="px-4 py-3 font-bold">
@@ -847,7 +953,7 @@ export default function CampaignHistoryPage() {
                             onClick={() =>
                               setCampaignArchived(campaign, !campaign.archived_at)
                             }
-                            disabled={archivingId === campaign.id}
+                            disabled={archivingId === campaign.id || detailsEditor?.id === campaign.id}
                             className="rounded-lg border border-stone-300 bg-white px-3 py-2 text-xs font-bold text-stone-600 hover:bg-stone-100 disabled:opacity-50"
                           >
                             {archivingId === campaign.id
