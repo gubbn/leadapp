@@ -6,6 +6,7 @@ import { useParams, useRouter } from 'next/navigation'
 import { supabase } from '@/lib/supabaseClient'
 import AppHeader from '@/app/components/AppHeader'
 import CompanyLookupLinks from '@/app/components/CompanyLookupLinks'
+import ContactEmailField from '@/app/components/ContactEmailField'
 import { formatCurrency, stageFor } from '@/lib/crm'
 import { isValidEmail } from '@/lib/marketingImportHelpers'
 import {
@@ -1445,7 +1446,7 @@ function AddContactEditor({
           <EditorField label="First name" value={draft.firstName} onChange={(value) => update('firstName', value)} />
           <EditorField label="Last name" value={draft.lastName} onChange={(value) => update('lastName', value)} />
           <EditorField label="Role" value={draft.role} onChange={(value) => update('role', value)} placeholder="Managing Director" />
-          <EditorField label="Email" value={draft.email} onChange={(value) => update('email', value)} placeholder="name@company.co.uk" />
+          <ContactEmailField website={getCompanyDomain(company)} value={draft.email} onChange={(value) => update('email', value)} />
           <EditorField label="Telephone" value={draft.telephone} onChange={(value) => update('telephone', value)} />
           <label className="block sm:col-span-2">
             <span className="mb-1.5 block text-xs font-black uppercase tracking-wide text-stone-500">Notes</span>

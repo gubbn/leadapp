@@ -4,6 +4,7 @@ import { type FormEvent, useCallback, useEffect, useMemo, useState } from 'react
 import Link from 'next/link'
 import AppHeader from '@/app/components/AppHeader'
 import CompanyLookupLinks from '@/app/components/CompanyLookupLinks'
+import ContactEmailField from '@/app/components/ContactEmailField'
 import { supabase } from '@/lib/supabaseClient'
 
 type Status = 'research' | 'qualified' | 'nurture' | 'disqualified'
@@ -457,7 +458,7 @@ function QueuePanel({ company, panel, contacts, campaigns, onClose, onSaved }: {
         <div className="mt-6 grid gap-4 sm:grid-cols-2">
           {panel === 'quick' ? <>
             {!primaryContact ? <Field label="Decision-maker name"><input name="contact_name" autoFocus className="form-input" placeholder="Full name" /></Field> : null}
-            {!primaryContact?.email ? <Field label="Decision-maker email"><input name="contact_email" type="email" autoFocus={Boolean(primaryContact)} className="form-input" placeholder="name@company.co.uk" /></Field> : null}
+            {!primaryContact?.email ? <ContactEmailField label="Decision-maker email" name="contact_email" website={company.domain} autoFocus={Boolean(primaryContact)} /> : null}
             {!primaryContact?.telephone ? <Field label="Decision-maker phone"><input name="contact_telephone" type="tel" className="form-input" placeholder="Optional" /></Field> : null}
             {!company.domain ? <Field label="Website"><input name="domain" className="form-input" placeholder="company.co.uk" /></Field> : null}
             {!company.industry ? <Field label="Industry"><input name="industry" className="form-input" placeholder="Professional services" /></Field> : null}
@@ -479,7 +480,7 @@ function QueuePanel({ company, panel, contacts, campaigns, onClose, onSaved }: {
             <Field label="First name"><input required name="first_name" className="form-input" /></Field>
             <Field label="Last name"><input name="last_name" className="form-input" /></Field>
             <Field label="Role"><input name="role" className="form-input" placeholder="CEO, Finance Director…" /></Field>
-            <Field label="Email"><input name="email" type="email" className="form-input" /></Field>
+            <ContactEmailField name="email" website={company.domain} />
             <Field label="Telephone" wide><input name="telephone" className="form-input" /></Field>
           </> : null}
           {panel === 'task' ? <>
