@@ -7,7 +7,7 @@ import CompanyLookupLinks from '@/app/components/CompanyLookupLinks'
 import { supabase } from '@/lib/supabaseClient'
 
 type Status = 'research' | 'qualified' | 'nurture' | 'disqualified'
-type Panel = 'enrich' | 'contact' | 'task' | 'campaign' | 'opportunity'
+type Panel = 'quick' | 'enrich' | 'contact' | 'task' | 'campaign' | 'opportunity'
 type Company = {
   id: string
   company_name: string
@@ -193,6 +193,9 @@ export default function ProspectingPage() {
             const missing = [
               !primary && 'decision-maker',
               !primary?.email && 'email',
+              !company.domain && 'website',
+              !company.industry && 'industry',
+              !company.location && 'location',
               !company.number_of_users && 'user count',
               !company.current_it_provider && 'IT provider',
               !company.provider_renewal_date && 'renewal date',
@@ -226,6 +229,7 @@ export default function ProspectingPage() {
                   </div>
 
                   <div className="flex flex-wrap gap-2 xl:w-80 xl:justify-end">
+                    {missing.length ? <Action label="Fill missing info" onClick={() => setActive({ company, panel: 'quick' })} accent /> : null}
                     <Action label="Enrich" onClick={() => setActive({ company, panel: 'enrich' })} />
                     <Action label="+ Contact" onClick={() => setActive({ company, panel: 'contact' })} />
                     <Action label="+ Task" onClick={() => setActive({ company, panel: 'task' })} />
@@ -275,6 +279,7 @@ export default function ProspectingPage() {
 function QueuePanel({ company, panel, contacts, campaigns, onClose, onSaved }: { company: Company; panel: Panel; contacts: Contact[]; campaigns: Campaign[]; onClose: () => void; onSaved: (message: string) => Promise<void> }) {
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
+  const primaryContact = contacts.find((contact) => contact.email) ?? contacts[0]
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -297,6 +302,67 @@ function QueuePanel({ company, panel, contacts, campaigns, onClose, onSaved }: {
         prospecting_updated_at: new Date().toISOString(),
       }).eq('id', company.id)
       message = `${company.company_name} enrichment saved.`
+    } else if (panel === 'quick') {
+      const companyUpdates: Partial<Pick<Company, 'domain' | 'industry' | 'location' | 'number_of_users' | 'current_it_provider' | 'provider_renewal_date'>> & { prospecting_updated_at?: string } = {}
+      const completed: string[] = []
+      const copyText = (field: 'domain' | 'industry' | 'location' | 'current_it_provider' | 'provider_renewal_date', label: string) => {
+        const value = text(form, field)
+        if (!value) return
+        companyUpdates[field] = value
+        completed.push(label)
+      }
+
+      copyText('domain', 'website')
+      copyText('industry', 'industry')
+      copyText('location', 'location')
+      copyText('current_it_provider', 'IT provider')
+      copyText('provider_renewal_date', 'renewal date')
+
+      const users = Number(form.get('number_of_users') || 0)
+      if (users > 0) {
+        companyUpdates.number_of_users = users
+        completed.push('user count')
+      }
+
+      const fullName = text(form, 'contact_name')
+      const email = text(form, 'contact_email')
+      const telephone = text(form, 'contact_telephone')
+      const contactUpdates: Record<string, string> = {}
+      if (fullName) {
+        const name = splitContactName(fullName)
+        contactUpdates.first_name = name.firstName
+        contactUpdates.last_name = name.lastName
+        completed.push('decision-maker')
+      }
+      if (email) {
+        contactUpdates.email = email
+        completed.push('email')
+      }
+      if (telephone) contactUpdates.telephone = telephone
+
+      if (!Object.keys(companyUpdates).length && !Object.keys(contactUpdates).length) {
+        setError('Enter at least one missing detail before saving.')
+        setSaving(false)
+        return
+      }
+
+      const saves: PromiseLike<{ error: { message: string } | null }>[] = []
+      if (Object.keys(companyUpdates).length) {
+        companyUpdates.prospecting_updated_at = new Date().toISOString()
+        saves.push(supabase.from('companies').update(companyUpdates).eq('id', company.id))
+      }
+      if (Object.keys(contactUpdates).length) {
+        saves.push(
+          primaryContact
+            ? supabase.from('contacts').update(contactUpdates).eq('id', primaryContact.id)
+            : supabase.from('contacts').insert({ company_id: company.id, contact_source: 'prospecting', ...contactUpdates }),
+        )
+      }
+
+      const saveResults = await Promise.all(saves)
+      const quickSaveError = saveResults.find((saveResult) => saveResult.error)?.error ?? null
+      result = { error: quickSaveError }
+      message = `${company.company_name} company file updated: ${completed.join(', ')}.`
     } else if (panel === 'contact') {
       result = await supabase.from('contacts').insert({
         company_id: company.id,
@@ -373,6 +439,7 @@ function QueuePanel({ company, panel, contacts, campaigns, onClose, onSaved }: {
   }
 
   const title = {
+    quick: 'Fill missing info',
     enrich: 'Enrich and qualify',
     contact: 'Add decision-maker',
     task: 'Create next action',
@@ -388,6 +455,18 @@ function QueuePanel({ company, panel, contacts, campaigns, onClose, onSaved }: {
           <button type="button" onClick={onClose} className="rounded-xl border px-3 py-2 font-black text-stone-500">✕</button>
         </div>
         <div className="mt-6 grid gap-4 sm:grid-cols-2">
+          {panel === 'quick' ? <>
+            {!primaryContact ? <Field label="Decision-maker name"><input name="contact_name" autoFocus className="form-input" placeholder="Full name" /></Field> : null}
+            {!primaryContact?.email ? <Field label="Decision-maker email"><input name="contact_email" type="email" autoFocus={Boolean(primaryContact)} className="form-input" placeholder="name@company.co.uk" /></Field> : null}
+            {!primaryContact?.telephone ? <Field label="Decision-maker phone"><input name="contact_telephone" type="tel" className="form-input" placeholder="Optional" /></Field> : null}
+            {!company.domain ? <Field label="Website"><input name="domain" className="form-input" placeholder="company.co.uk" /></Field> : null}
+            {!company.industry ? <Field label="Industry"><input name="industry" className="form-input" placeholder="Professional services" /></Field> : null}
+            {!company.location ? <Field label="Location"><input name="location" className="form-input" placeholder="Town or area" /></Field> : null}
+            {!company.number_of_users ? <Field label="Number of users"><input name="number_of_users" type="number" min="1" className="form-input" /></Field> : null}
+            {!company.current_it_provider ? <Field label="Current IT provider"><input name="current_it_provider" className="form-input" /></Field> : null}
+            {!company.provider_renewal_date ? <Field label="Provider renewal date"><input name="provider_renewal_date" type="date" className="form-input" /></Field> : null}
+            <p className="rounded-xl bg-amber-50 p-3 text-xs font-bold leading-5 text-amber-800 sm:col-span-2">Only missing details are shown. Add whatever you know now; the saved values will appear in this company file.</p>
+          </> : null}
           {panel === 'enrich' ? <>
             <Field label="Number of users"><input name="number_of_users" type="number" min="0" defaultValue={company.number_of_users ?? ''} className="form-input" /></Field>
             <Field label="Current IT provider"><input name="current_it_provider" defaultValue={company.current_it_provider ?? ''} className="form-input" /></Field>
@@ -438,8 +517,9 @@ function ContactSelect({ contacts, required = false }: { contacts: Contact[]; re
 function Field({ label, wide = false, children }: { label: string; wide?: boolean; children: React.ReactNode }) {
   return <label className={wide ? 'sm:col-span-2' : ''}><span className="mb-1.5 block text-xs font-black uppercase text-stone-500">{label}</span>{children}</label>
 }
-function Action({ label, onClick, dark = false }: { label: string; onClick: () => void; dark?: boolean }) {
-  return <button type="button" onClick={onClick} className={`rounded-xl px-3 py-2 text-xs font-black ${dark ? 'bg-stone-950 text-white' : 'border border-stone-200 bg-white text-stone-700 hover:bg-stone-50'}`}>{label}</button>
+function Action({ label, onClick, dark = false, accent = false }: { label: string; onClick: () => void; dark?: boolean; accent?: boolean }) {
+  const tone = dark ? 'bg-stone-950 text-white' : accent ? 'bg-red-600 text-white hover:bg-red-700' : 'border border-stone-200 bg-white text-stone-700 hover:bg-stone-50'
+  return <button type="button" onClick={onClick} className={`rounded-xl px-3 py-2 text-xs font-black ${tone}`}>{label}</button>
 }
 function Fact({ label, value, warning = false }: { label: string; value: string; warning?: boolean }) {
   return <div className={`rounded-xl p-3 ${warning ? 'bg-amber-50' : 'bg-stone-50'}`}><p className="text-[10px] font-black uppercase text-stone-400">{label}</p><p className={`mt-1 truncate text-sm font-black ${warning ? 'text-amber-800' : 'text-stone-800'}`}>{value}</p></div>
@@ -459,4 +539,11 @@ function formatDate(value: string) {
 }
 function text(form: FormData, name: string) {
   return String(form.get(name) || '').trim() || null
+}
+function splitContactName(value: string) {
+  const parts = value.trim().split(/\s+/)
+  return {
+    firstName: parts.shift() ?? '',
+    lastName: parts.join(' '),
+  }
 }
