@@ -23,6 +23,7 @@ type FilterValue =
   | 'out_of_office'
   | 'quoted'
   | 'customer'
+  | 'not_now'
   | 'no_response'
 
 type NewContactForm = {
@@ -113,6 +114,10 @@ export default function CampaignDetailPage() {
 
     if (filter === 'customer') {
       return rows.filter((row) => getEffectiveOutcome(row) === 'customer')
+    }
+
+    if (filter === 'not_now') {
+      return rows.filter((row) => getEffectiveOutcome(row) === 'not_now')
     }
 
     return rows.filter((row) => getEmailStatus(row) === filter)
@@ -447,7 +452,7 @@ export default function CampaignDetailPage() {
     })
 
     if (success) {
-      setMessage(`Outcome updated to ${outcome.replaceAll('_', ' ')}.`)
+      setMessage(`Outcome updated to ${outcomeLabel(outcome)}.`)
     }
   }
 
@@ -922,6 +927,11 @@ export default function CampaignDetailPage() {
                     label={`Customers (${stats.customers})`}
                     onClick={() => setFilter('customer')}
                   />
+                  <FilterButton
+                    active={filter === 'not_now'}
+                    label={`Not now (${countOutcome(rows, 'not_now')})`}
+                    onClick={() => setFilter('not_now')}
+                  />
                 </div>
               </div>
             </div>
@@ -1168,6 +1178,15 @@ export default function CampaignDetailPage() {
                                     className="rounded-lg border border-green-200 bg-green-50 px-3 py-2 text-xs font-bold text-green-700 hover:bg-green-100 disabled:opacity-50"
                                   >
                                     Customer
+                                  </button>
+
+                                  <button
+                                    type="button"
+                                    onClick={() => markOutcome(row.id, 'not_now')}
+                                    disabled={bulkSaving || savingId === row.id}
+                                    className="rounded-lg border border-sky-200 bg-sky-50 px-3 py-2 text-xs font-bold text-sky-700 hover:bg-sky-100 disabled:opacity-50"
+                                  >
+                                    Not now
                                   </button>
 
                                   <button
@@ -1419,6 +1438,10 @@ function getEffectiveOutcome(row: CampaignCompanyView) {
     return 'quoted'
   }
 
+  if (campaignOutcome && campaignOutcome !== 'none') {
+    return getCampaignOutcome(row)
+  }
+
   if (contactOutcome === 'customer' || contactOutcome === 'won') {
     return 'customer'
   }
@@ -1436,6 +1459,16 @@ function getEffectiveOutcome(row: CampaignCompanyView) {
 
 function countEmailStatus(rows: CampaignCompanyView[], status: string) {
   return rows.filter((row) => getEmailStatus(row) === status).length
+}
+
+function countOutcome(rows: CampaignCompanyView[], outcome: string) {
+  return rows.filter((row) => getEffectiveOutcome(row) === outcome).length
+}
+
+function outcomeLabel(value: string) {
+  if (value === 'none') return 'No outcome'
+  if (value === 'not_now') return 'Not now'
+  return value.replaceAll('_', ' ')
 }
 
 function cleanOutcome(value: string) {
@@ -1514,6 +1547,8 @@ function StatusPill({ value }: { value: string }) {
         ? 'bg-amber-100 text-amber-800'
         : cleaned === 'bounced' || cleaned === 'negative'
           ? 'bg-red-100 text-red-800'
+          : cleaned === 'not now'
+            ? 'bg-sky-100 text-sky-800'
           : cleaned === 'out of office'
             ? 'bg-purple-100 text-purple-800'
             : cleaned === 'sent'

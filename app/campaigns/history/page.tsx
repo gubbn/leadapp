@@ -3,6 +3,8 @@
 import { ChangeEvent, type FormEvent, useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import { supabase } from '@/lib/supabaseClient'
+import { isRoleAddress, isValidEmail } from '@/lib/marketingImportHelpers'
+import { hasCustomerCompanyTag, readCompanyTags } from '@/lib/companyTags'
 import AppHeader from '@/app/components/AppHeader'
 
 type DbRow = Record<string, unknown>
@@ -21,6 +23,15 @@ type CampaignCompanyLite = {
   campaign_id: string
   email_status: string | null
   outcome: string | null
+}
+
+type CampaignCompanyDownload = {
+  company_id: string | null
+  contact_id: string | null
+  email_address_used: string | null
+  email_status: string | null
+  outcome: string | null
+  notes: string | null
 }
 
 type SavedCampaignSummary = SavedCampaign & {
@@ -62,6 +73,7 @@ export default function CampaignHistoryPage() {
   const [message, setMessage] = useState('')
   const [showArchived, setShowArchived] = useState(false)
   const [archivingId, setArchivingId] = useState<string | null>(null)
+  const [downloadingId, setDownloadingId] = useState<string | null>(null)
   const [detailsEditor, setDetailsEditor] = useState<{
     id: string
     original: string | null
@@ -257,6 +269,129 @@ export default function CampaignHistoryPage() {
     )
     setDetailsEditor(null)
     setMessage('Campaign details saved.')
+  }
+
+  async function downloadCampaign(campaign: SavedCampaignSummary) {
+    if (downloadingId) return
+
+    setDownloadingId(campaign.id)
+    setMessage('')
+    setErrorMessage('')
+
+    const { data: campaignCompanyData, error: campaignCompanyError } =
+      await supabase
+        .from('campaign_companies')
+        .select(
+          'company_id, contact_id, email_address_used, email_status, outcome, notes',
+        )
+        .eq('campaign_id', campaign.id)
+
+    if (campaignCompanyError) {
+      setErrorMessage(campaignCompanyError.message)
+      setDownloadingId(null)
+      return
+    }
+
+    const allCampaignRows = (campaignCompanyData ?? []) as CampaignCompanyDownload[]
+    const campaignRows = allCampaignRows.filter(
+      (row) => !isSuppressedCampaignDownloadRow(row),
+    )
+    const excludedCount = allCampaignRows.length - campaignRows.length
+
+    if (allCampaignRows.length === 0) {
+      setErrorMessage(`“${campaign.name}” has no saved data to download.`)
+      setDownloadingId(null)
+      return
+    }
+
+    if (campaignRows.length === 0) {
+      setErrorMessage(
+        `“${campaign.name}” has no downloadable records because every saved contact is marked bounced, DNC or Not now.`,
+      )
+      setDownloadingId(null)
+      return
+    }
+
+    const contactIds = uniqueStrings(campaignRows.map((row) => row.contact_id))
+    const companyIds = uniqueStrings(campaignRows.map((row) => row.company_id))
+
+    const [contactResult, companyResult, exportResult] = await Promise.all([
+      fetchRowsByColumn('contacts', 'id', contactIds),
+      fetchRowsByColumn('companies', 'id', companyIds),
+      fetchRowsByColumn('mail_merge_export', 'contact_id', contactIds),
+    ])
+
+    const lookupError = contactResult.error || companyResult.error || exportResult.error
+
+    if (lookupError) {
+      setErrorMessage(lookupError)
+      setDownloadingId(null)
+      return
+    }
+
+    const contactsById = rowsByStringKey(contactResult.rows, 'id')
+    const companiesById = rowsByStringKey(companyResult.rows, 'id')
+    const exportsByContactId = rowsByStringKey(exportResult.rows, 'contact_id')
+
+    const csvRows = campaignRows.map((campaignRow) => {
+      const contact = campaignRow.contact_id
+        ? contactsById.get(campaignRow.contact_id) ?? null
+        : null
+      const company = campaignRow.company_id
+        ? companiesById.get(campaignRow.company_id) ?? null
+        : null
+      const exportRow = campaignRow.contact_id
+        ? exportsByContactId.get(campaignRow.contact_id) ?? null
+        : null
+      const email =
+        campaignRow.email_address_used ||
+        getString(exportRow, ['email', 'email_address']) ||
+        getString(contact, ['email_address', 'email'])
+      const emailDetails = getDownloadEmailDetails(
+        campaignRow.email_status,
+        campaignRow.notes,
+        email,
+      )
+      const tags = readCompanyTags(company?.tags ?? exportRow?.company_tags)
+      const relationship = getDownloadRelationshipDetails(
+        campaignRow.outcome,
+        exportRow?.outcome,
+        tags,
+      )
+
+      return [
+        campaign.name,
+        getString(exportRow, ['first_name']) || getString(contact, ['first_name', 'firstname']),
+        getString(exportRow, ['last_name']) || getString(contact, ['last_name', 'lastname']),
+        getString(exportRow, ['company_name']) ||
+          getString(company, ['company_name', 'business_name', 'name']),
+        email,
+        emailDetails.status,
+        emailDetails.note,
+        relationship.status,
+        relationship.note,
+        tags.join(' '),
+        getString(exportRow, ['role']) || getString(contact, ['role', 'job_title', 'title']),
+        getString(exportRow, ['industry']) || getString(company, ['industry', 'sector']),
+        getString(exportRow, ['location']) || getString(company, ['location', 'town', 'city']),
+        getString(exportRow, ['size_band']) || getString(company, ['size_band']),
+        getCsvScalar(exportRow, ['days_since_last_contact']),
+        getCsvScalar(exportRow, ['next_contact_opportunity']),
+        campaignRow.outcome || getString(exportRow, ['outcome']),
+      ]
+    })
+
+    downloadCampaignCsv(campaign.name, csvRows)
+    setMessage(
+      `Downloaded “${campaign.name}” with ${campaignRows.length} saved contact${
+        campaignRows.length === 1 ? '' : 's'
+      }${
+        excludedCount
+          ? `; skipped ${excludedCount} bounced, DNC or Not now record${excludedCount === 1 ? '' : 's'}`
+          : ''
+      }.`,
+    )
+    setDownloadingId(null)
   }
 
   async function setCampaignArchived(campaign: SavedCampaignSummary, archived: boolean) {
@@ -950,10 +1085,25 @@ export default function CampaignHistoryPage() {
 
                           <button
                             type="button"
+                            onClick={() => downloadCampaign(campaign)}
+                            disabled={downloadingId !== null}
+                            className="rounded-lg border border-stone-300 bg-white px-3 py-2 text-xs font-bold text-stone-700 hover:bg-stone-100 disabled:cursor-not-allowed disabled:opacity-50"
+                          >
+                            {downloadingId === campaign.id
+                              ? 'Preparing download...'
+                              : 'Download CSV'}
+                          </button>
+
+                          <button
+                            type="button"
                             onClick={() =>
                               setCampaignArchived(campaign, !campaign.archived_at)
                             }
-                            disabled={archivingId === campaign.id || detailsEditor?.id === campaign.id}
+                            disabled={
+                              archivingId === campaign.id ||
+                              detailsEditor?.id === campaign.id ||
+                              downloadingId === campaign.id
+                            }
                             className="rounded-lg border border-stone-300 bg-white px-3 py-2 text-xs font-bold text-stone-600 hover:bg-stone-100 disabled:opacity-50"
                           >
                             {archivingId === campaign.id
@@ -1066,7 +1216,9 @@ function isRowWithId(value: DbRow): value is DbRow & { id: string } {
   return typeof value.id === 'string' && value.id.length > 0
 }
 
-function getString(row: DbRow, keys: string[]) {
+function getString(row: DbRow | null, keys: string[]) {
+  if (!row) return ''
+
   for (const key of keys) {
     const value = row[key]
 
@@ -1125,6 +1277,7 @@ function mapOutcome(value: string) {
   if (cleaned === 'negative') return 'negative'
   if (cleaned === 'dnc') return 'dnc'
   if (cleaned === 'no answer') return 'no_answer'
+  if (cleaned === 'not now' || cleaned === 'not this time') return 'not_now'
 
   return 'none'
 }
@@ -1147,6 +1300,169 @@ function chunkArray<T>(items: T[], chunkSize: number) {
   }
 
   return chunks
+}
+
+const campaignDownloadHeaders = [
+  'Campaign Name',
+  'First Name',
+  'Last Name',
+  'Company Name',
+  'Email Address',
+  'Email Status',
+  'Email Note',
+  'Relationship Status',
+  'Relationship Note',
+  'Company Tags',
+  'Role',
+  'Industry',
+  'Location',
+  'Size Band',
+  'Days Since Last Contact',
+  'Next Contact Opportunity',
+  'Outcome',
+]
+
+async function fetchRowsByColumn(table: string, column: string, ids: string[]) {
+  const rows: DbRow[] = []
+
+  for (const chunk of chunkArray(ids, 500)) {
+    const { data, error } = await supabase
+      .from(table)
+      .select('*')
+      .in(column, chunk)
+
+    if (error) {
+      return { rows, error: error.message }
+    }
+
+    rows.push(...((data ?? []) as DbRow[]))
+  }
+
+  return { rows, error: '' }
+}
+
+function uniqueStrings(values: Array<string | null>) {
+  return Array.from(
+    new Set(values.filter((value): value is string => Boolean(value))),
+  )
+}
+
+function rowsByStringKey(rows: DbRow[], key: string) {
+  const lookup = new Map<string, DbRow>()
+
+  rows.forEach((row) => {
+    const value = getString(row, [key])
+    if (value && !lookup.has(value)) lookup.set(value, row)
+  })
+
+  return lookup
+}
+
+function getDownloadEmailDetails(
+  savedStatus: string | null,
+  savedNote: string | null,
+  email: string,
+) {
+  if (savedStatus && savedStatus !== 'selected') {
+    return { status: savedStatus, note: savedNote || '' }
+  }
+
+  if (!email) {
+    return { status: 'missing', note: savedNote || 'Email address is missing.' }
+  }
+
+  if (!isValidEmail(email)) {
+    return {
+      status: 'invalid_format',
+      note: savedNote || 'Email address format is invalid.',
+    }
+  }
+
+  if (isRoleAddress(email)) {
+    return {
+      status: 'risky',
+      note: savedNote || 'Shared address such as info@, sales@ or admin@.',
+    }
+  }
+
+  return {
+    status: 'deliverable',
+    note: savedNote || 'Email format looks usable.',
+  }
+}
+
+function isSuppressedCampaignDownloadRow(row: CampaignCompanyDownload) {
+  return (
+    row.email_status?.trim().toLowerCase() === 'bounced' ||
+    row.outcome?.trim().toLowerCase() === 'dnc' ||
+    row.outcome?.trim().toLowerCase() === 'not_now'
+  )
+}
+
+function getDownloadRelationshipDetails(
+  savedOutcome: string | null,
+  exportOutcome: unknown,
+  tags: string[],
+) {
+  const outcome = savedOutcome && savedOutcome !== 'none'
+    ? savedOutcome
+    : typeof exportOutcome === 'string'
+      ? exportOutcome.trim().toLowerCase()
+      : ''
+
+  if (hasCustomerCompanyTag(tags) || outcome === 'customer' || outcome === 'won') {
+    return { status: 'customer', note: 'Marked as a customer.' }
+  }
+
+  if (['quoted', 'quote sent', 'negotiating'].includes(outcome)) {
+    return { status: 'quoted', note: 'Quoted or active sales lead.' }
+  }
+
+  return { status: 'prospect', note: 'No customer/quote outcome.' }
+}
+
+function getCsvScalar(row: DbRow | null, keys: string[]) {
+  if (!row) return ''
+
+  for (const key of keys) {
+    const value = row[key]
+    if (typeof value === 'string' || typeof value === 'number') return value
+  }
+
+  return ''
+}
+
+function downloadCampaignCsv(campaignName: string, rows: unknown[][]) {
+  const csv = [campaignDownloadHeaders, ...rows]
+    .map((row) => row.map(csvEscape).join(','))
+    .join('\n')
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' })
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+
+  link.href = url
+  link.download = `${slugifyCampaignName(campaignName)}-${new Date()
+    .toISOString()
+    .slice(0, 10)}.csv`
+  link.click()
+  URL.revokeObjectURL(url)
+}
+
+function slugifyCampaignName(value: string) {
+  return (
+    value
+      .toLowerCase()
+      .trim()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '') || 'campaign'
+  )
+}
+
+function csvEscape(value: unknown) {
+  if (value === null || value === undefined) return ''
+
+  const text = String(value)
+  return /[",\n\r]/.test(text) ? `"${text.replaceAll('"', '""')}"` : text
 }
 
 function SmallStat({ label, value }: { label: string; value: number }) {

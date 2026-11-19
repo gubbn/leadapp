@@ -1,6 +1,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 
 export const customerCompanyTags = ['#customer'] as const
+export const internalItTeamCompanyTag = '#internal-it'
 const customerTagCleanupKey = 'company-customer-tag-cleanup-v1'
 
 export function normaliseCompanyTag(value: string) {
@@ -53,6 +54,20 @@ export function hasAnyCompanyTag(value: unknown, selectedTags: string[]) {
   if (!selectedTags.length) return false
   const tags = new Set(readCompanyTags(value))
   return selectedTags.some((tag) => tags.has(normaliseCompanyTag(tag)))
+}
+
+export function hasInternalItTeamTag(value: unknown) {
+  return readCompanyTags(value).includes(internalItTeamCompanyTag)
+}
+
+export function setInternalItTeamTag(value: unknown, enabled: boolean) {
+  const tags = readCompanyTags(value).filter(
+    (tag) => tag !== internalItTeamCompanyTag,
+  )
+
+  return readCompanyTags(
+    enabled ? [...tags, internalItTeamCompanyTag] : tags,
+  )
 }
 
 export async function removeExistingCustomerTagsOnce(client: SupabaseClient) {

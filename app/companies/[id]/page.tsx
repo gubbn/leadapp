@@ -12,8 +12,10 @@ import { isValidEmail } from '@/lib/marketingImportHelpers'
 import {
   companyTagsToInput,
   hasCustomerCompanyTag,
+  hasInternalItTeamTag,
   parseCompanyTags,
   readCompanyTags,
+  setInternalItTeamTag,
 } from '@/lib/companyTags'
 import {
   buildMeetingCounts,
@@ -408,6 +410,7 @@ export default function CompanyDetailPage() {
                   <DetailItem label="Domain" value={getCompanyDomain(company)} isLink />
                   <DetailItem label="Last contact" value={formatDate(getCompanyLastContactDate(company))} />
                   <DetailItem label="Created" value={formatDate(getCompanyCreatedAt(company))} />
+                  <DetailItem label="Internal IT team" value={hasInternalItTeamTag(company.tags) ? 'Yes' : 'No'} />
                   <DetailItem label="DNC" value={getCompanyDnc(company) ? 'Yes' : 'No'} />
                 </div>
 
@@ -1213,6 +1216,7 @@ function CompanyDetailsEditor({
     domain: getCompanyDomain(company),
     lastContactDate: toDateInput(getCompanyLastContactDate(company)),
     tags: companyTagsToInput(company.tags),
+    internalItTeam: hasInternalItTeamTag(company.tags),
     relationshipStatus: (hasCustomerCompanyTag(company.tags) ? 'customer' : getManualRelationshipStatus(company) ?? '') as RelationshipStatus | '',
     dnc: getCompanyDnc(company),
   })
@@ -1236,7 +1240,10 @@ function CompanyDetailsEditor({
       size_band: draft.sizeBand.trim() || null,
       domain: draft.domain.trim() || null,
       last_contact_date: draft.lastContactDate || null,
-      tags: parseCompanyTags(draft.tags).filter((tag) => tag !== '#customer'),
+      tags: setInternalItTeamTag(
+        parseCompanyTags(draft.tags).filter((tag) => tag !== '#customer'),
+        draft.internalItTeam,
+      ),
       relationship_status: draft.relationshipStatus === 'no-answer' ? 'no_answer' : draft.relationshipStatus || null,
       dnc: draft.dnc,
       updated_at: new Date().toISOString(),
@@ -1330,6 +1337,7 @@ function CompanyDetailsEditor({
             <input type="date" value={draft.lastContactDate} onChange={(event) => update('lastContactDate', event.target.value)} className="w-full rounded-xl border border-stone-300 px-3 py-2.5 text-sm font-semibold outline-none focus:border-red-500 focus:ring-4 focus:ring-red-50" />
           </label>
           <EditorCheckbox checked={draft.dnc} onChange={(value) => update('dnc', value)} title="Do not contact" description="Exclude this company from outreach." />
+          <EditorCheckbox checked={draft.internalItTeam} onChange={(value) => update('internalItTeam', value)} title="Internal IT team" description="This company has its own internal IT staff." />
           <EditorCheckbox checked={logActivity} onChange={setLogActivity} title="Add to recent activity" description="Record a summary of the fields changed." highlighted />
         </div>
 
@@ -2066,11 +2074,15 @@ function companyChangeSummary(
     domain: string
     lastContactDate: string
     tags: string
+    internalItTeam: boolean
     relationshipStatus: RelationshipStatus | ''
     dnc: boolean
   },
 ) {
-  const effectiveTags = parseCompanyTags(draft.tags).filter((tag) => tag !== '#customer')
+  const effectiveTags = setInternalItTeamTag(
+    parseCompanyTags(draft.tags).filter((tag) => tag !== '#customer'),
+    draft.internalItTeam,
+  )
   const fields: Array<[string, string | boolean, string | boolean]> = [
     ['Name', getCompanyName(company), draft.companyName.trim()],
     ['Industry', getCompanyIndustry(company), draft.industry.trim()],
@@ -2078,6 +2090,7 @@ function companyChangeSummary(
     ['Size band', getCompanySizeBand(company), draft.sizeBand.trim()],
     ['Domain', getCompanyDomain(company), draft.domain.trim()],
     ['Tags', companyTagsToInput(company.tags), companyTagsToInput(effectiveTags)],
+    ['Internal IT team', hasInternalItTeamTag(company.tags), draft.internalItTeam],
     ['Relationship', getManualRelationshipStatus(company) ?? 'prospect', draft.relationshipStatus],
     ['Last contact', toDateInput(getCompanyLastContactDate(company)), draft.lastContactDate],
     ['DNC', getCompanyDnc(company), draft.dnc],

@@ -6,6 +6,11 @@ import AppHeader from '@/app/components/AppHeader'
 import CompanyLookupLinks from '@/app/components/CompanyLookupLinks'
 import ContactEmailField from '@/app/components/ContactEmailField'
 import { supabase } from '@/lib/supabaseClient'
+import {
+  hasInternalItTeamTag,
+  readCompanyTags,
+  setInternalItTeamTag,
+} from '@/lib/companyTags'
 
 type Status = 'research' | 'qualified' | 'nurture' | 'disqualified'
 type Panel = 'quick' | 'enrich' | 'contact' | 'task' | 'campaign' | 'opportunity'
@@ -20,6 +25,7 @@ type Company = {
   provider_renewal_date: string | null
   lead_source: string | null
   account_notes: string | null
+  tags: string[] | null
   prospecting_status: Status
   qualification_reason: string | null
   research_notes: string | null
@@ -60,7 +66,7 @@ export default function ProspectingPage() {
     const [companyResult, contactResult, campaignResult, dealResult] = await Promise.all([
       supabase
         .from('companies')
-        .select('id,company_name,domain,location,industry,number_of_users,current_it_provider,provider_renewal_date,lead_source,account_notes,prospecting_status,qualification_reason,research_notes,prospecting_updated_at')
+        .select('id,company_name,domain,location,industry,number_of_users,current_it_provider,provider_renewal_date,lead_source,account_notes,tags,prospecting_status,qualification_reason,research_notes,prospecting_updated_at')
         .order('prospecting_updated_at', { ascending: false }),
       supabase.from('contacts').select('id,company_id,first_name,last_name,role,email,telephone'),
       supabase.from('campaigns').select('id,name,campaign_name').order('created_at', { ascending: false }),
@@ -118,9 +124,10 @@ export default function ProspectingPage() {
   async function changeStatus(company: Company, status: Status) {
     setError('')
     const updatedAt = new Date().toISOString()
+    const tags = tagsForProspectingStatus(company.tags, status)
     const { error: saveError } = await supabase
       .from('companies')
-      .update({ prospecting_status: status, prospecting_updated_at: updatedAt })
+      .update({ prospecting_status: status, prospecting_updated_at: updatedAt, tags })
       .eq('id', company.id)
     if (saveError) {
       setError(saveError.message)
@@ -134,7 +141,7 @@ export default function ProspectingPage() {
     setCompanies((current) =>
       current.map((item) =>
         item.id === company.id
-          ? { ...item, prospecting_status: status, prospecting_updated_at: updatedAt }
+          ? { ...item, tags, prospecting_status: status, prospecting_updated_at: updatedAt }
           : item,
       ),
     )
@@ -207,6 +214,11 @@ export default function ProspectingPage() {
                   <div className="min-w-0 xl:w-72">
                     <div className="flex flex-wrap items-center gap-2">
                       <StatusPill status={company.prospecting_status} />
+                      {prospectingTag(company.prospecting_status) ? (
+                        <span className="rounded-full bg-stone-100 px-2 py-1 text-[10px] font-black text-stone-600">
+                          {prospectingTag(company.prospecting_status)}
+                        </span>
+                      ) : null}
                       {dealCompanyIds.has(company.id) ? <span className="rounded-full bg-blue-100 px-2 py-1 text-[10px] font-black uppercase text-blue-700">Opportunity exists</span> : null}
                     </div>
                     <Link href={`/companies/${company.id}`} className="mt-3 block text-xl font-black text-stone-950 hover:text-red-600">
@@ -300,6 +312,10 @@ function QueuePanel({ company, panel, contacts, campaigns, onClose, onSaved }: {
         lead_source: text(form, 'lead_source'),
         qualification_reason: text(form, 'qualification_reason'),
         research_notes: text(form, 'research_notes'),
+        tags: setInternalItTeamTag(
+          company.tags,
+          form.get('has_internal_it_team') === 'on',
+        ),
         prospecting_updated_at: new Date().toISOString(),
       }).eq('id', company.id)
       message = `${company.company_name} enrichment saved.`
@@ -475,6 +491,18 @@ function QueuePanel({ company, panel, contacts, campaigns, onClose, onSaved }: {
             <Field label="Lead source"><input name="lead_source" defaultValue={company.lead_source ?? ''} className="form-input" /></Field>
             <Field label="Qualification reason" wide><input name="qualification_reason" defaultValue={company.qualification_reason ?? ''} className="form-input" placeholder="Why is this a fit, nurture or disqualification?" /></Field>
             <Field label="Research notes" wide><textarea name="research_notes" defaultValue={company.research_notes ?? ''} rows={4} className="form-input" /></Field>
+            <label className="flex items-center gap-3 rounded-xl border border-stone-200 bg-stone-50 p-4 sm:col-span-2">
+              <input
+                type="checkbox"
+                name="has_internal_it_team"
+                defaultChecked={hasInternalItTeamTag(company.tags)}
+                className="h-5 w-5 accent-red-600"
+              />
+              <span>
+                <span className="block text-sm font-black text-stone-800">Internal IT team</span>
+                <span className="block text-xs text-stone-500">This company has its own internal IT staff.</span>
+              </span>
+            </label>
           </> : null}
           {panel === 'contact' ? <>
             <Field label="First name"><input required name="first_name" className="form-input" /></Field>
@@ -547,4 +575,19 @@ function splitContactName(value: string) {
     firstName: parts.shift() ?? '',
     lastName: parts.join(' '),
   }
+}
+
+function prospectingTag(status: Status) {
+  if (status === 'qualified') return '#qualified'
+  if (status === 'disqualified') return '#disqualified'
+  return ''
+}
+
+function tagsForProspectingStatus(value: unknown, status: Status) {
+  const tags = readCompanyTags(value).filter(
+    (tag) => tag !== '#qualified' && tag !== '#disqualified',
+  )
+  const statusTag = prospectingTag(status)
+
+  return readCompanyTags(statusTag ? [...tags, statusTag] : tags)
 }
