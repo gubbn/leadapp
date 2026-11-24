@@ -1,6 +1,7 @@
 'use client'
 
 import Link from 'next/link'
+import Image from 'next/image'
 import { usePathname } from 'next/navigation'
 import { useEffect, useRef, useState } from 'react'
 import type { LucideIcon } from 'lucide-react'
@@ -157,8 +158,8 @@ export default function AppHeader() {
     <header ref={headerRef} className="sticky top-0 z-50 border-b border-white/10 bg-stone-950 text-white shadow-[0_8px_30px_rgba(15,18,20,0.14)]">
       <div className="mx-auto flex h-[4.5rem] max-w-[96rem] items-center gap-4 px-4 sm:px-6">
         <Link href="/" className="group flex shrink-0 items-center gap-3 rounded-xl focus:outline-none focus:ring-2 focus:ring-red-400">
-          <span className="grid h-9 w-9 place-items-center rounded-[0.7rem] bg-red-600 shadow-[0_8px_20px_rgba(226,61,40,0.28)] transition group-hover:-rotate-3 group-hover:scale-105">
-            <span className="text-sm font-black tracking-[-0.08em]">FI</span>
+          <span className="grid h-9 w-9 place-items-center rounded-[0.7rem] bg-stone-900 ring-1 ring-white/10 shadow-[0_8px_20px_rgba(226,61,40,0.2)] transition group-hover:-rotate-3 group-hover:scale-105">
+            <Image src="/compass-screen-logo.svg" alt="" width={36} height={36} priority />
           </span>
           <span className="hidden sm:block">
             <span className="block text-[0.95rem] font-black leading-none tracking-[-0.02em]">Fixing IT</span>

@@ -1,6 +1,7 @@
 'use client'
 
 import { Suspense, useState } from 'react'
+import Image from 'next/image'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { ArrowRight, CheckCircle2, LockKeyhole, Radar, ShieldCheck } from 'lucide-react'
 import { safeNextPath } from '@/lib/authPolicy'
@@ -65,7 +66,9 @@ function LoginContent({ ssoEnabled }: { ssoEnabled: boolean }) {
         </div>
 
         <div className="relative flex items-center gap-3">
-          <span className="grid h-11 w-11 place-items-center rounded-xl bg-red-600 text-sm font-black tracking-[-0.08em] shadow-[0_12px_35px_rgba(221,63,39,0.28)]">FI</span>
+          <span className="grid h-11 w-11 place-items-center rounded-xl bg-stone-900 ring-1 ring-white/10 shadow-[0_12px_35px_rgba(221,63,39,0.22)]">
+            <Image src="/compass-screen-logo.svg" alt="" width={44} height={44} priority />
+          </span>
           <div>
             <p className="text-base font-black">Fixing IT</p>
             <p className="mt-0.5 text-[0.62rem] font-bold uppercase tracking-[0.22em] text-stone-400">Compass</p>
@@ -94,7 +97,9 @@ function LoginContent({ ssoEnabled }: { ssoEnabled: boolean }) {
       <section className="relative flex min-h-screen items-center justify-center bg-stone-50 px-5 py-10 text-stone-950 sm:px-10">
         <div className="w-full max-w-md">
           <div className="mb-10 flex items-center gap-3 lg:hidden">
-            <span className="grid h-10 w-10 place-items-center rounded-xl bg-red-600 text-sm font-black tracking-[-0.08em] text-white">FI</span>
+            <span className="grid h-10 w-10 place-items-center rounded-xl bg-stone-950 ring-1 ring-stone-800">
+              <Image src="/compass-screen-logo.svg" alt="" width={40} height={40} priority />
+            </span>
             <div>
               <p className="font-black">Fixing IT</p>
               <p className="text-[0.6rem] font-bold uppercase tracking-[0.2em] text-stone-500">Compass</p>

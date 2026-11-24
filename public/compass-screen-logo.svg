@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-labelledby="title description">
+  <title id="title">Compass screen logo</title>
+  <desc id="description">A red compass needle inside a white computer screen and compass outline.</desc>
+
+  <g fill="none" stroke="#ffffff" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="24" y="28" width="208" height="156" rx="24" stroke-width="14" />
+    <path d="M104 184v22M152 184v22M84 220h88" stroke-width="14" />
+
+    <circle cx="128" cy="104" r="48" stroke-width="10" />
+    <path d="M128 45v16M128 147v16M69 104h16M171 104h16" stroke-width="10" />
+  </g>
+
+  <path
+    d="m161.5 70.5-23.2 43.2-43.8 23.8 23.2-43.2 43.8-23.8Z"
+    fill="#dc3f27"
+    stroke="#ffffff"
+    stroke-linejoin="round"
+    stroke-width="6"
+  />
+  <circle cx="128" cy="104" r="8" fill="#ffffff" />
+</svg>
