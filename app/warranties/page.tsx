@@ -2,8 +2,10 @@
 
 import Papa from 'papaparse'
 import { readSheet } from 'read-excel-file/browser'
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useSearchParams } from 'next/navigation'
+import { Suspense, useCallback, useEffect, useMemo, useState } from 'react'
 import AppHeader from '@/app/components/AppHeader'
+import { formatShortDate } from '@/lib/crm'
 import { supabase } from '@/lib/supabaseClient'
 import {
   buildWarrantyImportRows,
@@ -12,12 +14,19 @@ import {
   detectWarrantyColumns,
   isInWarrantyWindow,
   makeUniqueHeaders,
+  saveWarrantyImportRows,
   WARRANTY_FIELDS,
+  warrantyToday,
   type WarrantyColumnMapping,
+  type WarrantyCorrections,
+  type WarrantyImportRow,
   type WarrantyImportValue,
   type WarrantySourceRow,
+  type WarrantyValues,
   type WarrantyWindow,
 } from '@/lib/warrantyImportHelpers'
+import ImportPanel from './ImportPanel'
+import { AddWarrantyForm } from './WarrantyForm'
 
 type WarrantyStatus = 'not_started' | 'contacted' | 'renewed' | 'not_renewing'
 
@@ -32,8 +41,6 @@ type Warranty = {
   owner_email: string | null
   notes: string | null
   action_status: WarrantyStatus
-  source_file: string | null
-  last_imported_at: string
 }
 
 const EMPTY_MAPPING = Object.fromEntries(
@@ -58,20 +65,40 @@ const STATUS_LABELS: Record<WarrantyStatus, string> = {
 }
 
 export default function WarrantiesPage() {
+  return (
+    <main className="min-h-screen bg-stone-100 text-stone-900">
+      <AppHeader />
+      <Suspense fallback={<p className="p-8 text-center text-sm text-stone-500">Loading warranty dates...</p>}>
+        <WarrantiesRoute />
+      </Suspense>
+    </main>
+  )
+}
+
+function WarrantiesRoute() {
+  const initialWindow = useSearchParams().get('window') === 'week' ? 'week' : '90'
+  return <WarrantiesWorkspace key={initialWindow} initialWindow={initialWindow} />
+}
+
+function WarrantiesWorkspace({ initialWindow }: { initialWindow: WarrantyWindow }) {
   const [warranties, setWarranties] = useState<Warranty[]>([])
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState('')
   const [setupRequired, setSetupRequired] = useState(false)
-  const [importOpen, setImportOpen] = useState(false)
+  const [panel, setPanel] = useState<'add' | 'import' | null>(null)
+  const [warrantyAdded, setWarrantyAdded] = useState(false)
   const [fileName, setFileName] = useState('')
   const [columns, setColumns] = useState<string[]>([])
   const [sourceRows, setSourceRows] = useState<WarrantySourceRow[]>([])
   const [mapping, setMapping] = useState<WarrantyColumnMapping>(EMPTY_MAPPING)
+  const [corrections, setCorrections] = useState<WarrantyCorrections>({})
+  const [importedRows, setImportedRows] = useState<Set<number>>(() => new Set())
+  const [rowErrors, setRowErrors] = useState<Record<number, string>>({})
   const [readingFile, setReadingFile] = useState(false)
   const [importing, setImporting] = useState(false)
   const [importMessage, setImportMessage] = useState('')
   const [importError, setImportError] = useState('')
-  const [windowFilter, setWindowFilter] = useState<WarrantyWindow>('90')
+  const [windowFilter, setWindowFilter] = useState<WarrantyWindow>(initialWindow)
   const [statusFilter, setStatusFilter] = useState<'all' | WarrantyStatus>('all')
   const [search, setSearch] = useState('')
   const [savingStatusId, setSavingStatusId] = useState('')
@@ -81,22 +108,28 @@ export default function WarrantiesPage() {
     setLoadError('')
     setSetupRequired(false)
 
-    const { data, error } = await supabase
-      .from('warranties')
-      .select(
-        'id,customer_name,product_name,warranty_type,serial_number,expiry_date,owner_name,owner_email,notes,action_status,source_file,last_imported_at',
-      )
-      .order('expiry_date', { ascending: true })
+    const rows: Warranty[] = []
+    const pageSize = 500
+    for (let offset = 0; ; offset += pageSize) {
+      const { data, error } = await supabase
+        .from('warranties')
+        .select('id,customer_name,product_name,warranty_type,serial_number,expiry_date,owner_name,owner_email,notes,action_status')
+        .order('expiry_date')
+        .order('id')
+        .range(offset, offset + pageSize - 1)
 
-    if (error) {
-      setLoadError(error.message)
-      setSetupRequired(
-        error.code === '42P01' ||
-          error.message.toLowerCase().includes('warranties'),
-      )
-    } else {
-      setWarranties((data ?? []) as Warranty[])
+      if (error) {
+        setLoadError(error.message)
+        setSetupRequired(isMissingWarrantiesTable(error.code))
+        setLoading(false)
+        return
+      }
+
+      rows.push(...(data as Warranty[]))
+      if (data.length < pageSize) break
     }
+
+    setWarranties(rows)
     setLoading(false)
   }, [])
 
@@ -105,25 +138,22 @@ export default function WarrantiesPage() {
   }, [loadWarranties])
 
   const previewRows = useMemo(
-    () => buildWarrantyImportRows(sourceRows, mapping, fileName),
-    [fileName, mapping, sourceRows],
+    () => buildWarrantyImportRows(sourceRows, mapping, fileName, corrections),
+    [corrections, fileName, mapping, sourceRows],
   )
-  const validRows = useMemo(
-    () => dedupeWarrantyRows(previewRows.filter((row) => row.valid)),
-    [previewRows],
+  const pendingRows = useMemo(
+    () => previewRows.filter(({ rowNumber }) => !importedRows.has(rowNumber)),
+    [importedRows, previewRows],
   )
-  const invalidCount = previewRows.filter((row) => !row.valid).length
-  const duplicateCount =
-    previewRows.filter((row) => row.valid).length - validRows.length
-  const requiredMappingComplete = WARRANTY_FIELDS.filter(
-    (field) => field.required,
-  ).every((field) => mapping[field.key])
+  const failedRows = pendingRows.filter((row) => row.issues.length || rowErrors[row.rowNumber])
+  const validRows = pendingRows.filter((row) => !row.issues.length)
+  const uniqueRows = dedupeWarrantyRows(validRows)
+  const duplicateCount = validRows.length - uniqueRows.length
 
+  const today = warrantyToday()
   const counts = useMemo(() => {
     const count = (window: WarrantyWindow) =>
-      warranties.filter((warranty) =>
-        isInWarrantyWindow(warranty.expiry_date, window),
-      ).length
+      warranties.filter((warranty) => isInWarrantyWindow(warranty.expiry_date, window, today)).length
     return {
       today: count('today'),
       week: count('week'),
@@ -131,12 +161,12 @@ export default function WarrantiesPage() {
       60: count('60'),
       90: count('90'),
     }
-  }, [warranties])
+  }, [today, warranties])
 
   const visibleWarranties = useMemo(() => {
     const query = search.trim().toLowerCase()
     return warranties.filter((warranty) => {
-      if (!isInWarrantyWindow(warranty.expiry_date, windowFilter)) return false
+      if (!isInWarrantyWindow(warranty.expiry_date, windowFilter, today)) return false
       if (statusFilter !== 'all' && warranty.action_status !== statusFilter) {
         return false
       }
@@ -150,13 +180,16 @@ export default function WarrantiesPage() {
         warranty.owner_email,
       ].some((value) => value?.toLowerCase().includes(query))
     })
-  }, [search, statusFilter, warranties, windowFilter])
+  }, [search, statusFilter, today, warranties, windowFilter])
 
   async function handleFile(file: File) {
     setReadingFile(true)
     setFileName(file.name)
     setSourceRows([])
     setColumns([])
+    setCorrections({})
+    setImportedRows(new Set())
+    setRowErrors({})
     setImportMessage('')
     setImportError('')
 
@@ -190,64 +223,57 @@ export default function WarrantiesPage() {
     }
   }
 
+  function correctRow(row: WarrantyImportRow, values: WarrantyValues) {
+    const changed = WARRANTY_FIELDS.filter(({ key }) => values[key] !== row.values[key])
+    if (!changed.length) return
+    setCorrections((current) => ({
+      ...current,
+      [row.rowNumber]: {
+        ...current[row.rowNumber],
+        ...Object.fromEntries(changed.map(({ key }) => [key, values[key]])),
+      },
+    }))
+    setRowErrors((current) => ({ ...current, [row.rowNumber]: '' }))
+  }
+
   async function importRows() {
-    if (!requiredMappingComplete) {
-      setImportError('Map the three required columns before importing.')
-      return
-    }
-    if (!validRows.length) {
-      setImportError('There are no valid rows to import.')
-      return
-    }
+    if (importing || !uniqueRows.length) return
 
     setImporting(true)
     setImportError('')
     setImportMessage('')
     const importedAt = new Date().toISOString()
 
-    for (let index = 0; index < validRows.length; index += 500) {
-      const chunk = validRows.slice(index, index + 500).map((row) => ({
-        source_key: row.source_key,
-        sharepoint_id: row.sharepoint_id,
-        customer_name: row.customer_name,
-        product_name: row.product_name,
-        warranty_type: row.warranty_type,
-        serial_number: row.serial_number,
-        expiry_date: row.expiry_date,
-        owner_name: row.owner_name,
-        owner_email: row.owner_email,
-        notes: row.notes,
-        source_file: row.source_file,
-        last_imported_at: importedAt,
-        updated_at: importedAt,
-      }))
-
-      const { error } = await supabase
-        .from('warranties')
-        .upsert(chunk, { onConflict: 'source_key' })
+    try {
+      const { savedKeys, rowErrors: failed, error } = await saveWarrantyImportRows(uniqueRows, async (rows) => {
+        const { error } = await supabase.from('warranties').upsert(
+          rows.map((row) => ({ ...row, last_imported_at: importedAt, updated_at: importedAt })),
+          { onConflict: 'source_key' },
+        )
+        return error
+      })
+      const savedRows = validRows.filter(({ data }) => savedKeys.has(data.source_key))
+      setImportedRows((current) => new Set([...current, ...savedRows.map(({ rowNumber }) => rowNumber)]))
+      setRowErrors((current) => ({ ...current, ...failed }))
 
       if (error) {
         setImportError(error.message)
-        setSetupRequired(
-          error.code === '42P01' ||
-            error.message.toLowerCase().includes('warranties'),
-        )
-        setImporting(false)
-        return
+        setSetupRequired(isMissingWarrantiesTable(error.code))
       }
-    }
 
-    const skipped = invalidCount
-      ? ` ${invalidCount} invalid ${invalidCount === 1 ? 'row was' : 'rows were'} skipped.`
-      : ''
-    const duplicates = duplicateCount
-      ? ` ${duplicateCount} duplicate ${duplicateCount === 1 ? 'row was' : 'rows were'} merged.`
-      : ''
-    setImportMessage(
-      `Imported or updated ${validRows.length} warranties.${skipped}${duplicates}`,
-    )
-    setImporting(false)
-    await loadWarranties()
+      if (savedKeys.size) {
+        const merged = savedRows.length - savedKeys.size
+        setImportMessage(
+          `Imported or updated ${savedKeys.size} ${savedKeys.size === 1 ? 'warranty' : 'warranties'}.` +
+          (merged ? ` ${merged} duplicate ${merged === 1 ? 'row was' : 'rows were'} merged.` : ''),
+        )
+        await loadWarranties()
+      }
+    } catch (error) {
+      setImportError(error instanceof Error ? error.message : 'The import could not be completed.')
+    } finally {
+      setImporting(false)
+    }
   }
 
   async function updateStatus(warranty: Warranty, actionStatus: WarrantyStatus) {
@@ -274,9 +300,7 @@ export default function WarrantiesPage() {
   }
 
   return (
-    <main className="min-h-screen bg-stone-100 text-stone-900">
-      <AppHeader />
-
+    <>
       <section className="border-b border-stone-200 bg-gradient-to-br from-white via-stone-50 to-red-50">
         <div className="mx-auto flex max-w-7xl flex-col gap-6 px-4 py-9 sm:flex-row sm:items-end sm:justify-between">
           <div className="max-w-3xl">
@@ -291,34 +315,68 @@ export default function WarrantiesPage() {
               Repeat imports update matching SharePoint items.
             </p>
           </div>
-          <button
-            type="button"
-            onClick={() => setImportOpen((open) => !open)}
-            className="shrink-0 rounded-xl bg-red-600 px-5 py-3 text-sm font-black text-white shadow-sm transition hover:bg-red-700"
-          >
-            {importOpen ? 'Close import' : 'Import SharePoint export'}
-          </button>
+          <div className="flex shrink-0 flex-wrap gap-2">
+            <button
+              type="button"
+              aria-expanded={panel === 'add'}
+              onClick={() => {
+                setWarrantyAdded(false)
+                setPanel('add')
+              }}
+              disabled={importing || panel === 'add'}
+              className="rounded-xl bg-red-600 px-5 py-3 text-sm font-black text-white shadow-sm hover:bg-red-700 disabled:opacity-60"
+            >
+              Add warranty
+            </button>
+            <button
+              type="button"
+              aria-expanded={panel === 'import'}
+              onClick={() => setPanel(panel === 'import' ? null : 'import')}
+              disabled={importing || panel === 'add'}
+              className="rounded-xl border border-stone-300 bg-white px-5 py-3 text-sm font-black text-stone-800 shadow-sm hover:bg-stone-100 disabled:opacity-60"
+            >
+              {panel === 'import' ? 'Close import' : 'Import SharePoint export'}
+            </button>
+          </div>
         </div>
       </section>
 
       <section className="mx-auto max-w-7xl px-4 py-8">
         {setupRequired ? <SetupNotice /> : null}
 
-        {importOpen ? (
+        {panel === 'add' ? (
+          <AddWarrantyForm
+            onCancel={() => setPanel(null)}
+            onSaved={() => {
+              setWarrantyAdded(true)
+              setPanel(null)
+              void loadWarranties()
+            }}
+          />
+        ) : null}
+        {warrantyAdded ? (
+          <p role="status" className="mb-6 rounded-xl bg-emerald-50 p-4 text-sm font-semibold text-emerald-700">
+            Warranty added.
+          </p>
+        ) : null}
+
+        {panel === 'import' ? (
           <ImportPanel
             columns={columns}
             duplicateCount={duplicateCount}
+            failedRows={failedRows}
             fileName={fileName}
+            importedRows={importedRows}
             importing={importing}
             importError={importError}
             importMessage={importMessage}
-            invalidCount={invalidCount}
             mapping={mapping}
             previewRows={previewRows}
             readingFile={readingFile}
-            requiredMappingComplete={requiredMappingComplete}
-            sourceRowCount={sourceRows.length}
-            validCount={validRows.length}
+            rowErrors={rowErrors}
+            readyCount={uniqueRows.filter(({ rowNumber }) => !rowErrors[rowNumber]).length}
+            validCount={uniqueRows.length}
+            onCorrect={correctRow}
             onFile={(file) => void handleFile(file)}
             onImport={() => void importRows()}
             onMappingChange={(key, column) =>
@@ -415,10 +473,7 @@ export default function WarrantiesPage() {
               Loading warranty dates...
             </div>
           ) : visibleWarranties.length === 0 ? (
-            <EmptyState
-              hasWarranties={warranties.length > 0}
-              onImport={() => setImportOpen(true)}
-            />
+            <EmptyState hasWarranties={warranties.length > 0} />
           ) : (
             <div className="overflow-x-auto">
               <table className="min-w-full text-left text-sm">
@@ -454,199 +509,7 @@ export default function WarrantiesPage() {
           ) : null}
         </div>
       </section>
-    </main>
-  )
-}
-
-function ImportPanel({
-  columns,
-  duplicateCount,
-  fileName,
-  importing,
-  importError,
-  importMessage,
-  invalidCount,
-  mapping,
-  previewRows,
-  readingFile,
-  requiredMappingComplete,
-  sourceRowCount,
-  validCount,
-  onFile,
-  onImport,
-  onMappingChange,
-}: {
-  columns: string[]
-  duplicateCount: number
-  fileName: string
-  importing: boolean
-  importError: string
-  importMessage: string
-  invalidCount: number
-  mapping: WarrantyColumnMapping
-  previewRows: ReturnType<typeof buildWarrantyImportRows>
-  readingFile: boolean
-  requiredMappingComplete: boolean
-  sourceRowCount: number
-  validCount: number
-  onFile: (file: File) => void
-  onImport: () => void
-  onMappingChange: (key: keyof WarrantyColumnMapping, column: string) => void
-}) {
-  return (
-    <div className="mb-8 overflow-hidden rounded-2xl border border-red-200 bg-white shadow-sm ring-4 ring-red-50">
-      <div className="grid gap-0 lg:grid-cols-[0.7fr_1.3fr]">
-        <div className="border-b border-stone-200 p-6 lg:border-b-0 lg:border-r">
-          <p className="text-xs font-black uppercase tracking-wide text-red-600">
-            Step 1
-          </p>
-          <h2 className="mt-2 text-xl font-black text-stone-950">
-            Choose your export
-          </h2>
-          <p className="mt-2 text-sm leading-6 text-stone-600">
-            In SharePoint, use Export to CSV or Export to Excel, then upload the
-            downloaded file here.
-          </p>
-          <label className="mt-5 flex cursor-pointer flex-col items-center justify-center rounded-2xl border-2 border-dashed border-stone-300 bg-stone-50 px-5 py-8 text-center transition hover:border-red-300 hover:bg-red-50">
-            <span className="text-sm font-black text-stone-800">
-              {readingFile ? 'Reading file...' : 'Choose CSV or Excel file'}
-            </span>
-            <span className="mt-1 text-xs text-stone-500">.csv or .xlsx</span>
-            <input
-              type="file"
-              accept=".csv,.xlsx"
-              disabled={readingFile}
-              className="hidden"
-              onChange={(event) => {
-                const file = event.target.files?.[0]
-                if (file) onFile(file)
-                event.currentTarget.value = ''
-              }}
-            />
-          </label>
-          {fileName ? (
-            <p className="mt-3 break-all rounded-xl bg-stone-100 p-3 text-xs font-bold text-stone-700">
-              {fileName} · {sourceRowCount} rows
-            </p>
-          ) : null}
-          {sourceRowCount ? (
-            <div className="mt-4 grid grid-cols-3 gap-2 text-center">
-              <ImportStat label="Ready" value={validCount} />
-              <ImportStat label="Invalid" value={invalidCount} warn />
-              <ImportStat label="Duplicates" value={duplicateCount} />
-            </div>
-          ) : null}
-        </div>
-
-        <div className="p-6">
-          <p className="text-xs font-black uppercase tracking-wide text-red-600">
-            Step 2
-          </p>
-          <h2 className="mt-2 text-xl font-black text-stone-950">
-            Confirm column mapping
-          </h2>
-          <p className="mt-2 text-sm text-stone-600">
-            Required fields are marked with an asterisk. We detect common
-            SharePoint headings automatically.
-          </p>
-
-          {columns.length ? (
-            <div className="mt-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-              {WARRANTY_FIELDS.map((field) => (
-                <label key={field.key} className="block">
-                  <span className="mb-1.5 block text-xs font-black text-stone-600">
-                    {field.label}
-                    {field.required ? <span className="text-red-600"> *</span> : null}
-                  </span>
-                  <select
-                    value={mapping[field.key]}
-                    onChange={(event) =>
-                      onMappingChange(field.key, event.target.value)
-                    }
-                    className="form-input"
-                  >
-                    <option value="">Not mapped</option>
-                    {columns.map((column) => (
-                      <option key={column} value={column}>
-                        {column}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-              ))}
-            </div>
-          ) : (
-            <div className="mt-5 rounded-xl border border-dashed border-stone-300 bg-stone-50 p-6 text-sm text-stone-500">
-              Upload an export to map its columns.
-            </div>
-          )}
-
-          {previewRows.length ? (
-            <div className="mt-5 overflow-x-auto rounded-xl border border-stone-200">
-              <table className="min-w-full text-left text-xs">
-                <thead className="bg-stone-50 uppercase tracking-wide text-stone-500">
-                  <tr>
-                    <th className="px-3 py-2">Customer</th>
-                    <th className="px-3 py-2">Product</th>
-                    <th className="px-3 py-2">Expiry</th>
-                    <th className="px-3 py-2">Check</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {previewRows.slice(0, 5).map((row, index) => (
-                    <tr key={`${row.source_key}-${index}`} className="border-t border-stone-100">
-                      <td className="px-3 py-2 font-bold text-stone-800">
-                        {row.customer_name || '—'}
-                      </td>
-                      <td className="px-3 py-2">{row.product_name || '—'}</td>
-                      <td className="whitespace-nowrap px-3 py-2">
-                        {row.expiry_date ? formatDate(row.expiry_date) : '—'}
-                      </td>
-                      <td className="px-3 py-2">
-                        {row.valid ? (
-                          <span className="font-black text-emerald-700">Ready</span>
-                        ) : (
-                          <span className="font-black text-red-600">
-                            {row.issues.join(', ')}
-                          </span>
-                        )}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          ) : null}
-
-          {importError ? (
-            <p className="mt-4 rounded-xl bg-red-50 p-3 text-sm font-semibold text-red-700">
-              {importError}
-            </p>
-          ) : null}
-          {importMessage ? (
-            <p className="mt-4 rounded-xl bg-emerald-50 p-3 text-sm font-semibold text-emerald-700">
-              {importMessage}
-            </p>
-          ) : null}
-
-          {columns.length ? (
-            <div className="mt-5 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-              <p className="text-xs text-stone-500">
-                Invalid rows are skipped. Repeat imports update existing matches.
-              </p>
-              <button
-                type="button"
-                onClick={onImport}
-                disabled={importing || !requiredMappingComplete || !validCount}
-                className="shrink-0 rounded-xl bg-red-600 px-5 py-3 text-sm font-black text-white hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-40"
-              >
-                {importing ? 'Importing...' : `Import ${validCount} warranties`}
-              </button>
-            </div>
-          ) : null}
-        </div>
-      </div>
-    </div>
+    </>
   )
 }
 
@@ -665,7 +528,7 @@ function WarrantyTableRow({
   return (
     <tr className="border-t border-stone-100 align-top hover:bg-stone-50/70">
       <td className="whitespace-nowrap px-5 py-4">
-        <p className="font-black text-stone-900">{formatDate(warranty.expiry_date)}</p>
+        <p className="font-black text-stone-900">{formatShortDate(warranty.expiry_date)}</p>
         <span className={`mt-1 inline-flex rounded-full px-2 py-1 text-xs font-black ${timing.style}`}>
           {timing.label}
         </span>
@@ -748,19 +611,6 @@ function ExpiryCard({
   )
 }
 
-function ImportStat({ label, value, warn = false }: { label: string; value: number; warn?: boolean }) {
-  return (
-    <div className={`rounded-xl p-3 ${warn && value ? 'bg-red-50' : 'bg-stone-100'}`}>
-      <p className={`text-xl font-black ${warn && value ? 'text-red-600' : 'text-stone-900'}`}>
-        {value}
-      </p>
-      <p className="mt-0.5 text-[10px] font-bold uppercase tracking-wide text-stone-500">
-        {label}
-      </p>
-    </div>
-  )
-}
-
 function SetupNotice() {
   return (
     <div className="mb-6 rounded-2xl border border-amber-200 bg-amber-50 p-5 text-amber-950">
@@ -773,26 +623,17 @@ function SetupNotice() {
   )
 }
 
-function EmptyState({ hasWarranties, onImport }: { hasWarranties: boolean; onImport: () => void }) {
+function EmptyState({ hasWarranties }: { hasWarranties: boolean }) {
   return (
     <div className="px-6 py-14 text-center">
       <p className="text-xl font-black text-stone-900">
-        {hasWarranties ? 'No warranties match these filters.' : 'No warranties imported yet.'}
+        {hasWarranties ? 'No warranties match these filters.' : 'No warranties yet.'}
       </p>
       <p className="mx-auto mt-2 max-w-lg text-sm leading-6 text-stone-500">
         {hasWarranties
           ? 'Try a wider date range, another action status, or clear the search.'
-          : 'Export the SharePoint list as CSV or Excel to create the first expiry schedule.'}
+          : 'Add a warranty or import a SharePoint export to start tracking expiry dates.'}
       </p>
-      {!hasWarranties ? (
-        <button
-          type="button"
-          onClick={onImport}
-          className="mt-5 rounded-xl bg-red-600 px-5 py-3 text-sm font-black text-white hover:bg-red-700"
-        >
-          Import SharePoint export
-        </button>
-      ) : null}
     </div>
   )
 }
@@ -806,10 +647,12 @@ function matrixToRows(matrix: WarrantyImportValue[][]) {
   const columns = makeUniqueHeaders(matrix[firstRowIndex])
   const rows = matrix
     .slice(firstRowIndex + 1)
-    .filter((row) => row.some((value) => value !== null && String(value).trim()))
-    .map((row) =>
-      Object.fromEntries(columns.map((column, index) => [column, row[index] ?? null])),
-    ) as WarrantySourceRow[]
+    .map((row, index) => ({ row, rowNumber: firstRowIndex + index + 2 }))
+    .filter(({ row }) => row.some((value) => value !== null && String(value).trim()))
+    .map(({ row, rowNumber }) => ({
+      rowNumber,
+      cells: Object.fromEntries(columns.map((column, index) => [column, row[index] ?? null])),
+    }))
 
   return { columns, rows }
 }
@@ -817,7 +660,6 @@ function matrixToRows(matrix: WarrantyImportValue[][]) {
 function parseCsv(file: File) {
   return new Promise<WarrantyImportValue[][]>((resolve, reject) => {
     Papa.parse<WarrantyImportValue[]>(file, {
-      skipEmptyLines: 'greedy',
       complete: (result) => resolve(result.data),
       error: (error) => reject(error),
     })
@@ -838,11 +680,6 @@ function expiryTiming(days: number) {
   return { label: `In ${days} days`, style: 'bg-stone-100 text-stone-600' }
 }
 
-function formatDate(value: string) {
-  return new Intl.DateTimeFormat('en-GB', {
-    day: 'numeric',
-    month: 'short',
-    year: 'numeric',
-    timeZone: 'UTC',
-  }).format(new Date(`${value}T00:00:00Z`))
+function isMissingWarrantiesTable(code: string) {
+  return code === '42P01' || code === 'PGRST205'
 }

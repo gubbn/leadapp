@@ -15,11 +15,13 @@ import {
   MessageSquareText,
   Plus,
   Radar,
+  ShieldCheck,
   Sparkles,
   TrendingUp,
 } from 'lucide-react'
 import { supabase } from '@/lib/supabaseClient'
 import { formatCurrency, formatShortDate, normalizeDealStage, stageFor } from '@/lib/crm'
+import { warrantyToday, warrantyWeekEnd } from '@/lib/warrantyImportHelpers'
 
 type Company = {
   id: string
@@ -71,6 +73,12 @@ type Quote = {
   status: string
   companies: Company | Company[] | null
 }
+type WeeklyWarranty = {
+  id: string
+  customer_name: string
+  product_name: string
+  expiry_date: string
+}
 type NextAction = {
   id: string
   title: string
@@ -118,6 +126,9 @@ export default function TodayWorkspace() {
   const [deals, setDeals] = useState<Deal[]>([])
   const [contacts, setContacts] = useState<Contact[]>([])
   const [quotes, setQuotes] = useState<Quote[]>([])
+  const [weeklyWarranties, setWeeklyWarranties] = useState<WeeklyWarranty[]>([])
+  const [weeklyWarrantyCount, setWeeklyWarrantyCount] = useState(0)
+  const [weeklyWarrantyError, setWeeklyWarrantyError] = useState(false)
   const [activities, setActivities] = useState<Activity[]>([])
   const [contactCount, setContactCount] = useState(0)
   const [loading, setLoading] = useState(true)
@@ -128,7 +139,8 @@ export default function TodayWorkspace() {
   const loadWorkspace = useCallback(async () => {
     setLoading(true)
     setError('')
-    const [companiesResult, contactsResult, tasksResult, dealsResult, activitiesResult, quotesResult] =
+    const warrantyStart = warrantyToday()
+    const [companiesResult, contactsResult, tasksResult, dealsResult, activitiesResult, quotesResult, warrantiesResult] =
       await Promise.all([
         supabase.from('companies').select('id,company_name,prospecting_status,relationship_status,customer_contract_end').order('company_name'),
         supabase.from('contacts').select('id,first_name,last_name,next_contact_opportunity,companies(id,company_name)', { count: 'exact' }).eq('is_active', true),
@@ -148,6 +160,15 @@ export default function TodayWorkspace() {
           .order('occurred_at', { ascending: false })
           .limit(8),
         loadOpenQuotes(),
+        supabase
+          .from('warranties')
+          .select('id,customer_name,product_name,expiry_date', { count: 'exact' })
+          .gte('expiry_date', warrantyStart)
+          .lte('expiry_date', warrantyWeekEnd(warrantyStart))
+          .order('expiry_date')
+          .order('customer_name')
+          .order('id')
+          .limit(5),
       ])
 
     const firstError = [
@@ -166,6 +187,9 @@ export default function TodayWorkspace() {
     setContactCount(uniqueContacts.length)
     setContacts(uniqueContacts)
     setQuotes((quotesResult.data ?? []) as Quote[])
+    setWeeklyWarranties(warrantiesResult.data ?? [])
+    setWeeklyWarrantyCount(warrantiesResult.count ?? 0)
+    setWeeklyWarrantyError(Boolean(warrantiesResult.error))
     setTasks((tasksResult.data ?? []) as Task[])
     setDeals((dealsResult.data ?? []) as Deal[])
     setActivities((activitiesResult.data ?? []) as Activity[])
@@ -421,6 +445,8 @@ export default function TodayWorkspace() {
                 </div>
               </Link>
 
+              <WeeklyWarrantySection warranties={weeklyWarranties} count={weeklyWarrantyCount} loadError={weeklyWarrantyError} />
+
               <section className="rounded-2xl border border-stone-200 bg-white shadow-[0_12px_40px_rgba(16,19,18,0.05)]">
                 <div className="flex items-center justify-between gap-4 border-b border-stone-100 px-5 py-5">
                   <SectionTitle icon={<CircleAlert size={18} />} eyebrow="Pipeline health" title="Needs attention" />
@@ -467,6 +493,42 @@ export default function TodayWorkspace() {
         )}
       </section>
     </>
+  )
+}
+
+function WeeklyWarrantySection({ warranties, count, loadError }: { warranties: WeeklyWarranty[]; count: number; loadError: boolean }) {
+  return (
+    <section aria-labelledby="weekly-warranty-heading" className="rounded-2xl border border-stone-200 bg-white shadow-[0_12px_40px_rgba(16,19,18,0.05)]">
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-stone-100 px-5 py-5">
+        <div className="flex items-center gap-3">
+          <span className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-red-50 text-red-600"><ShieldCheck size={18} aria-hidden="true" /></span>
+          <h2 id="weekly-warranty-heading" className="text-lg font-black tracking-tight text-stone-950">Warranties expiring this week</h2>
+        </div>
+        <Link href="/warranties?window=week" className="text-xs font-black text-red-600 hover:text-red-700">View warranties</Link>
+      </div>
+      <div className="px-5">
+        {loadError ? (
+          <p className="py-5 text-sm text-red-700">Warranty expiries could not be loaded.</p>
+        ) : warranties.length ? (
+          <ul className="divide-y divide-stone-100">
+            {warranties.map((warranty) => (
+              <li key={warranty.id} className="flex items-start justify-between gap-4 py-4">
+                <div className="min-w-0 break-words">
+                  <p className="text-sm font-black text-stone-900">{warranty.customer_name}</p>
+                  <p className="mt-1 text-xs text-stone-600">{warranty.product_name}</p>
+                </div>
+                <time dateTime={warranty.expiry_date} className="shrink-0 text-xs font-bold text-stone-700">{formatShortDate(warranty.expiry_date)}</time>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <div className="py-5"><Empty text="No warranties expire this week." /></div>
+        )}
+      </div>
+      {count > warranties.length ? (
+        <p className="border-t border-stone-100 px-5 py-3 text-xs font-semibold text-stone-600">Showing {warranties.length} of {count} warranties</p>
+      ) : null}
+    </section>
   )
 }
 

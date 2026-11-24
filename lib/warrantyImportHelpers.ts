@@ -1,6 +1,9 @@
 export type WarrantyImportValue = string | number | boolean | Date | null
 
-export type WarrantySourceRow = Record<string, WarrantyImportValue>
+export type WarrantySourceRow = {
+  rowNumber: number
+  cells: Record<string, WarrantyImportValue>
+}
 
 export type WarrantyField =
   | 'customer_name'
@@ -14,20 +17,16 @@ export type WarrantyField =
   | 'notes'
 
 export type WarrantyColumnMapping = Record<WarrantyField, string>
+export type WarrantyValues = Record<WarrantyField, string>
+export type WarrantyCorrections = Partial<Record<number, Partial<WarrantyValues>>>
 
 export type WarrantyImportRow = {
-  source_key: string
-  sharepoint_id: string | null
-  customer_name: string
-  product_name: string
-  warranty_type: string | null
-  serial_number: string | null
-  expiry_date: string
-  owner_name: string | null
-  owner_email: string | null
-  notes: string | null
-  source_file: string
-  valid: boolean
+  rowNumber: number
+  values: WarrantyValues
+  data: ReturnType<typeof validateWarrantyValues>['data'] & {
+    source_key: string
+    source_file: string
+  }
   issues: string[]
 }
 
@@ -44,9 +43,10 @@ export const WARRANTY_FIELDS: Array<{
   key: WarrantyField
   label: string
   required: boolean
+  maxLength?: number
 }> = [
-  { key: 'customer_name', label: 'Customer / company', required: true },
-  { key: 'product_name', label: 'Product / warranty', required: true },
+  { key: 'customer_name', label: 'Customer / company', required: true, maxLength: 200 },
+  { key: 'product_name', label: 'Product / warranty', required: true, maxLength: 240 },
   { key: 'expiry_date', label: 'Expiry date', required: true },
   { key: 'serial_number', label: 'Serial number', required: false },
   { key: 'warranty_type', label: 'Warranty type', required: false },
@@ -171,71 +171,123 @@ export function buildWarrantyImportRows(
   rows: WarrantySourceRow[],
   mapping: WarrantyColumnMapping,
   sourceFile: string,
-) {
-  return rows.map((row) => {
-    const customerName = mappedText(row, mapping.customer_name)
-    const productName = mappedText(row, mapping.product_name)
-    const expiryDate = parseWarrantyDate(
-      mapping.expiry_date ? row[mapping.expiry_date] : null,
-    )
-    const serialNumber = mappedText(row, mapping.serial_number)
-    const warrantyType = mappedText(row, mapping.warranty_type)
-    const ownerName = mappedText(row, mapping.owner_name)
-    const ownerEmail = mappedText(row, mapping.owner_email)
-    const sharepointId = mappedText(row, mapping.sharepoint_id)
-    const notes = mappedText(row, mapping.notes)
-    const issues: string[] = []
-
-    if (!customerName) issues.push('Missing customer')
-    if (!productName) issues.push('Missing product')
-    if (!expiryDate) issues.push('Invalid or missing expiry date')
+  corrections: WarrantyCorrections,
+): WarrantyImportRow[] {
+  return rows.map(({ rowNumber, cells }) => {
+    const mapped = Object.fromEntries(WARRANTY_FIELDS.map(({ key }) => {
+      const cell = mapping[key] ? cells[mapping[key]] : null
+      const text = valueToText(cell).trim()
+      return [key, key === 'expiry_date' ? parseWarrantyDate(cell) || text : text]
+    })) as WarrantyValues
+    const values = { ...mapped, ...corrections[rowNumber] }
+    const { data, issues } = validateWarrantyValues(values)
 
     const fallbackKey = [
-      normalize(customerName),
-      normalize(productName),
-      normalize(serialNumber),
-      expiryDate,
+      normalize(data.customer_name),
+      normalize(data.product_name),
+      normalize(data.serial_number ?? ''),
+      data.expiry_date,
     ].join('|')
 
     return {
-      source_key: sharepointId ? `sharepoint:${sharepointId}` : `warranty:${fallbackKey}`,
-      sharepoint_id: sharepointId || null,
-      customer_name: customerName,
-      product_name: productName,
-      warranty_type: warrantyType || null,
-      serial_number: serialNumber || null,
-      expiry_date: expiryDate,
-      owner_name: ownerName || null,
-      owner_email: ownerEmail || null,
-      notes: notes || null,
-      source_file: sourceFile,
-      valid: issues.length === 0,
+      rowNumber,
+      values,
+      data: {
+        ...data,
+        source_key: data.sharepoint_id ? `sharepoint:${data.sharepoint_id}` : `warranty:${fallbackKey}`,
+        source_file: sourceFile,
+      },
       issues,
-    } satisfies WarrantyImportRow
+    }
   })
+}
+
+export function validateWarrantyValues(values: WarrantyValues) {
+  const data = {
+    customer_name: values.customer_name.trim(),
+    product_name: values.product_name.trim(),
+    expiry_date: parseWarrantyDate(values.expiry_date),
+    serial_number: values.serial_number.trim() || null,
+    warranty_type: values.warranty_type.trim() || null,
+    owner_name: values.owner_name.trim() || null,
+    owner_email: values.owner_email.trim() || null,
+    sharepoint_id: values.sharepoint_id.trim() || null,
+    notes: values.notes.trim() || null,
+  }
+  const issues: string[] = []
+  for (const { key, label, required, maxLength } of WARRANTY_FIELDS) {
+    if (required && !data[key]) {
+      issues.push(key === 'expiry_date' ? 'Enter a valid expiry date.' : `${label} is required.`)
+    }
+    if (maxLength && Array.from(data[key] ?? '').length > maxLength) {
+      issues.push(`${label} must be ${maxLength} characters or fewer.`)
+    }
+    if (data[key]?.includes('\0')) issues.push(`${label} contains an invalid character.`)
+  }
+  return { data, issues }
 }
 
 export function dedupeWarrantyRows(rows: WarrantyImportRow[]) {
   const deduped = new Map<string, WarrantyImportRow>()
-  rows.forEach((row) => deduped.set(row.source_key, row))
+  rows.forEach((row) => deduped.set(row.data.source_key, row))
   return Array.from(deduped.values())
+}
+
+type ImportError = { code: string; message: string }
+
+export async function saveWarrantyImportRows(
+  rows: WarrantyImportRow[],
+  upsert: (rows: WarrantyImportRow['data'][]) => Promise<ImportError | null>,
+) {
+  const savedKeys = new Set<string>()
+  const rowErrors: Record<number, string> = {}
+
+  async function saveBatch(batch: WarrantyImportRow[]): Promise<ImportError | null> {
+    let error: ImportError | null
+    try {
+      error = await upsert(batch.map(({ data }) => data))
+    } catch (cause) {
+      return { code: '', message: cause instanceof Error ? cause.message : 'The import could not be completed.' }
+    }
+    if (!error) {
+      batch.forEach(({ data }) => savedKeys.add(data.source_key))
+      return null
+    }
+
+    // PostgreSQL data and constraint errors can be isolated by splitting a batch.
+    if (!/^(22|23)/.test(error.code)) return error
+    if (batch.length === 1) {
+      rowErrors[batch[0].rowNumber] = error.message
+      return null
+    }
+
+    const midpoint = Math.floor(batch.length / 2)
+    const firstError = await saveBatch(batch.slice(0, midpoint))
+    return firstError ?? await saveBatch(batch.slice(midpoint))
+  }
+
+  for (let index = 0; index < rows.length; index += 500) {
+    const error = await saveBatch(rows.slice(index, index + 500))
+    if (error) return { savedKeys, rowErrors, error }
+  }
+  return { savedKeys, rowErrors, error: null }
 }
 
 export function parseWarrantyDate(value: WarrantyImportValue | undefined) {
   if (value instanceof Date && !Number.isNaN(value.getTime())) {
-    return ymd(value.getFullYear(), value.getMonth() + 1, value.getDate())
+    return validYmd(value.getUTCFullYear(), value.getUTCMonth() + 1, value.getUTCDate())
   }
 
   if (typeof value === 'number' && Number.isFinite(value)) {
     // Excel's 1900 date system, including its historic leap-year offset.
     const date = new Date(Date.UTC(1899, 11, 30) + value * 86_400_000)
-    return ymd(date.getUTCFullYear(), date.getUTCMonth() + 1, date.getUTCDate())
+    return validYmd(date.getUTCFullYear(), date.getUTCMonth() + 1, date.getUTCDate())
   }
 
   const text = valueToText(value).trim()
   if (!text) return ''
 
-  const iso = text.match(/^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})/)
+  const iso = text.match(/^(\d{4})[-/.](\d{1,2})[-/.](\d+)/)
   if (iso) return validYmd(Number(iso[1]), Number(iso[2]), Number(iso[3]))
 
   const uk = text.match(
@@ -249,44 +301,47 @@ export function parseWarrantyDate(value: WarrantyImportValue | undefined) {
 
   const parsed = new Date(text)
   if (Number.isNaN(parsed.getTime())) return ''
-  return ymd(parsed.getFullYear(), parsed.getMonth() + 1, parsed.getDate())
+  return validYmd(parsed.getFullYear(), parsed.getMonth() + 1, parsed.getDate())
 }
 
-export function localToday() {
-  const now = new Date()
-  return ymd(now.getFullYear(), now.getMonth() + 1, now.getDate())
+const londonDate = new Intl.DateTimeFormat('en-CA', {
+  timeZone: 'Europe/London',
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+})
+
+export function warrantyToday(now = new Date()) {
+  return londonDate.format(now)
 }
 
-export function daysFromToday(date: string, today = localToday()) {
+export function warrantyWeekEnd(today = warrantyToday()) {
+  const sunday = new Date(ymdToUtc(today))
+  sunday.setUTCDate(sunday.getUTCDate() + (7 - sunday.getUTCDay()) % 7)
+  return sunday.toISOString().slice(0, 10)
+}
+
+export function daysFromToday(date: string, today = warrantyToday()) {
   return Math.round((ymdToUtc(date) - ymdToUtc(today)) / 86_400_000)
 }
 
 export function isInWarrantyWindow(
   expiryDate: string,
   window: WarrantyWindow,
-  today = localToday(),
+  today = warrantyToday(),
 ) {
   const days = daysFromToday(expiryDate, today)
   if (window === 'all') return true
   if (window === 'overdue') return days < 0
   if (window === 'today') return days === 0
-  if (window === 'week') return days >= 0 && days <= daysLeftThisWeek(today)
+  if (window === 'week') return days >= 0 && expiryDate <= warrantyWeekEnd(today)
   const limit = Number(window)
   return days >= 0 && days <= limit
 }
 
-function daysLeftThisWeek(today: string) {
-  const day = new Date(ymdToUtc(today)).getUTCDay()
-  return day === 0 ? 0 : 7 - day
-}
-
-function mappedText(row: WarrantySourceRow, column: string) {
-  return column ? valueToText(row[column]).trim() : ''
-}
-
 function valueToText(value: WarrantyImportValue | undefined) {
   if (value === null || value === undefined) return ''
-  if (value instanceof Date) return value.toISOString()
+  if (value instanceof Date && !Number.isNaN(value.getTime())) return value.toISOString()
   return String(value)
 }
 
@@ -295,7 +350,9 @@ function normalize(value: string) {
 }
 
 function validYmd(year: number, month: number, day: number) {
-  const date = new Date(Date.UTC(year, month - 1, day))
+  if (!Number.isInteger(year) || year < 1 || year > 9999) return ''
+  const date = new Date(0)
+  date.setUTCFullYear(year, month - 1, day)
   if (
     date.getUTCFullYear() !== year ||
     date.getUTCMonth() !== month - 1 ||
@@ -307,10 +364,9 @@ function validYmd(year: number, month: number, day: number) {
 }
 
 function ymd(year: number, month: number, day: number) {
-  return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`
+  return `${String(year).padStart(4, '0')}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`
 }
 
 function ymdToUtc(value: string) {
-  const [year, month, day] = value.split('-').map(Number)
-  return Date.UTC(year, month - 1, day)
+  return Date.parse(`${value}T00:00:00Z`)
 }
