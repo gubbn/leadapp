@@ -1,4 +1,4 @@
--- Run once in the Growth Desk project's Supabase SQL Editor.
+-- Run once in the Compass project's Supabase SQL Editor.
 -- Qualification and tags are company-level fields shared by linked contacts.
 begin;
 

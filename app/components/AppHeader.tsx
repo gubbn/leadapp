@@ -162,7 +162,7 @@ export default function AppHeader() {
           </span>
           <span className="hidden sm:block">
             <span className="block text-[0.95rem] font-black leading-none tracking-[-0.02em]">Fixing IT</span>
-            <span className="mt-1 block text-[0.58rem] font-bold uppercase tracking-[0.22em] text-stone-400">Growth desk</span>
+            <span className="mt-1 block text-[0.58rem] font-bold uppercase tracking-[0.22em] text-stone-400">Compass</span>
           </span>
         </Link>
 

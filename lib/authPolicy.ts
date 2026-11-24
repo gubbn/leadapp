@@ -1,6 +1,6 @@
 export function safeNextPath(value: string | null | undefined) {
   if (!value || !value.startsWith('/') || value.startsWith('//') || /[\\\u0000-\u0020\u007f]/.test(value)) return '/'
-  const path = new URL(value, 'https://growth-desk.invalid')
+  const path = new URL(value, 'https://compass.invalid')
   if (path.pathname === '/login' || path.pathname.startsWith('/auth/')) return '/'
   return `${path.pathname}${path.search}${path.hash}`
 }

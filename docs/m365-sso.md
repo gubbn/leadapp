@@ -20,7 +20,7 @@ but still requires the application and Supabase Auth to be available.
 
 ## 2. Configure Entra and Supabase
 
-Create a separate Entra app registration for Growth Desk sign-in, with accounts
+Create a separate Entra app registration for Compass sign-in, with accounts
 in **this organisational directory only**. The existing mail-sending app and its
 application Mail.Send permission are separate from interactive sign-in.
 
@@ -33,7 +33,7 @@ https://<supabase-project-ref>.supabase.co/auth/v1/callback
 Configure the optional `email` and `xms_edov` ID-token claims as described in
 [Supabase's Microsoft setup guide](https://supabase.com/docs/guides/auth/social-login/auth-azure).
 In the Entra Enterprise Application, set **Assignment required = Yes** and
-assign only the staff/users/groups who should access Growth Desk. Tenant
+assign only the staff/users/groups who should access Compass. Tenant
 membership by itself should not grant CRM access.
 
 Enable the Azure provider in Supabase Authentication → Sign In / Providers.

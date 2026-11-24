@@ -68,7 +68,7 @@ function LoginContent({ ssoEnabled }: { ssoEnabled: boolean }) {
           <span className="grid h-11 w-11 place-items-center rounded-xl bg-red-600 text-sm font-black tracking-[-0.08em] shadow-[0_12px_35px_rgba(221,63,39,0.28)]">FI</span>
           <div>
             <p className="text-base font-black">Fixing IT</p>
-            <p className="mt-0.5 text-[0.62rem] font-bold uppercase tracking-[0.22em] text-stone-400">Growth desk</p>
+            <p className="mt-0.5 text-[0.62rem] font-bold uppercase tracking-[0.22em] text-stone-400">Compass</p>
           </div>
         </div>
 
@@ -97,7 +97,7 @@ function LoginContent({ ssoEnabled }: { ssoEnabled: boolean }) {
             <span className="grid h-10 w-10 place-items-center rounded-xl bg-red-600 text-sm font-black tracking-[-0.08em] text-white">FI</span>
             <div>
               <p className="font-black">Fixing IT</p>
-              <p className="text-[0.6rem] font-bold uppercase tracking-[0.2em] text-stone-500">Growth desk</p>
+              <p className="text-[0.6rem] font-bold uppercase tracking-[0.2em] text-stone-500">Compass</p>
             </div>
           </div>
 
@@ -161,7 +161,7 @@ function LoginContent({ ssoEnabled }: { ssoEnabled: boolean }) {
               disabled={isSigningIn}
               className="group flex w-full items-center justify-center gap-2 rounded-xl bg-stone-950 px-4 py-3.5 text-sm font-black text-white shadow-[0_12px_30px_rgba(16,19,18,0.15)] transition hover:bg-red-600 disabled:cursor-not-allowed disabled:opacity-60"
             >
-              {isSigningIn ? 'Signing in…' : ssoEnabled ? 'Sign in as master account' : 'Enter Growth Desk'}
+              {isSigningIn ? 'Signing in…' : ssoEnabled ? 'Sign in as master account' : 'Enter Compass'}
               {!isSigningIn ? <ArrowRight size={17} className="transition group-hover:translate-x-0.5" /> : null}
             </button>
           </form>

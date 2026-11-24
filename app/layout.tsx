@@ -4,20 +4,20 @@ import "./globals.css";
 export const metadata: Metadata = {
   metadataBase: new URL(process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000"),
   title: {
-    default: "Fixing IT Growth Desk",
+    default: "Fixing IT Compass",
     template: "%s · Fixing IT",
   },
   description: "The relationship, sales and marketing workspace for Fixing IT.",
-  applicationName: "Fixing IT Growth Desk",
+  applicationName: "Fixing IT Compass",
   openGraph: {
     type: "website",
-    title: "Fixing IT Growth Desk",
+    title: "Fixing IT Compass",
     description: "Relationships. Revenue. Momentum.",
-    images: [{ url: "/og.png", width: 1200, height: 630, alt: "Fixing IT Growth Desk" }],
+    images: [{ url: "/og.png", width: 1200, height: 630, alt: "Fixing IT Compass" }],
   },
   twitter: {
     card: "summary_large_image",
-    title: "Fixing IT Growth Desk",
+    title: "Fixing IT Compass",
     description: "Relationships. Revenue. Momentum.",
     images: ["/og.png"],
   },
