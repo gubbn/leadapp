@@ -5,6 +5,7 @@ import Link from 'next/link'
 import AppHeader from '@/app/components/AppHeader'
 import { supabase } from '@/lib/supabaseClient'
 import ClaimCompanyPicker, { type ClaimCompanySelection } from './ClaimCompanyPicker'
+import ClaimContactPicker, { type ClaimContact } from './ClaimContactPicker'
 
 type OfferStatus = 'draft' | 'active' | 'paused' | 'ended'
 
@@ -50,6 +51,7 @@ type OfferForm = {
 
 type ClaimForm = {
   selection: ClaimCompanySelection
+  contactId: string
   claimantName: string
   companyName: string
   email: string
@@ -76,12 +78,17 @@ function todayInputValue() {
   return localDate.toISOString().slice(0, 10)
 }
 
-const EMPTY_CLAIM_FORM: ClaimForm = {
-  selection: null,
+const EMPTY_CLAIMANT_DETAILS = {
   claimantName: '',
-  companyName: '',
   email: '',
   telephone: '',
+}
+
+const EMPTY_CLAIM_FORM: ClaimForm = {
+  selection: null,
+  contactId: '',
+  companyName: '',
+  ...EMPTY_CLAIMANT_DETAILS,
   leadSource: '',
   claimedOn: todayInputValue(),
   notes: '',
@@ -298,6 +305,27 @@ export default function OffersPage() {
   function closeClaimForm() {
     claimDialog.current?.close()
     setClaimingOffer(null)
+  }
+
+  function selectClaimCompany(selection: ClaimCompanySelection) {
+    setClaimForm((current) => ({
+      ...current,
+      selection,
+      contactId: '',
+      ...(current.contactId && selection?.kind !== 'claim-only' ? EMPTY_CLAIMANT_DETAILS : {}),
+    }))
+    setClaimError('')
+  }
+
+  function selectClaimContact(contact: ClaimContact | null) {
+    setClaimForm((current) => ({
+      ...current,
+      contactId: contact?.id ?? '',
+      claimantName: contact?.name ?? '',
+      email: contact?.email ?? '',
+      telephone: contact?.telephone ?? '',
+    }))
+    setClaimError('')
   }
 
   async function saveClaim(event: FormEvent<HTMLFormElement>) {
@@ -642,10 +670,12 @@ export default function OffersPage() {
 
                 <fieldset disabled={saving} className="mt-6 grid gap-5 md:grid-cols-2">
                   <ClaimCompanyPicker selection={claimForm.selection} disabled={saving} allowClaimOnly={!claimLinksAvailable}
-                    onChange={(selection) => {
-                      setClaimForm((current) => ({ ...current, selection }))
-                      setClaimError('')
-                    }} />
+                    onChange={selectClaimCompany} />
+
+                  {claimForm.selection?.kind === 'existing' ? (
+                    <ClaimContactPicker key={claimForm.selection.company.id} companyId={claimForm.selection.company.id}
+                      contactId={claimForm.contactId} disabled={saving} onChange={selectClaimContact} />
+                  ) : null}
 
                   {claimForm.selection && claimForm.selection.kind !== 'existing' ? (
                     <Field label="Company name">
@@ -984,15 +1014,7 @@ function OfferCard({
                   </span>
                 </p>
               </div>
-              <button
-                type="button"
-                aria-haspopup="dialog"
-                onClick={onClaim}
-                disabled={soldOut}
-                className="rounded-lg bg-stone-900 px-3 py-2 text-xs font-black text-white hover:bg-red-600 disabled:cursor-not-allowed disabled:bg-stone-300"
-              >
-                {soldOut ? 'Sold out' : '+ Record claim'}
-              </button>
+              {soldOut ? <span className="rounded-full bg-red-100 px-2.5 py-1 text-xs font-black text-red-700">Sold out</span> : null}
             </div>
             <div className="mt-3 h-2 overflow-hidden rounded-full bg-white">
               <div
@@ -1027,14 +1049,14 @@ function OfferCard({
                   : 'No claimant details recorded yet.'}
               </p>
             </div>
-            {!offer.is_limited || !soldOut ? (
+            {!soldOut ? (
               <button
                 type="button"
                 aria-haspopup="dialog"
                 onClick={onClaim}
                 className="rounded-lg bg-red-600 px-3 py-2 text-xs font-black text-white hover:bg-red-700"
               >
-                + Add claimant
+                + Record claim
               </button>
             ) : null}
           </div>
