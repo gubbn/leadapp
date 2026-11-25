@@ -13,7 +13,7 @@ alter table campaign_companies
   add column if not exists graph_message_id text,
   add column if not exists tracking_id text;
 
-create table if not exists campaign_events (
+create table if not exists public.campaign_events (
   id uuid primary key default gen_random_uuid(),
   campaign_company_id uuid references campaign_companies(id) on delete cascade,
   campaign_id uuid references campaigns(id) on delete cascade,
@@ -24,11 +24,16 @@ create table if not exists campaign_events (
   created_at timestamptz not null default now()
 );
 
+-- Campaign tracking routes insert events with the server-side service role.
+alter table public.campaign_events enable row level security;
+revoke all on table public.campaign_events from public, anon, authenticated;
+grant insert on table public.campaign_events to service_role;
+
 create index if not exists campaign_events_campaign_company_id_idx
-  on campaign_events(campaign_company_id);
+  on public.campaign_events(campaign_company_id);
 
 create index if not exists campaign_events_event_type_idx
-  on campaign_events(event_type);
+  on public.campaign_events(event_type);
 
 create unique index if not exists campaign_companies_tracking_id_idx
   on campaign_companies(tracking_id)
