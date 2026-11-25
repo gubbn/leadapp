@@ -9,31 +9,32 @@ import { formatShortDate } from '@/lib/crm'
 import { supabase } from '@/lib/supabaseClient'
 import {
   buildWarrantyImportRows,
+  checkWarrantyDuplicates,
   daysFromToday,
-  dedupeWarrantyRows,
   detectWarrantyColumns,
   isInWarrantyWindow,
   makeUniqueHeaders,
   saveWarrantyImportRows,
   WARRANTY_FIELDS,
+  WARRANTY_STATUS_LABELS,
   warrantyToday,
   type WarrantyColumnMapping,
   type WarrantyCorrections,
   type WarrantyImportRow,
   type WarrantyImportValue,
   type WarrantySourceRow,
+  type WarrantyStatus,
   type WarrantyValues,
   type WarrantyWindow,
 } from '@/lib/warrantyImportHelpers'
 import ImportPanel from './ImportPanel'
 import { AddWarrantyForm } from './WarrantyForm'
 
-type WarrantyStatus = 'not_started' | 'contacted' | 'renewed' | 'not_renewing'
-
 type Warranty = {
   id: string
   customer_name: string
   product_name: string
+  sharepoint_id: string | null
   warranty_type: string | null
   serial_number: string | null
   expiry_date: string
@@ -56,13 +57,6 @@ const WINDOW_OPTIONS: Array<{ value: WarrantyWindow; label: string }> = [
   { value: '60', label: 'Next 60 days' },
   { value: '90', label: 'Next 90 days' },
 ]
-
-const STATUS_LABELS: Record<WarrantyStatus, string> = {
-  not_started: 'Not started',
-  contacted: 'Contacted',
-  renewed: 'Renewed',
-  not_renewing: 'Not renewing',
-}
 
 export default function WarrantiesPage() {
   return (
@@ -93,6 +87,7 @@ function WarrantiesWorkspace({ initialWindow }: { initialWindow: WarrantyWindow 
   const [mapping, setMapping] = useState<WarrantyColumnMapping>(EMPTY_MAPPING)
   const [corrections, setCorrections] = useState<WarrantyCorrections>({})
   const [importedRows, setImportedRows] = useState<Set<number>>(() => new Set())
+  const [skippedRows, setSkippedRows] = useState<Set<number>>(() => new Set())
   const [rowErrors, setRowErrors] = useState<Record<number, string>>({})
   const [readingFile, setReadingFile] = useState(false)
   const [importing, setImporting] = useState(false)
@@ -113,7 +108,7 @@ function WarrantiesWorkspace({ initialWindow }: { initialWindow: WarrantyWindow 
     for (let offset = 0; ; offset += pageSize) {
       const { data, error } = await supabase
         .from('warranties')
-        .select('id,customer_name,product_name,warranty_type,serial_number,expiry_date,owner_name,owner_email,notes,action_status')
+        .select('id,customer_name,product_name,sharepoint_id,warranty_type,serial_number,expiry_date,owner_name,owner_email,notes,action_status')
         .order('expiry_date')
         .order('id')
         .range(offset, offset + pageSize - 1)
@@ -122,7 +117,7 @@ function WarrantiesWorkspace({ initialWindow }: { initialWindow: WarrantyWindow 
         setLoadError(error.message)
         setSetupRequired(isMissingWarrantiesTable(error.code))
         setLoading(false)
-        return
+        return { rows: null, error }
       }
 
       rows.push(...(data as Warranty[]))
@@ -131,6 +126,7 @@ function WarrantiesWorkspace({ initialWindow }: { initialWindow: WarrantyWindow 
 
     setWarranties(rows)
     setLoading(false)
+    return { rows, error: null }
   }, [])
 
   useEffect(() => {
@@ -142,13 +138,16 @@ function WarrantiesWorkspace({ initialWindow }: { initialWindow: WarrantyWindow 
     [corrections, fileName, mapping, sourceRows],
   )
   const pendingRows = useMemo(
-    () => previewRows.filter(({ rowNumber }) => !importedRows.has(rowNumber)),
-    [importedRows, previewRows],
+    () => previewRows.filter(({ rowNumber }) => !importedRows.has(rowNumber) && !skippedRows.has(rowNumber)),
+    [importedRows, previewRows, skippedRows],
   )
-  const failedRows = pendingRows.filter((row) => row.issues.length || rowErrors[row.rowNumber])
-  const validRows = pendingRows.filter((row) => !row.issues.length)
-  const uniqueRows = dedupeWarrantyRows(validRows)
-  const duplicateCount = validRows.length - uniqueRows.length
+  const { readyRows, duplicateRows } = useMemo(
+    () => checkWarrantyDuplicates(pendingRows, warranties),
+    [pendingRows, warranties],
+  )
+  const failedRows = pendingRows.filter((row) =>
+    !duplicateRows.has(row.rowNumber) && (row.issues.length || rowErrors[row.rowNumber]),
+  )
 
   const today = warrantyToday()
   const counts = useMemo(() => {
@@ -187,8 +186,10 @@ function WarrantiesWorkspace({ initialWindow }: { initialWindow: WarrantyWindow 
     setFileName(file.name)
     setSourceRows([])
     setColumns([])
+    setMapping(EMPTY_MAPPING)
     setCorrections({})
     setImportedRows(new Set())
+    setSkippedRows(new Set())
     setRowErrors({})
     setImportMessage('')
     setImportError('')
@@ -210,10 +211,14 @@ function WarrantiesWorkspace({ initialWindow }: { initialWindow: WarrantyWindow 
       if (!parsed.columns.length || !parsed.rows.length) {
         throw new Error('No data rows were found in that file.')
       }
+      const detectedMapping = detectWarrantyColumns(parsed.columns)
+      if (!detectedMapping.expiry_date) {
+        throw new Error('This export needs a Warranty End column for the expiry date.')
+      }
 
       setColumns(parsed.columns)
       setSourceRows(parsed.rows)
-      setMapping(detectWarrantyColumns(parsed.columns))
+      setMapping(detectedMapping)
     } catch (error) {
       setImportError(
         error instanceof Error ? error.message : 'The file could not be read.',
@@ -237,7 +242,7 @@ function WarrantiesWorkspace({ initialWindow }: { initialWindow: WarrantyWindow 
   }
 
   async function importRows() {
-    if (importing || !uniqueRows.length) return
+    if (importing || !readyRows.length) return
 
     setImporting(true)
     setImportError('')
@@ -245,28 +250,39 @@ function WarrantiesWorkspace({ initialWindow }: { initialWindow: WarrantyWindow 
     const importedAt = new Date().toISOString()
 
     try {
-      const { savedKeys, rowErrors: failed, error } = await saveWarrantyImportRows(uniqueRows, async (rows) => {
-        const { error } = await supabase.from('warranties').upsert(
-          rows.map((row) => ({ ...row, last_imported_at: importedAt, updated_at: importedAt })),
-          { onConflict: 'source_key' },
-        )
-        return error
-      })
-      const savedRows = validRows.filter(({ data }) => savedKeys.has(data.source_key))
-      setImportedRows((current) => new Set([...current, ...savedRows.map(({ rowNumber }) => rowNumber)]))
-      setRowErrors((current) => ({ ...current, ...failed }))
-
-      if (error) {
-        setImportError(error.message)
-        setSetupRequired(isMissingWarrantiesTable(error.code))
+      const latest = await loadWarranties()
+      if (latest.error) {
+        setImportError(latest.error.message)
+        return
       }
 
-      if (savedKeys.size) {
-        const merged = savedRows.length - savedKeys.size
-        setImportMessage(
-          `Imported or updated ${savedKeys.size} ${savedKeys.size === 1 ? 'warranty' : 'warranties'}.` +
-          (merged ? ` ${merged} duplicate ${merged === 1 ? 'row was' : 'rows were'} merged.` : ''),
-        )
+      const { readyRows: candidates, duplicateRows: duplicates } = checkWarrantyDuplicates(pendingRows, latest.rows)
+      const result = await saveWarrantyImportRows(candidates, async (rows) => {
+        const { data, error } = await supabase.from('warranties')
+          .upsert(
+            rows.map((row) => ({ ...row, last_imported_at: importedAt, updated_at: importedAt })),
+            { onConflict: 'source_key', ignoreDuplicates: true },
+          )
+          .select('source_key')
+        return { insertedKeys: data?.map((row) => row.source_key) ?? [], error }
+      })
+      setImportedRows((current) => new Set([...current, ...result.importedRows]))
+      setSkippedRows((current) => new Set([...current, ...result.duplicateRows]))
+      setRowErrors((current) => ({ ...current, ...result.rowErrors }))
+
+      if (result.error) {
+        setImportError(result.error.message)
+        setSetupRequired(isMissingWarrantiesTable(result.error.code))
+      }
+
+      const insertedCount = result.importedRows.size
+      const skippedCount = duplicates.size + result.duplicateRows.size
+      const messages = []
+      if (insertedCount) messages.push(`Imported ${insertedCount} ${insertedCount === 1 ? 'warranty' : 'warranties'}.`)
+      if (skippedCount) messages.push(`Skipped ${skippedCount} duplicate ${skippedCount === 1 ? 'row' : 'rows'}.`)
+      setImportMessage(messages.join(' '))
+
+      if (insertedCount || result.duplicateRows.size) {
         await loadWarranties()
       }
     } catch (error) {
@@ -312,7 +328,7 @@ function WarrantiesWorkspace({ initialWindow }: { initialWindow: WarrantyWindow 
             </h1>
             <p className="mt-4 max-w-2xl text-base leading-7 text-stone-600">
               See who needs attention now and plan outreach up to 90 days ahead.
-              Repeat imports update matching SharePoint items.
+              Imports skip matching warranties and use Warranty End as the expiry date.
             </p>
           </div>
           <div className="flex shrink-0 flex-wrap gap-2">
@@ -363,7 +379,7 @@ function WarrantiesWorkspace({ initialWindow }: { initialWindow: WarrantyWindow 
         {panel === 'import' ? (
           <ImportPanel
             columns={columns}
-            duplicateCount={duplicateCount}
+            duplicateRows={new Set([...duplicateRows, ...skippedRows])}
             failedRows={failedRows}
             fileName={fileName}
             importedRows={importedRows}
@@ -374,14 +390,14 @@ function WarrantiesWorkspace({ initialWindow }: { initialWindow: WarrantyWindow 
             previewRows={previewRows}
             readingFile={readingFile}
             rowErrors={rowErrors}
-            readyCount={uniqueRows.filter(({ rowNumber }) => !rowErrors[rowNumber]).length}
-            validCount={uniqueRows.length}
+            readyCount={readyRows.filter(({ rowNumber }) => !rowErrors[rowNumber]).length}
+            validCount={readyRows.length}
             onCorrect={correctRow}
             onFile={(file) => void handleFile(file)}
             onImport={() => void importRows()}
-            onMappingChange={(key, column) =>
-              setMapping((current) => ({ ...current, [key]: column }))
-            }
+            onMappingChange={(key, column) => {
+              if (key !== 'expiry_date') setMapping((current) => ({ ...current, [key]: column }))
+            }}
           />
         ) : null}
 
@@ -453,7 +469,7 @@ function WarrantiesWorkspace({ initialWindow }: { initialWindow: WarrantyWindow 
                 className="form-input sm:w-44"
               >
                 <option value="all">All actions</option>
-                {Object.entries(STATUS_LABELS).map(([value, label]) => (
+                {Object.entries(WARRANTY_STATUS_LABELS).map(([value, label]) => (
                   <option key={value} value={value}>
                     {label}
                   </option>
@@ -569,7 +585,7 @@ function WarrantyTableRow({
           aria-label={`Action status for ${warranty.customer_name}`}
           className="rounded-lg border border-stone-200 bg-white px-3 py-2 text-xs font-black text-stone-700 outline-none focus:border-red-400 disabled:opacity-50"
         >
-          {Object.entries(STATUS_LABELS).map(([value, label]) => (
+          {Object.entries(WARRANTY_STATUS_LABELS).map(([value, label]) => (
             <option key={value} value={value}>
               {label}
             </option>

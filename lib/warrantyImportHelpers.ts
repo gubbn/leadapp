@@ -39,6 +39,15 @@ export type WarrantyWindow =
   | '60'
   | '90'
 
+export const WARRANTY_STATUS_LABELS = {
+  not_started: 'Not started',
+  contacted: 'Contacted',
+  renewed: 'Renewed',
+  not_renewing: 'Not renewing',
+} as const
+
+export type WarrantyStatus = keyof typeof WARRANTY_STATUS_LABELS
+
 export const WARRANTY_FIELDS: Array<{
   key: WarrantyField
   label: string
@@ -56,7 +65,7 @@ export const WARRANTY_FIELDS: Array<{
   { key: 'notes', label: 'Notes', required: false },
 ]
 
-const COLUMN_ALIASES: Record<WarrantyField, string[]> = {
+const COLUMN_ALIASES: Record<Exclude<WarrantyField, 'expiry_date'>, string[]> = {
   customer_name: [
     'customer',
     'customer name',
@@ -80,17 +89,6 @@ const COLUMN_ALIASES: Record<WarrantyField, string[]> = {
     'asset',
     'description',
     'title',
-  ],
-  expiry_date: [
-    'expiry date',
-    'expiration date',
-    'expires',
-    'expiry',
-    'warranty expiry',
-    'warranty expiry date',
-    'warranty expiration',
-    'end date',
-    'renewal date',
   ],
   serial_number: [
     'serial number',
@@ -146,16 +144,22 @@ export function detectWarrantyColumns(columns: string[]): WarrantyColumnMapping 
     column,
     normalized: normalize(column),
   }))
+  const warrantyEndColumns = normalizedColumns.filter(({ normalized }) =>
+    ['warrantyend', 'warrantyenddate'].includes(normalized.replaceAll(' ', '')),
+  )
+  const warrantyEnd = warrantyEndColumns.find(({ normalized }) => normalized === 'warranty end') ?? warrantyEndColumns[0]
+  const otherColumns = normalizedColumns.filter((column) => !warrantyEndColumns.includes(column))
 
   return Object.fromEntries(
     WARRANTY_FIELDS.map(({ key }) => {
+      if (key === 'expiry_date') return [key, warrantyEnd?.column ?? '']
       const aliases = COLUMN_ALIASES[key]
-      const exact = normalizedColumns.find(({ normalized }) =>
+      const exact = otherColumns.find(({ normalized }) =>
         aliases.includes(normalized),
       )
       if (exact) return [key, exact.column]
 
-      const partial = normalizedColumns.find(({ normalized }) =>
+      const partial = otherColumns.find(({ normalized }) =>
         aliases.some(
           (alias) =>
             normalized.length >= 5 &&
@@ -182,19 +186,12 @@ export function buildWarrantyImportRows(
     const values = { ...mapped, ...corrections[rowNumber] }
     const { data, issues } = validateWarrantyValues(values)
 
-    const fallbackKey = [
-      normalize(data.customer_name),
-      normalize(data.product_name),
-      normalize(data.serial_number ?? ''),
-      data.expiry_date,
-    ].join('|')
-
     return {
       rowNumber,
       values,
       data: {
         ...data,
-        source_key: data.sharepoint_id ? `sharepoint:${data.sharepoint_id}` : `warranty:${fallbackKey}`,
+        source_key: warrantyDetailsKey(data),
         source_file: sourceFile,
       },
       issues,
@@ -227,30 +224,58 @@ export function validateWarrantyValues(values: WarrantyValues) {
   return { data, issues }
 }
 
-export function dedupeWarrantyRows(rows: WarrantyImportRow[]) {
-  const deduped = new Map<string, WarrantyImportRow>()
-  rows.forEach((row) => deduped.set(row.data.source_key, row))
-  return Array.from(deduped.values())
+type WarrantyDetails = Pick<WarrantyImportRow['data'], 'customer_name' | 'product_name' | 'serial_number' | 'expiry_date'>
+type WarrantyMatch = WarrantyDetails & { sharepoint_id: string | null }
+
+function warrantyDetailsKey(warranty: WarrantyDetails) {
+  const details = [warranty.customer_name, warranty.product_name, warranty.serial_number ?? '']
+    .map((value) => value.trim().normalize().toLowerCase().replace(/\s+/g, ' '))
+  return `warranty:${JSON.stringify([...details, warranty.expiry_date])}`
+}
+
+export function checkWarrantyDuplicates(rows: WarrantyImportRow[], existing: WarrantyMatch[]) {
+  const details = new Set(existing.map(warrantyDetailsKey))
+  const sharepointIds = new Set(existing.map((warranty) => warranty.sharepoint_id))
+  const readyRows: WarrantyImportRow[] = []
+  const duplicateRows = new Set<number>()
+
+  for (const row of rows) {
+    const { source_key, sharepoint_id } = row.data
+    if (details.has(source_key) || (sharepoint_id && sharepointIds.has(sharepoint_id))) {
+      duplicateRows.add(row.rowNumber)
+    } else if (!row.issues.length) {
+      details.add(source_key)
+      if (sharepoint_id) sharepointIds.add(sharepoint_id)
+      readyRows.push(row)
+    }
+  }
+  return { readyRows, duplicateRows }
 }
 
 type ImportError = { code: string; message: string }
 
 export async function saveWarrantyImportRows(
   rows: WarrantyImportRow[],
-  upsert: (rows: WarrantyImportRow['data'][]) => Promise<ImportError | null>,
+  insert: (rows: WarrantyImportRow['data'][]) => Promise<{ insertedKeys: string[]; error: ImportError | null }>,
 ) {
-  const savedKeys = new Set<string>()
+  const importedRows = new Set<number>()
+  const duplicateRows = new Set<number>()
   const rowErrors: Record<number, string> = {}
 
   async function saveBatch(batch: WarrantyImportRow[]): Promise<ImportError | null> {
-    let error: ImportError | null
+    let result: Awaited<ReturnType<typeof insert>>
     try {
-      error = await upsert(batch.map(({ data }) => data))
+      result = await insert(batch.map(({ data }) => data))
     } catch (cause) {
       return { code: '', message: cause instanceof Error ? cause.message : 'The import could not be completed.' }
     }
+    const { error } = result
     if (!error) {
-      batch.forEach(({ data }) => savedKeys.add(data.source_key))
+      const inserted = new Set(result.insertedKeys)
+      for (const { data, rowNumber } of batch) {
+        const completed = inserted.has(data.source_key) ? importedRows : duplicateRows
+        completed.add(rowNumber)
+      }
       return null
     }
 
@@ -268,9 +293,9 @@ export async function saveWarrantyImportRows(
 
   for (let index = 0; index < rows.length; index += 500) {
     const error = await saveBatch(rows.slice(index, index + 500))
-    if (error) return { savedKeys, rowErrors, error }
+    if (error) return { importedRows, duplicateRows, rowErrors, error }
   }
-  return { savedKeys, rowErrors, error: null }
+  return { importedRows, duplicateRows, rowErrors, error: null }
 }
 
 export function parseWarrantyDate(value: WarrantyImportValue | undefined) {

@@ -21,7 +21,7 @@ import {
 } from 'lucide-react'
 import { supabase } from '@/lib/supabaseClient'
 import { formatCurrency, formatShortDate, normalizeDealStage, stageFor } from '@/lib/crm'
-import { warrantyToday, warrantyWeekEnd } from '@/lib/warrantyImportHelpers'
+import { WARRANTY_STATUS_LABELS, warrantyToday, warrantyWeekEnd, type WarrantyStatus } from '@/lib/warrantyImportHelpers'
 
 type Company = {
   id: string
@@ -78,6 +78,14 @@ type WeeklyWarranty = {
   customer_name: string
   product_name: string
   expiry_date: string
+  action_status: WarrantyStatus | null
+}
+
+const WARRANTY_STATUS_BADGE: Record<WarrantyStatus, string> = {
+  not_started: 'bg-stone-100 text-stone-700',
+  contacted: 'bg-sky-50 text-sky-800',
+  renewed: 'bg-emerald-50 text-emerald-800',
+  not_renewing: 'bg-rose-50 text-rose-800',
 }
 type NextAction = {
   id: string
@@ -162,7 +170,7 @@ export default function TodayWorkspace() {
         loadOpenQuotes(),
         supabase
           .from('warranties')
-          .select('id,customer_name,product_name,expiry_date', { count: 'exact' })
+          .select('id,customer_name,product_name,expiry_date,action_status', { count: 'exact' })
           .gte('expiry_date', warrantyStart)
           .lte('expiry_date', warrantyWeekEnd(warrantyStart))
           .order('expiry_date')
@@ -511,15 +519,25 @@ function WeeklyWarrantySection({ warranties, count, loadError }: { warranties: W
           <p className="py-5 text-sm text-red-700">Warranty expiries could not be loaded.</p>
         ) : warranties.length ? (
           <ul className="divide-y divide-stone-100">
-            {warranties.map((warranty) => (
-              <li key={warranty.id} className="flex items-start justify-between gap-4 py-4">
-                <div className="min-w-0 break-words">
-                  <p className="text-sm font-black text-stone-900">{warranty.customer_name}</p>
-                  <p className="mt-1 text-xs text-stone-600">{warranty.product_name}</p>
-                </div>
-                <time dateTime={warranty.expiry_date} className="shrink-0 text-xs font-bold text-stone-700">{formatShortDate(warranty.expiry_date)}</time>
-              </li>
-            ))}
+            {warranties.map((warranty) => {
+              const status = warranty.action_status
+              return (
+                <li key={warranty.id} className="flex items-start justify-between gap-4 py-4">
+                  <div className="min-w-0 break-words">
+                    <p className="text-sm font-black text-stone-900">{warranty.customer_name}</p>
+                    <p className="mt-1 text-xs text-stone-600">{warranty.product_name}</p>
+                  </div>
+                  <div className="flex shrink-0 flex-col items-end gap-1.5">
+                    <time dateTime={warranty.expiry_date} className="text-xs font-bold text-stone-700">{formatShortDate(warranty.expiry_date)}</time>
+                    {status ? (
+                      <span className={`rounded-full px-2 py-1 text-xs font-bold ${WARRANTY_STATUS_BADGE[status]}`}>
+                        {WARRANTY_STATUS_LABELS[status]}
+                      </span>
+                    ) : null}
+                  </div>
+                </li>
+              )
+            })}
           </ul>
         ) : (
           <div className="py-5"><Empty text="No warranties expire this week." /></div>

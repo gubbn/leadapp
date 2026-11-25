@@ -5,7 +5,7 @@ import { readWarrantyForm, WarrantyFields } from './WarrantyForm'
 
 export default function ImportPanel({
   columns,
-  duplicateCount,
+  duplicateRows,
   failedRows,
   fileName,
   importedRows,
@@ -24,7 +24,7 @@ export default function ImportPanel({
   onMappingChange,
 }: {
   columns: string[]
-  duplicateCount: number
+  duplicateRows: Set<number>
   failedRows: WarrantyImportRow[]
   fileName: string
   importedRows: Set<number>
@@ -54,7 +54,7 @@ export default function ImportPanel({
         <div className="border-b border-stone-200 p-6 lg:border-b-0 lg:border-r">
           <h2 className="text-xl font-black text-stone-950">Import SharePoint export</h2>
           <p className="mt-2 text-sm leading-6 text-stone-600">
-            Upload a CSV or Excel export from SharePoint.
+            Upload a SharePoint CSV or Excel export with a Warranty End column.
           </p>
           <label className="mt-5 flex flex-col gap-2 rounded-2xl border-2 border-dashed border-stone-300 bg-stone-50 px-5 py-5 text-sm font-black text-stone-800">
             {readingFile ? 'Reading file...' : 'Choose CSV or Excel file'}
@@ -72,15 +72,15 @@ export default function ImportPanel({
           </label>
           {fileName ? (
             <p className="mt-3 break-all text-xs font-bold text-stone-700">
-              {fileName} · {previewRows.length} rows
+              {fileName}{previewRows.length ? ` · ${previewRows.length} rows` : ''}
             </p>
           ) : null}
           {previewRows.length ? (
             <dl className="mt-4 grid grid-cols-2 gap-2 text-center sm:grid-cols-4 lg:grid-cols-2 xl:grid-cols-4">
               <ImportStat label="Ready" value={readyCount} />
               <ImportStat label="Needs review" value={failedRows.length} warn />
-              <ImportStat label="Duplicates" value={duplicateCount} />
-              <ImportStat label="Processed" value={importedRows.size} />
+              <ImportStat label="Duplicates" value={duplicateRows.size} />
+              <ImportStat label="Imported" value={importedRows.size} />
             </dl>
           ) : null}
         </div>
@@ -94,10 +94,14 @@ export default function ImportPanel({
                   <span className="mb-1.5 block text-xs font-black text-stone-600">
                     {field.label}{field.required ? ' *' : ''}
                   </span>
-                  <select value={mapping[field.key]} onChange={(event) => onMappingChange(field.key, event.target.value)} className="form-input">
-                    <option value="">Not mapped</option>
-                    {columns.map((column) => <option key={column} value={column}>{column}</option>)}
-                  </select>
+                  {field.key === 'expiry_date' ? (
+                    <input value={mapping.expiry_date} readOnly className="form-input bg-stone-100" />
+                  ) : (
+                    <select value={mapping[field.key]} onChange={(event) => onMappingChange(field.key, event.target.value)} className="form-input">
+                      <option value="">Not mapped</option>
+                      {columns.map((column) => <option key={column} value={column}>{column}</option>)}
+                    </select>
+                  )}
                 </label>
               ))}
             </fieldset>
@@ -120,16 +124,17 @@ export default function ImportPanel({
                 </thead>
                 <tbody>
                   {previewRows.slice(0, 5).map(({ rowNumber, data, issues }) => {
-                    const processed = importedRows.has(rowNumber)
-                    const needsReview = !processed && (issues.length > 0 || rowErrors[rowNumber])
+                    const imported = importedRows.has(rowNumber)
+                    const duplicate = duplicateRows.has(rowNumber)
+                    const needsReview = !imported && !duplicate && (issues.length > 0 || rowErrors[rowNumber])
                     return (
                       <tr key={rowNumber} className="border-t border-stone-100">
                         <td className="px-3 py-2">{rowNumber}</td>
                         <td className="px-3 py-2 font-bold text-stone-800">{data.customer_name || '—'}</td>
                         <td className="px-3 py-2">{data.product_name || '—'}</td>
                         <td className="whitespace-nowrap px-3 py-2">{data.expiry_date ? formatShortDate(data.expiry_date) : '—'}</td>
-                        <td className={`whitespace-nowrap px-3 py-2 font-black ${needsReview ? 'text-red-600' : 'text-emerald-700'}`}>
-                          {processed ? 'Processed' : needsReview ? 'Needs review' : 'Ready'}
+                        <td className={`whitespace-nowrap px-3 py-2 font-black ${needsReview ? 'text-red-600' : 'text-stone-700'}`}>
+                          {imported ? 'Imported' : duplicate ? 'Duplicate' : needsReview ? 'Needs review' : 'Ready'}
                         </td>
                       </tr>
                     )
@@ -145,6 +150,9 @@ export default function ImportPanel({
           {previewRows.length ? (
             <div className="mt-5 flex flex-wrap items-center justify-between gap-3">
               {failedRows.length ? <p className="text-xs text-stone-600">Review and correct the flagged rows below.</p> : null}
+              {!validCount && duplicateRows.size === previewRows.length ? (
+                <p className="text-xs text-stone-600">All rows in this file match existing warranties.</p>
+              ) : null}
               <button
                 type="button"
                 onClick={onImport}
