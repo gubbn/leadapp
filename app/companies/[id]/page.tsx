@@ -7,6 +7,7 @@ import { supabase } from '@/lib/supabaseClient'
 import AppHeader from '@/app/components/AppHeader'
 import CompanyLookupLinks from '@/app/components/CompanyLookupLinks'
 import ContactEmailField from '@/app/components/ContactEmailField'
+import CompanyNotes from './CompanyNotes'
 import { formatCurrency, stageFor } from '@/lib/crm'
 import { isValidEmail } from '@/lib/marketingImportHelpers'
 import {
@@ -27,6 +28,7 @@ type DbRow = Record<string, unknown>
 
 type CompanyRow = DbRow & {
   id: string
+  account_notes?: string | null
 }
 
 type ContactRow = DbRow & {
@@ -471,6 +473,11 @@ export default function CompanyDetailPage() {
                 </div>
               </section>
             </div>
+
+            <CompanyNotes key={company.id} companyId={company.id} notes={company.account_notes}
+              onSaved={(accountNotes) => setCompany((current) => current?.id === company.id
+                ? { ...current, account_notes: accountNotes }
+                : current)} />
 
             <div className="mt-6 grid gap-6 lg:grid-cols-[1fr_0.9fr]">
               <section className="rounded-2xl border border-stone-200 bg-white p-6 shadow-sm">

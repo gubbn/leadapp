@@ -119,6 +119,11 @@ After the base CRM and quote scripts have been applied, run
 editor. It adds the abandoned outcome, quote-to-opportunity links, and persistent
 "keep separate" decisions for duplicate companies.
 
+Apply [`docs/quote-follow-up.sql`](docs/quote-follow-up.sql) to record manual
+follow-ups and chases. For offer claim links and lead creation, apply
+[`docs/offer-claimants.sql`](docs/offer-claimants.sql) after the CRM and offers
+scripts.
+
 For quote nurture, apply [`docs/quote-nurture.sql`](docs/quote-nurture.sql) next
 and configure Microsoft 365 sending and a random `QUOTE_NURTURE_SECRET` in
 `.env.local`. Run `docker compose --profile quote-nurture up --build` to check

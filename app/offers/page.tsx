@@ -1,9 +1,10 @@
 'use client'
 
-import { FormEvent, useCallback, useEffect, useMemo, useState } from 'react'
+import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import Link from 'next/link'
 import AppHeader from '@/app/components/AppHeader'
 import { supabase } from '@/lib/supabaseClient'
+import ClaimCompanyPicker, { type ClaimCompany } from './ClaimCompanyPicker'
 
 type OfferStatus = 'draft' | 'active' | 'paused' | 'ended'
 
@@ -25,6 +26,7 @@ type Offer = {
 type OfferClaim = {
   id: string
   offer_id: string
+  company_id?: string | null
   claimant_name: string
   company_name: string | null
   email: string | null
@@ -47,6 +49,8 @@ type OfferForm = {
 }
 
 type ClaimForm = {
+  mode: 'new' | 'existing'
+  company: ClaimCompany | null
   claimantName: string
   companyName: string
   email: string
@@ -74,6 +78,8 @@ function todayInputValue() {
 }
 
 const EMPTY_CLAIM_FORM: ClaimForm = {
+  mode: 'new',
+  company: null,
   claimantName: '',
   companyName: '',
   email: '',
@@ -90,9 +96,12 @@ const STATUS_STYLES: Record<OfferStatus, string> = {
   ended: 'bg-red-100 text-red-700',
 }
 
+const CLAIM_COMPANY_SETUP = 'Apply docs/offer-claimants.sql in Supabase to enable company linking and lead creation.'
+
 export default function OffersPage() {
   const [offers, setOffers] = useState<Offer[]>([])
   const [claims, setClaims] = useState<OfferClaim[]>([])
+  const [claimLinksAvailable, setClaimLinksAvailable] = useState(false)
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [errorMessage, setErrorMessage] = useState('')
@@ -104,18 +113,20 @@ export default function OffersPage() {
   const [sourceFilter, setSourceFilter] = useState('all')
   const [form, setForm] = useState<OfferForm>(EMPTY_FORM)
   const [claimForm, setClaimForm] = useState<ClaimForm>(EMPTY_CLAIM_FORM)
+  const claimId = useRef<string | null>(null)
 
   const loadOffers = useCallback(async () => {
     setLoading(true)
     setErrorMessage('')
 
-    const [offersResult, claimsResult] = await Promise.all([
+    const [offersResult, claimsResult, claimLinksResult] = await Promise.all([
       supabase.from('offers').select('*').order('created_at', { ascending: false }),
       supabase
         .from('offer_claims')
         .select('*')
         .order('claimed_on', { ascending: false })
         .order('created_at', { ascending: false }),
+      supabase.from('offer_claims').select('company_id').limit(0),
     ])
 
     if (offersResult.error || claimsResult.error) {
@@ -127,6 +138,7 @@ export default function OffersPage() {
     } else {
       setOffers((offersResult.data ?? []) as Offer[])
       setClaims((claimsResult.data ?? []) as OfferClaim[])
+      setClaimLinksAvailable(!claimLinksResult.error)
     }
 
     setLoading(false)
@@ -262,6 +274,8 @@ export default function OffersPage() {
   }
 
   function openClaimForm(offer: Offer) {
+    if (saving) return
+    claimId.current = null
     setClaimingOffer(offer)
     setClaimForm({
       ...EMPTY_CLAIM_FORM,
@@ -274,16 +288,23 @@ export default function OffersPage() {
 
   async function saveClaim(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
-    if (!claimingOffer) return
+    if (!claimingOffer || saving) return
 
     if (!claimForm.claimantName.trim() || !claimForm.leadSource.trim()) {
       setErrorMessage('Claimant name and lead source are required.')
       return
     }
 
+    if (claimLinksAvailable && claimForm.mode === 'existing' && !claimForm.company) {
+      setErrorMessage('Choose the company to link this claimant to.')
+      return
+    }
+
     setSaving(true)
     setErrorMessage('')
-    const { error } = await supabase.from('offer_claims').insert({
+    claimId.current ??= crypto.randomUUID()
+    const claim = {
+      id: claimId.current,
       offer_id: claimingOffer.id,
       claimant_name: claimForm.claimantName.trim(),
       company_name: claimForm.companyName.trim() || null,
@@ -292,11 +313,27 @@ export default function OffersPage() {
       lead_source: claimForm.leadSource.trim(),
       claimed_on: claimForm.claimedOn,
       notes: claimForm.notes.trim() || null,
-    })
+    }
+    const { error } = claimLinksAvailable
+      ? await supabase.rpc('record_offer_claim', {
+        p_claim_id: claim.id,
+        p_offer_id: claim.offer_id,
+        p_company_id: claimForm.mode === 'existing' ? claimForm.company?.id ?? null : null,
+        p_claimant_name: claim.claimant_name,
+        p_company_name: claim.company_name,
+        p_email: claim.email,
+        p_telephone: claim.telephone,
+        p_lead_source: claim.lead_source,
+        p_claimed_on: claim.claimed_on,
+        p_notes: claim.notes,
+      })
+      : await supabase.from('offer_claims').upsert(claim, { onConflict: 'id', ignoreDuplicates: true })
 
     if (error) {
       setErrorMessage(
-        error.message.includes('offers_inventory_valid')
+        error.code === 'PGRST202' || error.code === '42883'
+          ? CLAIM_COMPANY_SETUP
+          : error.message.includes('offers_inventory_valid')
           ? 'This offer has no availability remaining.'
           : error.message,
       )
@@ -306,7 +343,13 @@ export default function OffersPage() {
 
     setClaimingOffer(null)
     setClaimForm(EMPTY_CLAIM_FORM)
-    setSuccessMessage('Claim recorded.')
+    let message = 'Claim recorded.'
+    if (claimLinksAvailable) {
+      message = claimForm.mode === 'existing'
+        ? 'Claim recorded and linked to the company.'
+        : 'Claim recorded and claimant saved to Leads.'
+    }
+    setSuccessMessage(message)
     await loadOffers()
     setSaving(false)
   }
@@ -558,12 +601,10 @@ export default function OffersPage() {
                   <h2 className="mt-1 text-2xl font-black text-stone-950">
                     {claimingOffer.name}
                   </h2>
-                  <p className="mt-1 text-sm text-stone-500">
-                    Add who claimed and the source that brought them in.
-                  </p>
                 </div>
                 <button
                   type="button"
+                  disabled={saving}
                   onClick={() => setClaimingOffer(null)}
                   className="rounded-lg px-3 py-2 text-sm font-bold text-stone-500 hover:bg-stone-100"
                 >
@@ -571,7 +612,30 @@ export default function OffersPage() {
                 </button>
               </div>
 
-              <div className="mt-6 grid gap-5 md:grid-cols-2">
+              {!claimLinksAvailable ? <p className="mt-4 text-sm text-amber-800">{CLAIM_COMPANY_SETUP}</p> : null}
+
+              <fieldset disabled={saving} className="mt-6 grid gap-5 md:grid-cols-2">
+                {claimLinksAvailable ? <Field label="Record claimant as" required>
+                  <select value={claimForm.mode} onChange={(event) => {
+                    const mode = event.currentTarget.value as ClaimForm['mode']
+                    setClaimForm((current) => ({ ...current, mode }))
+                  }} className="form-input">
+                    <option value="new">Add to Leads</option>
+                    <option value="existing">Link to an existing company</option>
+                  </select>
+                </Field> : null}
+
+                {claimLinksAvailable && claimForm.mode === 'existing' ? (
+                  <ClaimCompanyPicker company={claimForm.company} disabled={saving}
+                    onChange={(company) => setClaimForm((current) => ({ ...current, company }))} />
+                ) : (
+                  <Field label="Company">
+                    <input value={claimForm.companyName} onChange={(event) =>
+                      setClaimForm({ ...claimForm, companyName: event.currentTarget.value })
+                    } className="form-input" placeholder="Company name, if applicable" />
+                  </Field>
+                )}
+
                 <Field label="Claimant name" required>
                   <input
                     required
@@ -585,20 +649,6 @@ export default function OffersPage() {
                     }
                     className="form-input"
                     placeholder="Full name"
-                  />
-                </Field>
-
-                <Field label="Company">
-                  <input
-                    value={claimForm.companyName}
-                    onChange={(event) =>
-                      setClaimForm({
-                        ...claimForm,
-                        companyName: event.target.value,
-                      })
-                    }
-                    className="form-input"
-                    placeholder="Company name"
                   />
                 </Field>
 
@@ -684,11 +734,12 @@ export default function OffersPage() {
                     />
                   </Field>
                 </div>
-              </div>
+              </fieldset>
 
               <div className="mt-6 flex justify-end gap-3">
                 <button
                   type="button"
+                  disabled={saving}
                   onClick={() => setClaimingOffer(null)}
                   className="rounded-xl border border-stone-200 px-5 py-3 text-sm font-bold text-stone-700 hover:bg-stone-50"
                 >
@@ -995,7 +1046,11 @@ function OfferCard({
                   claim.telephone ||
                   claim.notes ? (
                     <div className="mt-2 text-xs leading-5 text-stone-600">
-                      {claim.company_name ? (
+                      {claim.company_id ? (
+                        <Link href={`/companies/${claim.company_id}`} className="font-bold text-red-600 hover:underline">
+                          {claim.company_name || 'View company'}
+                        </Link>
+                      ) : claim.company_name ? (
                         <p className="font-bold">{claim.company_name}</p>
                       ) : null}
                       {claim.email ? <p>{claim.email}</p> : null}

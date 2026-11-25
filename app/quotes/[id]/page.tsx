@@ -5,13 +5,15 @@ import Link from 'next/link'
 import { useParams } from 'next/navigation'
 import AppHeader from '@/app/components/AppHeader'
 import { formatCurrency, formatShortDate } from '@/lib/crm'
+import { isOpenQuote, QUOTE_ACTION_SETUP, quoteToday, type QuoteActionDates } from '@/lib/quoteActions'
 import { supabase } from '@/lib/supabaseClient'
+import { saveQuoteFollowUp } from '../saveQuoteFollowUp'
 import QuoteNurture from './QuoteNurture'
 
 type Company = { id: string; company_name: string }
 type Contact = { id: string; first_name: string | null; last_name: string | null; company_id: string | null }
 type Deal = { id: string; name: string; company_id: string; stage: string }
-type Quote = {
+type Quote = QuoteActionDates & {
   id: string
   company_id: string
   contact_id: string
@@ -19,7 +21,6 @@ type Quote = {
   quote_number: string
   one_off_value: number
   subscription_value: number
-  issued_on: string
   chase_due_date: string
   status: string
   notes: string | null
@@ -69,8 +70,10 @@ export default function QuoteDetailPage() {
 
   async function save(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
-    if (!quote) return
+    if (!quote || saving) return
     const form = new FormData(event.currentTarget)
+    const status = String(form.get('status'))
+    const now = new Date()
     setSaving(true); setError(''); setSuccess('')
     const payload = {
       contact_id: String(form.get('contact_id')),
@@ -80,14 +83,31 @@ export default function QuoteDetailPage() {
       subscription_value: Number(form.get('subscription_value') || 0),
       issued_on: String(form.get('issued_on')),
       chase_due_date: String(form.get('chase_due_date')),
-      status: String(form.get('status')),
+      status,
+      ...(status === 'chased' && quote.status !== 'chased' && quote.last_chased_on !== undefined
+        ? { last_chased_on: quoteToday(now) }
+        : {}),
       notes: String(form.get('notes') || '').trim() || null,
-      updated_at: new Date().toISOString(),
+      updated_at: now.toISOString(),
     }
     const { error: saveError } = await supabase.from('quotes').update(payload).eq('id', quote.id).select('id').single()
     if (saveError) setError(saveError.message)
     else { setSuccess('Quote updated.'); await load() }
     setSaving(false)
+  }
+
+  async function setFollowUp(checked: boolean) {
+    if (!quote || saving || quote.follow_up_sent_on === undefined) return
+    setSaving(true)
+    setError('')
+    setSuccess('')
+    try {
+      const { data, error: saveError } = await saveQuoteFollowUp(quote.id, quote.follow_up_sent_on, checked)
+      if (saveError) setError(saveError.message)
+      else if (data) setQuote((current) => current?.id === quote.id ? { ...current, ...data } : current)
+    } finally {
+      setSaving(false)
+    }
   }
 
   const company = quote ? (Array.isArray(quote.companies) ? quote.companies[0] : quote.companies) : null
@@ -101,6 +121,19 @@ export default function QuoteDetailPage() {
       {success ? <p className="mb-5 rounded-xl bg-emerald-50 p-4 text-sm font-bold text-emerald-700">{success}</p> : null}
       {loading ? <p className="rounded-2xl bg-white p-8 text-sm font-bold text-stone-500">Loading quote…</p> : quote ? <>
         <div className="grid gap-4 sm:grid-cols-3"><Metric label="Total value" value={formatCurrency(Number(quote.one_off_value) + Number(quote.subscription_value))} /><Metric label="Next chase" value={formatShortDate(quote.chase_due_date)} /><Metric label="Status" value={quote.status} /></div>
+        <section className="mt-6 rounded-2xl border border-stone-200 bg-white p-5 shadow-sm">
+          <label className="flex items-center gap-2 text-sm font-black text-stone-900">
+            <input type="checkbox" checked={Boolean(quote.follow_up_sent_on)} disabled={saving || !isOpenQuote(quote.status) || quote.follow_up_sent_on === undefined}
+              onChange={(event) => void setFollowUp(event.currentTarget.checked)} className="h-4 w-4 accent-red-600 disabled:opacity-50" />
+            Follow up sent
+          </label>
+          <p className="mt-2 text-sm text-stone-600">
+            {quote.follow_up_sent_on
+              ? `Sent ${formatShortDate(quote.follow_up_sent_on)}. Next chase ${formatShortDate(quote.chase_due_date)}.`
+              : 'Confirm they received the quote and ask if they have any questions. Tick once sent to schedule the chase in seven days.'}
+          </p>
+          {quote.follow_up_sent_on === undefined ? <p className="mt-2 text-sm text-amber-800">{QUOTE_ACTION_SETUP}</p> : null}
+        </section>
         <form onSubmit={save} className="mt-6 rounded-2xl border border-stone-200 bg-white p-6 shadow-sm">
           <div className="flex items-start justify-between gap-4"><div><p className="text-xs font-black uppercase tracking-[0.18em] text-red-600">Commercial details</p><h2 className="mt-1 text-2xl font-black text-stone-950">Edit quote</h2></div>{linkedDeal ? <Link href={`/sales/${linkedDeal.id}`} className="rounded-xl bg-stone-950 px-4 py-2 text-xs font-black text-white">Open opportunity →</Link> : null}</div>
           <div className="mt-6 grid gap-5 md:grid-cols-2">
@@ -111,7 +144,7 @@ export default function QuoteDetailPage() {
             <Field label="One-off value (£)"><input name="one_off_value" type="number" min="0" step="0.01" defaultValue={quote.one_off_value} className="form-input" /></Field>
             <Field label="Subscription value (£)"><input name="subscription_value" type="number" min="0" step="0.01" defaultValue={quote.subscription_value} className="form-input" /></Field>
             <Field label="Issued on"><input required name="issued_on" type="date" defaultValue={quote.issued_on} className="form-input" /></Field>
-            <Field label="Next chase"><input required name="chase_due_date" type="date" defaultValue={quote.chase_due_date} className="form-input" /></Field>
+            <Field label="Next chase"><input key={quote.chase_due_date} required name="chase_due_date" type="date" defaultValue={quote.chase_due_date} className="form-input" /></Field>
             <label className="block md:col-span-2"><span className="mb-1.5 block text-xs font-black uppercase tracking-wide text-stone-500">Notes</span><textarea name="notes" rows={5} defaultValue={quote.notes ?? ''} className="form-input resize-y" /></label>
           </div>
           <div className="mt-6 flex justify-end"><button disabled={saving} className="rounded-xl bg-red-600 px-5 py-3 text-sm font-black text-white disabled:opacity-50">{saving ? 'Saving…' : 'Save quote'}</button></div>

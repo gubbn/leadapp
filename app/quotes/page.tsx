@@ -4,24 +4,25 @@ import { FormEvent, useCallback, useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import AppHeader from '@/app/components/AppHeader'
 import { formatCurrency, formatShortDate } from '@/lib/crm'
+import { addBusinessDays, isMissingQuoteActionColumns, isOpenQuote, QUOTE_ACTION_COLUMNS, QUOTE_ACTION_SETUP, quoteToday, type QuoteActionDates } from '@/lib/quoteActions'
 import { supabase } from '@/lib/supabaseClient'
+import { saveQuoteFollowUp } from './saveQuoteFollowUp'
 
 type Company = { id: string; company_name: string }
 type Contact = { id: string; first_name: string | null; last_name: string | null; company_id: string | null }
 type Deal = { id: string; company_id: string; name: string; stage: string }
-type Quote = {
+type Quote = QuoteActionDates & {
   id: string
   quote_number: string
   one_off_value: number | null
   subscription_value: number | null
-  issued_on: string
   chase_due_date: string
   status: string
   companies: Company | Company[] | null
   contacts: Pick<Contact, 'id' | 'first_name' | 'last_name'> | Pick<Contact, 'id' | 'first_name' | 'last_name'>[] | null
 }
 
-const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/London', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date())
+const quoteColumns = 'id,quote_number,one_off_value,subscription_value,issued_on,chase_due_date,status,companies(id,company_name),contacts(id,first_name,last_name)'
 const statuses = ['issued', 'chased', 'won', 'lost', 'withdrawn']
 const hiddenStatuses = new Set(['lost', 'abandoned', 'withdrawn'])
 
@@ -35,12 +36,13 @@ export default function QuotesPage() {
   const [showClosedQuotes, setShowClosedQuotes] = useState(false)
   const [error, setError] = useState('')
   const [savingId, setSavingId] = useState<string | null>(null)
+  const today = quoteToday()
 
   const load = useCallback(async () => {
     setLoading(true)
     setError('')
     const [quotesResult, companiesResult, contactsResult, dealsResult] = await Promise.all([
-      supabase.from('quotes').select('id,quote_number,one_off_value,subscription_value,issued_on,chase_due_date,status,companies(id,company_name),contacts(id,first_name,last_name)').order('chase_due_date'),
+      loadQuotes(),
       supabase.from('companies').select('id,company_name').order('company_name'),
       supabase.from('contacts').select('id,first_name,last_name,company_id').eq('is_active', true).order('last_name'),
       loadLinkableDeals(),
@@ -62,35 +64,53 @@ export default function QuotesPage() {
   const visibleQuotes = showClosedQuotes ? quotes : quotes.filter((quote) => !hiddenStatuses.has(quote.status))
 
   const totals = useMemo(() => ({
-    open: quotes.filter((quote) => isOpen(quote.status)).length,
-    due: quotes.filter((quote) => isOpen(quote.status) && quote.chase_due_date <= today).length,
-    oneOff: quotes.filter((quote) => isOpen(quote.status)).reduce((sum, quote) => sum + Number(quote.one_off_value ?? 0), 0),
-    subscriptions: quotes.filter((quote) => isOpen(quote.status)).reduce((sum, quote) => sum + Number(quote.subscription_value ?? 0), 0),
-  }), [quotes])
+    open: quotes.filter((quote) => isOpenQuote(quote.status)).length,
+    due: quotes.filter((quote) => isOpenQuote(quote.status) && quote.chase_due_date <= today).length,
+    oneOff: quotes.filter((quote) => isOpenQuote(quote.status)).reduce((sum, quote) => sum + Number(quote.one_off_value ?? 0), 0),
+    subscriptions: quotes.filter((quote) => isOpenQuote(quote.status)).reduce((sum, quote) => sum + Number(quote.subscription_value ?? 0), 0),
+  }), [quotes, today])
 
   async function setStatus(quote: Quote, status: string) {
+    if (savingId) return
     setSavingId(quote.id)
     setError('')
+    const now = new Date()
+    const chasedOn = quoteToday(now)
+    const trackChase = quote.last_chased_on !== undefined
     const update = {
       status,
-      updated_at: new Date().toISOString(),
-      ...(status === 'chased' ? { chase_due_date: addBusinessDays(today, 5) } : {}),
+      updated_at: now.toISOString(),
+      ...(status === 'chased' ? { chase_due_date: addBusinessDays(chasedOn, 5) } : {}),
+      ...(status === 'chased' && trackChase ? { last_chased_on: chasedOn } : {}),
     }
     const { data, error: saveError } = await supabase
       .from('quotes')
       .update(update)
       .eq('id', quote.id)
-      .select('status,chase_due_date')
-      .single()
+      .select(trackChase ? `status,chase_due_date,${QUOTE_ACTION_COLUMNS}` : 'status,chase_due_date')
+      .single<Partial<Quote>>()
 
     if (saveError) {
       setError(saveError.message)
     } else {
       setQuotes((current) => current.map((item) => item.id === quote.id
-        ? { ...item, status: data.status, chase_due_date: data.chase_due_date }
+        ? { ...item, ...data }
         : item))
     }
     setSavingId(null)
+  }
+
+  async function setFollowUp(quote: Quote, checked: boolean) {
+    if (savingId || quote.follow_up_sent_on === undefined) return
+    setSavingId(quote.id)
+    setError('')
+    try {
+      const { data, error: saveError } = await saveQuoteFollowUp(quote.id, quote.follow_up_sent_on, checked)
+      if (saveError) setError(saveError.message)
+      else setQuotes((current) => current.map((item) => item.id === quote.id ? { ...item, ...data } : item))
+    } finally {
+      setSavingId(null)
+    }
   }
 
   return <main className="min-h-screen bg-stone-100 text-stone-900"><AppHeader />
@@ -98,7 +118,7 @@ export default function QuotesPage() {
     <section className="mx-auto max-w-7xl px-4 py-8">
       {error ? <p className="mb-6 rounded-xl bg-red-50 p-4 text-sm font-bold text-red-700">{error}</p> : null}
       {showForm ? <QuoteForm companies={companies} contacts={contacts} deals={deals} onClose={() => setShowForm(false)} onSaved={load} /> : null}
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4"><Metric label="Open quotes" value={totals.open} /><Metric label="Chases due" value={totals.due} urgent={totals.due > 0} /><Metric label="One-off value" value={formatCurrency(totals.oneOff)} /><Metric label="Subscription value" value={formatCurrency(totals.subscriptions)} /></div>
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4"><Metric label="Open quotes" value={totals.open} /><Metric label="Follow-ups due" value={totals.due} urgent={totals.due > 0} /><Metric label="One-off value" value={formatCurrency(totals.oneOff)} /><Metric label="Subscription value" value={formatCurrency(totals.subscriptions)} /></div>
       <section className="mt-6 overflow-hidden rounded-2xl border border-stone-200 bg-white shadow-sm">
         <div className="flex flex-wrap items-end justify-between gap-4 border-b border-stone-200 p-5">
           <div>
@@ -113,13 +133,78 @@ export default function QuotesPage() {
             <Link href="/#tasks" className="text-xs font-black text-red-600">View Do next →</Link>
           </div>
         </div>
-        {loading ? <p className="p-6 text-sm font-bold text-stone-500">Loading quotes...</p> : visibleQuotes.length ? <div className="overflow-x-auto"><table className="min-w-full text-left"><thead className="bg-stone-50 text-[10px] font-black uppercase tracking-wide text-stone-500"><tr><th className="px-5 py-3">Customer</th><th className="px-5 py-3">Contact</th><th className="px-5 py-3">Quote no.</th><th className="px-5 py-3">One-off</th><th className="px-5 py-3">Subscription</th><th className="px-5 py-3">Chase</th><th className="px-5 py-3">Status</th></tr></thead><tbody>{visibleQuotes.map((quote) => <tr key={quote.id} className="border-t border-stone-100"><td className="px-5 py-4 text-sm font-black text-stone-900">{companyName(quote.companies)}</td><td className="px-5 py-4 text-sm text-stone-600">{contactName(quote.contacts)}</td><td className="px-5 py-4 font-mono text-sm font-bold"><Link href={`/quotes/${quote.id}`} className="text-red-600 hover:underline">{quote.quote_number}</Link></td><td className="px-5 py-4 text-sm font-bold text-stone-800">{formatCurrency(quote.one_off_value)}</td><td className="px-5 py-4 text-sm font-bold text-stone-800">{formatCurrency(quote.subscription_value)}</td><td className={`px-5 py-4 text-sm font-black ${quote.chase_due_date <= today && isOpen(quote.status) ? 'text-red-600' : 'text-stone-700'}`}>{formatShortDate(quote.chase_due_date)}</td><td className="px-5 py-4"><div className="flex min-w-max items-center gap-2">{isOpen(quote.status) ? <button type="button" onClick={() => void setStatus(quote, 'chased')} disabled={savingId === quote.id} className="rounded-lg bg-red-600 px-3 py-1.5 text-xs font-black text-white shadow-sm hover:bg-red-700 disabled:cursor-wait disabled:opacity-60">{savingId === quote.id ? 'Saving...' : quote.status === 'chased' ? 'Chased again' : 'Mark chased'}</button> : null}<select aria-label={`Status for quote ${quote.quote_number}`} value={quote.status} onChange={(event) => void setStatus(quote, event.target.value)} disabled={savingId === quote.id} className="rounded-lg border border-stone-200 bg-white px-2 py-1.5 text-xs font-black text-stone-700 disabled:cursor-wait disabled:opacity-60">{(quote.status === 'abandoned' ? [...statuses, 'abandoned'] : statuses).map((status) => <option key={status} value={status}>{status}</option>)}</select></div></td></tr>)}</tbody></table></div> : <p className="p-6 text-sm text-stone-500">{quotes.length ? 'No quotes in this view. Turn on the toggle to see lost, abandoned and withdrawn quotes.' : 'No quotes recorded.'}</p>}
+        {quotes.some((quote) => quote.follow_up_sent_on === undefined) ? (
+          <p className="border-b border-stone-200 px-5 py-3 text-sm text-amber-800">{QUOTE_ACTION_SETUP}</p>
+        ) : null}
+        {loading ? (
+          <p className="p-6 text-sm font-bold text-stone-500">Loading quotes...</p>
+        ) : visibleQuotes.length ? (
+          <div className="overflow-x-auto">
+            <table className="min-w-full text-left">
+              <thead className="bg-stone-50 text-[10px] font-black uppercase tracking-wide text-stone-500">
+                <tr>
+                  {['Customer', 'Contact', 'Quote no.', 'One-off', 'Subscription', 'Next chase', 'Follow up sent', 'Status'].map((label) => (
+                    <th key={label} className="whitespace-nowrap px-5 py-3">{label}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {visibleQuotes.map((quote) => {
+                  const open = isOpenQuote(quote.status)
+                  const disabled = savingId !== null
+                  return (
+                    <tr key={quote.id} className="border-t border-stone-100">
+                      <td className="px-5 py-4 text-sm font-black text-stone-900">{companyName(quote.companies)}</td>
+                      <td className="px-5 py-4 text-sm text-stone-600">{contactName(quote.contacts)}</td>
+                      <td className="px-5 py-4 font-mono text-sm font-bold">
+                        <Link href={'/quotes/' + quote.id} className="text-red-600 hover:underline">{quote.quote_number}</Link>
+                      </td>
+                      <td className="px-5 py-4 text-sm font-bold text-stone-800">{formatCurrency(quote.one_off_value)}</td>
+                      <td className="px-5 py-4 text-sm font-bold text-stone-800">{formatCurrency(quote.subscription_value)}</td>
+                      <td className={'whitespace-nowrap px-5 py-4 text-sm font-black ' + (open && quote.chase_due_date <= today ? 'text-red-600' : 'text-stone-700')}>
+                        {formatShortDate(quote.chase_due_date)}
+                      </td>
+                      <td className="px-5 py-4">
+                        <div className="flex items-center gap-2">
+                          <input
+                            type="checkbox"
+                            aria-label={'Follow up sent for quote ' + quote.quote_number}
+                            checked={Boolean(quote.follow_up_sent_on)}
+                            disabled={disabled || !open || quote.follow_up_sent_on === undefined}
+                            onChange={(event) => void setFollowUp(quote, event.currentTarget.checked)}
+                            className="h-4 w-4 shrink-0 accent-red-600 disabled:opacity-50"
+                          />
+                          {quote.follow_up_sent_on ? <span className="whitespace-nowrap text-xs text-stone-600">{formatShortDate(quote.follow_up_sent_on)}</span> : null}
+                        </div>
+                      </td>
+                      <td className="px-5 py-4">
+                        <div className="flex min-w-max items-center gap-2">
+                          {open ? (
+                            <button type="button" onClick={() => void setStatus(quote, 'chased')} disabled={disabled} className="rounded-lg bg-red-600 px-3 py-1.5 text-xs font-black text-white shadow-sm hover:bg-red-700 disabled:opacity-60">
+                              {savingId === quote.id ? 'Saving...' : quote.status === 'chased' ? 'Chased again' : 'Mark chased'}
+                            </button>
+                          ) : null}
+                          <select aria-label={'Status for quote ' + quote.quote_number} value={quote.status} onChange={(event) => void setStatus(quote, event.target.value)} disabled={disabled} className="rounded-lg border border-stone-200 bg-white px-2 py-1.5 text-xs font-black text-stone-700 disabled:opacity-60">
+                            {(quote.status === 'abandoned' ? [...statuses, 'abandoned'] : statuses).map((status) => <option key={status} value={status}>{status}</option>)}
+                          </select>
+                        </div>
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <p className="p-6 text-sm text-stone-500">{quotes.length ? 'No quotes in this view. Turn on the toggle to see lost, abandoned and withdrawn quotes.' : 'No quotes recorded.'}</p>
+        )}
       </section>
     </section>
   </main>
 }
 
 function QuoteForm({ companies, contacts, deals, onClose, onSaved }: { companies: Company[]; contacts: Contact[]; deals: Deal[]; onClose: () => void; onSaved: () => Promise<void> }) {
+  const today = quoteToday()
   const [companyId, setCompanyId] = useState('')
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
@@ -151,7 +236,13 @@ function QuoteForm({ companies, contacts, deals, onClose, onSaved }: { companies
     await onSaved()
     onClose()
   }
-  return <section className="mb-6 rounded-2xl border border-red-200 bg-white p-5 shadow-lg"><div className="mb-5 flex items-start justify-between gap-5"><div><p className="text-xs font-black uppercase tracking-wide text-red-600">New quote</p><h2 className="mt-1 text-2xl font-black text-stone-950">Set the chase while recording the quote.</h2><p className="mt-1 text-sm text-stone-500">The first chase is automatically set for five business days after issue.</p></div><button type="button" onClick={onClose} className="text-sm font-bold text-stone-400">Close</button></div><form onSubmit={submit} className="grid gap-4 md:grid-cols-2 lg:grid-cols-4"><select required value={companyId} onChange={(event) => setCompanyId(event.target.value)} className="form-input"><option value="">Choose customer</option>{companies.map((company) => <option key={company.id} value={company.id}>{company.company_name}</option>)}</select><select required name="contact_id" disabled={!companyId} className="form-input"><option value="">Choose contact</option>{matchingContacts.map((contact) => <option key={contact.id} value={contact.id}>{contactName(contact)}</option>)}</select>{deals.length ? <select key={companyId} name="deal_id" disabled={!companyId} className="form-input"><option value="">No linked opportunity</option>{matchingDeals.map((deal) => <option key={deal.id} value={deal.id}>{deal.name}</option>)}</select> : null}<input required name="quote_number" className="form-input" placeholder="Quote number" /><input required name="issued_on" type="date" defaultValue={today} className="form-input" /><input name="one_off_value" type="number" min="0" step="0.01" className="form-input" placeholder="One-off value (£)" /><input name="subscription_value" type="number" min="0" step="0.01" className="form-input" placeholder="Subscription value (£)" /><textarea name="notes" rows={2} className="form-input resize-y md:col-span-2" placeholder="Notes (optional)" /><div className="flex items-center justify-end gap-3 lg:col-span-4">{error ? <p className="mr-auto text-xs font-bold text-red-600">{error}</p> : null}<button type="button" onClick={onClose} className="rounded-xl px-4 py-2 text-sm font-bold text-stone-500">Cancel</button><button disabled={saving} className="rounded-xl bg-red-600 px-5 py-2.5 text-sm font-black text-white">{saving ? 'Saving...' : 'Record quote'}</button></div></form></section>
+  return <section className="mb-6 rounded-2xl border border-red-200 bg-white p-5 shadow-lg"><div className="mb-5 flex items-start justify-between gap-5"><div><p className="text-xs font-black uppercase tracking-wide text-red-600">New quote</p><h2 className="mt-1 text-2xl font-black text-stone-950">Set the chase while recording the quote.</h2><p className="mt-1 text-sm text-stone-500">The first follow-up is due five business days after issue.</p></div><button type="button" onClick={onClose} className="text-sm font-bold text-stone-400">Close</button></div><form onSubmit={submit} className="grid gap-4 md:grid-cols-2 lg:grid-cols-4"><select required value={companyId} onChange={(event) => setCompanyId(event.target.value)} className="form-input"><option value="">Choose customer</option>{companies.map((company) => <option key={company.id} value={company.id}>{company.company_name}</option>)}</select><select required name="contact_id" disabled={!companyId} className="form-input"><option value="">Choose contact</option>{matchingContacts.map((contact) => <option key={contact.id} value={contact.id}>{contactName(contact)}</option>)}</select>{deals.length ? <select key={companyId} name="deal_id" disabled={!companyId} className="form-input"><option value="">No linked opportunity</option>{matchingDeals.map((deal) => <option key={deal.id} value={deal.id}>{deal.name}</option>)}</select> : null}<input required name="quote_number" className="form-input" placeholder="Quote number" /><input required name="issued_on" type="date" defaultValue={today} className="form-input" /><input name="one_off_value" type="number" min="0" step="0.01" className="form-input" placeholder="One-off value (£)" /><input name="subscription_value" type="number" min="0" step="0.01" className="form-input" placeholder="Subscription value (£)" /><textarea name="notes" rows={2} className="form-input resize-y md:col-span-2" placeholder="Notes (optional)" /><div className="flex items-center justify-end gap-3 lg:col-span-4">{error ? <p className="mr-auto text-xs font-bold text-red-600">{error}</p> : null}<button type="button" onClick={onClose} className="rounded-xl px-4 py-2 text-sm font-bold text-stone-500">Cancel</button><button disabled={saving} className="rounded-xl bg-red-600 px-5 py-2.5 text-sm font-black text-white">{saving ? 'Saving...' : 'Record quote'}</button></div></form></section>
+}
+
+async function loadQuotes() {
+  const withActions = await supabase.from('quotes').select(`${quoteColumns},${QUOTE_ACTION_COLUMNS}`).order('chase_due_date')
+  if (!isMissingQuoteActionColumns(withActions.error)) return withActions
+  return supabase.from('quotes').select(quoteColumns).order('chase_due_date')
 }
 
 async function loadLinkableDeals() {
@@ -162,8 +253,6 @@ async function loadLinkableDeals() {
     .not('stage', 'in', '("won","lost","abandoned")').order('name')
 }
 
-function addBusinessDays(date: string, days: number) { const result = new Date(`${date}T12:00:00Z`); let added = 0; while (added < days) { result.setUTCDate(result.getUTCDate() + 1); if (result.getUTCDay() !== 0 && result.getUTCDay() !== 6) added += 1 } return result.toISOString().slice(0, 10) }
-function isOpen(status: string) { return status === 'issued' || status === 'chased' }
 function companyName(value: Quote['companies']) { const company = Array.isArray(value) ? value[0] : value; return company?.company_name ?? 'Customer' }
 function contactName(value: Quote['contacts'] | Contact) { const contact = Array.isArray(value) ? value[0] : value; return `${contact?.first_name ?? ''} ${contact?.last_name ?? ''}`.trim() || 'Contact' }
 function Metric({ label, value, urgent = false }: { label: string; value: string | number; urgent?: boolean }) { return <div className={`rounded-2xl border bg-white p-5 shadow-sm ${urgent ? 'border-red-300 ring-4 ring-red-50' : 'border-stone-200'}`}><p className="text-xs font-black uppercase tracking-wide text-stone-400">{label}</p><p className={`mt-3 text-3xl font-black ${urgent ? 'text-red-600' : 'text-stone-950'}`}>{value}</p></div> }

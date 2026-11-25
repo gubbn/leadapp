@@ -21,6 +21,7 @@ import {
 } from 'lucide-react'
 import { supabase } from '@/lib/supabaseClient'
 import { formatCurrency, formatShortDate, normalizeDealStage, stageFor } from '@/lib/crm'
+import { daysSinceQuoteAction, isMissingQuoteActionColumns, OPEN_QUOTE_STATUSES, QUOTE_ACTION_COLUMNS, quoteToday, type QuoteActionDates } from '@/lib/quoteActions'
 import { WARRANTY_STATUS_LABELS, warrantyToday, warrantyWeekEnd, type WarrantyStatus } from '@/lib/warrantyImportHelpers'
 
 type Company = {
@@ -65,7 +66,7 @@ type Contact = {
   next_contact_opportunity: string | null
   companies: Company | Company[] | null
 }
-type Quote = {
+type Quote = QuoteActionDates & {
   id: string
   deal_id?: string | null
   quote_number: string
@@ -92,6 +93,7 @@ type NextAction = {
   title: string
   detail: string
   dueDate: string | null
+  daysSinceLastAction?: number
   href: string
   kind: 'task' | 'opportunity' | 'contact' | 'customer' | 'quote'
   task?: Task
@@ -99,12 +101,16 @@ type NextAction = {
 }
 
 async function loadOpenQuotes() {
-  const columns = 'id,quote_number,chase_due_date,status,companies(id,company_name)'
-  const withLinks = await supabase.from('quotes').select(`${columns},deal_id`)
-    .in('status', ['issued', 'chased']).order('chase_due_date')
-  if (withLinks.error?.code !== '42703' || !withLinks.error.message.includes('deal_id')) return withLinks
-  return supabase.from('quotes').select(columns)
-    .in('status', ['issued', 'chased']).order('chase_due_date')
+  const baseColumns = 'id,quote_number,issued_on,chase_due_date,status,companies(id,company_name)'
+  const optionalColumns = new Set(['deal_id', QUOTE_ACTION_COLUMNS])
+  while (true) {
+    const result = await supabase.from('quotes').select([baseColumns, ...optionalColumns].join(','))
+      .in('status', OPEN_QUOTE_STATUSES).order('chase_due_date')
+      .overrideTypes<Quote[], { merge: false }>()
+    if (isMissingQuoteActionColumns(result.error) && optionalColumns.delete(QUOTE_ACTION_COLUMNS)) continue
+    if (result.error?.code === '42703' && result.error.message.includes('deal_id') && optionalColumns.delete('deal_id')) continue
+    return result
+  }
 }
 
 const londonDate = new Intl.DateTimeFormat('en-CA', {
@@ -143,6 +149,8 @@ export default function TodayWorkspace() {
   const [error, setError] = useState('')
   const [showTaskForm, setShowTaskForm] = useState(false)
   const [showActivityForm, setShowActivityForm] = useState(false)
+  const [showAllActions, setShowAllActions] = useState(false)
+  const quoteDate = quoteToday()
 
   const loadWorkspace = useCallback(async () => {
     setLoading(true)
@@ -194,7 +202,7 @@ export default function TodayWorkspace() {
     setCompanies(uniqueCompanies)
     setContactCount(uniqueContacts.length)
     setContacts(uniqueContacts)
-    setQuotes((quotesResult.data ?? []) as Quote[])
+    setQuotes(quotesResult.data ?? [])
     setWeeklyWarranties(warrantiesResult.data ?? [])
     setWeeklyWarrantyCount(warrantiesResult.count ?? 0)
     setWeeklyWarrantyError(Boolean(warrantiesResult.error))
@@ -222,14 +230,8 @@ export default function TodayWorkspace() {
     [deals],
   )
   const nextActions = useMemo<NextAction[]>(() => {
-    const quotedDealIds = new Set<string>()
-    const dueQuotes = quotes.filter((quote) => {
-      if (quote.chase_due_date > today) return false
-      if (!quote.deal_id) return true
-      if (quotedDealIds.has(quote.deal_id)) return false
-      quotedDealIds.add(quote.deal_id)
-      return true
-    })
+    const dueQuotes = quotes.filter((quote) => quote.chase_due_date <= quoteDate)
+    const quotedDealIds = new Set(dueQuotes.map((quote) => quote.deal_id).filter(Boolean))
     const datedTasks = tasks.filter((task) => {
       const taskDeal = Array.isArray(task.deals) ? task.deals[0] : task.deals
       return !taskDeal?.id || !quotedDealIds.has(taskDeal.id)
@@ -276,9 +278,10 @@ export default function TodayWorkspace() {
     )
     const quoteChases = dueQuotes.map((quote) => ({
       id: `quote-${quote.id}`,
-      title: `Chase quote ${quote.quote_number}`,
-      detail: `${companyName(quote.companies)} · quote follow-up`,
+      title: `Follow up due · Quote ${quote.quote_number}`,
+      detail: companyName(quote.companies),
       dueDate: quote.chase_due_date,
+      daysSinceLastAction: daysSinceQuoteAction(quote, quoteDate),
       href: `/quotes/${quote.id}`,
       kind: 'quote' as const,
     }))
@@ -306,7 +309,7 @@ export default function TodayWorkspace() {
 
     return [...datedTasks, ...datedDeals, ...datedContacts, ...customerDates, ...quoteChases]
       .sort((first, second) => (first.dueDate ?? '9999-12-31').localeCompare(second.dueDate ?? '9999-12-31'))
-  }, [companies, contacts, quotes, tasks, visibleDeals])
+  }, [companies, contacts, quoteDate, quotes, tasks, visibleDeals])
   const stalledDeals = useMemo(() => {
     return visibleDeals.filter(
       (deal) =>
@@ -410,7 +413,7 @@ export default function TodayWorkspace() {
                 <span className="rounded-full bg-stone-100 px-3 py-1.5 text-xs font-black text-stone-600">{nextActions.length} open</span>
               </div>
               <div className="divide-y divide-stone-100 px-5 sm:px-6">
-                {nextActions.length ? nextActions.slice(0, 10).map((action) => (
+                {nextActions.length ? (showAllActions ? nextActions : nextActions.slice(0, 10)).map((action) => (
                   <div key={action.id} className="group flex items-start gap-3 py-4">
                     {action.task ? (
                       <button onClick={() => void completeTask(action.task!)} title="Mark complete" aria-label={`Mark ${action.title} complete`} className="mt-0.5 grid h-6 w-6 shrink-0 place-items-center rounded-full border-2 border-stone-300 text-transparent transition hover:border-emerald-500 hover:bg-emerald-50 hover:text-emerald-600">
@@ -430,6 +433,11 @@ export default function TodayWorkspace() {
                         <span>{action.detail}</span>
                         <span className="text-stone-300">•</span>
                         <span className={dueDateTextTone(action.dueDate)}>{formatShortDate(action.dueDate)}</span>
+                        {action.daysSinceLastAction !== undefined ? (
+                          <span className="rounded-full bg-stone-100 px-2 py-0.5 font-semibold text-stone-600">
+                            {action.daysSinceLastAction} {action.daysSinceLastAction === 1 ? 'day' : 'days'} since last action
+                          </span>
+                        ) : null}
                       </p>
                     </div>
                     <Link href={action.href} aria-label={`Open ${action.title}`} className="grid h-8 w-8 shrink-0 place-items-center rounded-lg text-stone-300 transition group-hover:bg-red-50 group-hover:text-red-600">
@@ -438,6 +446,11 @@ export default function TodayWorkspace() {
                   </div>
                 )) : <div className="py-6"><Empty text="Nothing is due. Add a next action to keep momentum visible." /></div>}
               </div>
+              {nextActions.length > 10 ? (
+                <button type="button" onClick={() => setShowAllActions((open) => !open)} aria-expanded={showAllActions} className="mx-5 mb-5 text-sm font-bold text-red-600 hover:underline sm:mx-6">
+                  {showAllActions ? 'Show fewer next actions' : `Show all ${nextActions.length} next actions`}
+                </button>
+              ) : null}
             </section>
 
             <div className="grid gap-5">

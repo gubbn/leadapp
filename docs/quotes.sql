@@ -8,6 +8,8 @@ create table if not exists public.quotes (
   subscription_value numeric(12,2) not null default 0 check (subscription_value >= 0),
   issued_on date not null default current_date,
   chase_due_date date not null,
+  follow_up_sent_on date,
+  last_chased_on date,
   status text not null default 'issued'
     check (status in ('issued', 'chased', 'won', 'lost', 'withdrawn')),
   notes text,
