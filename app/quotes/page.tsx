@@ -24,7 +24,6 @@ type Quote = QuoteActionDates & {
 
 const quoteColumns = 'id,quote_number,one_off_value,subscription_value,issued_on,chase_due_date,status,companies(id,company_name),contacts(id,first_name,last_name)'
 const statuses = ['issued', 'chased', 'won', 'lost', 'withdrawn']
-const hiddenStatuses = new Set(['lost', 'abandoned', 'withdrawn'])
 
 export default function QuotesPage() {
   const [quotes, setQuotes] = useState<Quote[]>([])
@@ -61,7 +60,7 @@ export default function QuotesPage() {
     void load()
   }, [load])
 
-  const visibleQuotes = showClosedQuotes ? quotes : quotes.filter((quote) => !hiddenStatuses.has(quote.status))
+  const visibleQuotes = showClosedQuotes ? quotes : quotes.filter((quote) => isOpenQuote(quote.status))
 
   const totals = useMemo(() => ({
     open: quotes.filter((quote) => isOpenQuote(quote.status)).length,
@@ -128,7 +127,7 @@ export default function QuotesPage() {
           <div className="flex flex-wrap items-center gap-4">
             <label className="flex items-center gap-2 text-sm font-semibold text-stone-700">
               <input type="checkbox" checked={showClosedQuotes} onChange={(event) => setShowClosedQuotes(event.target.checked)} className="h-4 w-4 accent-red-600" />
-              Show lost, abandoned and withdrawn quotes
+              Show closed quotes
             </label>
             <Link href="/#tasks" className="text-xs font-black text-red-600">View Do next →</Link>
           </div>
@@ -196,7 +195,7 @@ export default function QuotesPage() {
             </table>
           </div>
         ) : (
-          <p className="p-6 text-sm text-stone-500">{quotes.length ? 'No quotes in this view. Turn on the toggle to see lost, abandoned and withdrawn quotes.' : 'No quotes recorded.'}</p>
+          <p className="p-6 text-sm text-stone-500">{quotes.length ? 'No current quotes. Show closed quotes to view previous records.' : 'No quotes recorded.'}</p>
         )}
       </section>
     </section>

@@ -4,7 +4,7 @@ import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 're
 import Link from 'next/link'
 import AppHeader from '@/app/components/AppHeader'
 import { supabase } from '@/lib/supabaseClient'
-import ClaimCompanyPicker, { type ClaimCompany } from './ClaimCompanyPicker'
+import ClaimCompanyPicker, { type ClaimCompanySelection } from './ClaimCompanyPicker'
 
 type OfferStatus = 'draft' | 'active' | 'paused' | 'ended'
 
@@ -49,8 +49,7 @@ type OfferForm = {
 }
 
 type ClaimForm = {
-  mode: 'new' | 'existing'
-  company: ClaimCompany | null
+  selection: ClaimCompanySelection
   claimantName: string
   companyName: string
   email: string
@@ -78,8 +77,7 @@ function todayInputValue() {
 }
 
 const EMPTY_CLAIM_FORM: ClaimForm = {
-  mode: 'new',
-  company: null,
+  selection: null,
   claimantName: '',
   companyName: '',
   email: '',
@@ -113,7 +111,9 @@ export default function OffersPage() {
   const [sourceFilter, setSourceFilter] = useState('all')
   const [form, setForm] = useState<OfferForm>(EMPTY_FORM)
   const [claimForm, setClaimForm] = useState<ClaimForm>(EMPTY_CLAIM_FORM)
+  const [claimError, setClaimError] = useState('')
   const claimId = useRef<string | null>(null)
+  const claimDialog = useRef<HTMLDialogElement>(null)
 
   const loadOffers = useCallback(async () => {
     setLoading(true)
@@ -149,6 +149,14 @@ export default function OffersPage() {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     void loadOffers()
   }, [loadOffers])
+
+  useEffect(() => {
+    const dialog = claimDialog.current
+    if (!claimingOffer || !dialog) return
+    dialog.showModal()
+    dialog.querySelector<HTMLSelectElement>('#claim-company')?.focus()
+    return () => dialog.close()
+  }, [claimingOffer])
 
   const sources = useMemo(
     () =>
@@ -284,6 +292,12 @@ export default function OffersPage() {
     })
     setErrorMessage('')
     setSuccessMessage('')
+    setClaimError('')
+  }
+
+  function closeClaimForm() {
+    claimDialog.current?.close()
+    setClaimingOffer(null)
   }
 
   async function saveClaim(event: FormEvent<HTMLFormElement>) {
@@ -291,67 +305,75 @@ export default function OffersPage() {
     if (!claimingOffer || saving) return
 
     if (!claimForm.claimantName.trim() || !claimForm.leadSource.trim()) {
-      setErrorMessage('Claimant name and lead source are required.')
+      setClaimError('Claimant name and lead source are required.')
       return
     }
 
-    if (claimLinksAvailable && claimForm.mode === 'existing' && !claimForm.company) {
-      setErrorMessage('Choose the company to link this claimant to.')
+    const selection = claimForm.selection
+    if (!selection) {
+      setClaimError('Choose a company or create a new claimant.')
+      return
+    }
+    if (!claimLinksAvailable && selection.kind !== 'claim-only') {
+      setClaimError(CLAIM_COMPANY_SETUP)
       return
     }
 
     setSaving(true)
-    setErrorMessage('')
-    claimId.current ??= crypto.randomUUID()
-    const claim = {
-      id: claimId.current,
-      offer_id: claimingOffer.id,
-      claimant_name: claimForm.claimantName.trim(),
-      company_name: claimForm.companyName.trim() || null,
-      email: claimForm.email.trim() || null,
-      telephone: claimForm.telephone.trim() || null,
-      lead_source: claimForm.leadSource.trim(),
-      claimed_on: claimForm.claimedOn,
-      notes: claimForm.notes.trim() || null,
-    }
-    const { error } = claimLinksAvailable
-      ? await supabase.rpc('record_offer_claim', {
-        p_claim_id: claim.id,
-        p_offer_id: claim.offer_id,
-        p_company_id: claimForm.mode === 'existing' ? claimForm.company?.id ?? null : null,
-        p_claimant_name: claim.claimant_name,
-        p_company_name: claim.company_name,
-        p_email: claim.email,
-        p_telephone: claim.telephone,
-        p_lead_source: claim.lead_source,
-        p_claimed_on: claim.claimed_on,
-        p_notes: claim.notes,
-      })
-      : await supabase.from('offer_claims').upsert(claim, { onConflict: 'id', ignoreDuplicates: true })
+    setClaimError('')
+    try {
+      claimId.current ??= crypto.randomUUID()
+      const claim = {
+        id: claimId.current,
+        offer_id: claimingOffer.id,
+        claimant_name: claimForm.claimantName.trim(),
+        company_name: selection.kind === 'existing' ? selection.company.company_name : claimForm.companyName.trim() || null,
+        email: claimForm.email.trim() || null,
+        telephone: claimForm.telephone.trim() || null,
+        lead_source: claimForm.leadSource.trim(),
+        claimed_on: claimForm.claimedOn,
+        notes: claimForm.notes.trim() || null,
+      }
+      const { error } = selection.kind === 'claim-only'
+        ? await supabase.from('offer_claims').upsert(claim, { onConflict: 'id', ignoreDuplicates: true })
+        : await supabase.rpc('record_offer_claim', {
+          p_claim_id: claim.id,
+          p_offer_id: claim.offer_id,
+          p_company_id: selection.kind === 'existing' ? selection.company.id : null,
+          p_claimant_name: claim.claimant_name,
+          p_company_name: claim.company_name,
+          p_email: claim.email,
+          p_telephone: claim.telephone,
+          p_lead_source: claim.lead_source,
+          p_claimed_on: claim.claimed_on,
+          p_notes: claim.notes,
+        })
 
-    if (error) {
-      setErrorMessage(
-        error.code === 'PGRST202' || error.code === '42883'
-          ? CLAIM_COMPANY_SETUP
-          : error.message.includes('offers_inventory_valid')
-          ? 'This offer has no availability remaining.'
-          : error.message,
-      )
+      if (error) {
+        if (error.code === 'PGRST202' || error.code === '42883') {
+          setClaimLinksAvailable(false)
+          setClaimError(CLAIM_COMPANY_SETUP)
+        } else {
+          setClaimError(error.message.includes('offers_inventory_valid')
+            ? 'This offer has no availability remaining.'
+            : error.message)
+        }
+        return
+      }
+
+      closeClaimForm()
+      setClaimForm(EMPTY_CLAIM_FORM)
+      setSuccessMessage({
+        existing: 'Claim recorded and linked to the company.',
+        new: 'Claim recorded and claimant saved to Leads.',
+        'claim-only': 'Claim recorded.',
+      }[selection.kind])
+      await loadOffers()
+    } catch (error) {
+      setClaimError(error instanceof Error ? error.message : 'The claim could not be saved.')
+    } finally {
       setSaving(false)
-      return
     }
-
-    setClaimingOffer(null)
-    setClaimForm(EMPTY_CLAIM_FORM)
-    let message = 'Claim recorded.'
-    if (claimLinksAvailable) {
-      message = claimForm.mode === 'existing'
-        ? 'Claim recorded and linked to the company.'
-        : 'Claim recorded and claimant saved to Leads.'
-    }
-    setSuccessMessage(message)
-    await loadOffers()
-    setSaving(false)
   }
 
   async function deleteClaim(claim: OfferClaim) {
@@ -589,170 +611,173 @@ export default function OffersPage() {
           ) : null}
 
           {claimingOffer ? (
-            <form
-              onSubmit={saveClaim}
-              className="mt-8 rounded-2xl border border-red-200 bg-white p-6 shadow-lg ring-4 ring-red-50"
+            <dialog
+              ref={claimDialog}
+              aria-labelledby="offer-claim-title"
+              onCancel={(event) => {
+                event.preventDefault()
+                if (!saving) closeClaimForm()
+              }}
+              className="fixed inset-0 m-auto max-h-[calc(100dvh_-_2rem)] w-[calc(100%_-_2rem)] max-w-2xl overflow-y-auto overscroll-contain rounded-2xl border border-stone-200 bg-white p-0 shadow-2xl backdrop:bg-stone-950/45 backdrop:backdrop-blur-sm"
             >
-              <div className="flex items-start justify-between gap-4">
-                <div>
-                  <p className="text-xs font-black uppercase tracking-wide text-red-600">
-                    Record a claim
-                  </p>
-                  <h2 className="mt-1 text-2xl font-black text-stone-950">
-                    {claimingOffer.name}
-                  </h2>
+              <form onSubmit={saveClaim} className="p-5 sm:p-6">
+                <div className="flex items-start justify-between gap-4">
+                  <div>
+                    <h2 id="offer-claim-title" className="text-2xl font-black text-stone-950">Record claim</h2>
+                    <p className="mt-1 text-sm font-semibold text-stone-500">{claimingOffer.name}</p>
+                  </div>
+                  <button
+                    type="button"
+                    disabled={saving}
+                    onClick={closeClaimForm}
+                    className="rounded-lg px-3 py-2 text-sm font-bold text-stone-500 hover:bg-stone-100"
+                  >
+                    Close
+                  </button>
                 </div>
-                <button
-                  type="button"
-                  disabled={saving}
-                  onClick={() => setClaimingOffer(null)}
-                  className="rounded-lg px-3 py-2 text-sm font-bold text-stone-500 hover:bg-stone-100"
-                >
-                  Close
-                </button>
-              </div>
 
-              {!claimLinksAvailable ? <p className="mt-4 text-sm text-amber-800">{CLAIM_COMPANY_SETUP}</p> : null}
+                {!claimLinksAvailable && claimError !== CLAIM_COMPANY_SETUP ? (
+                  <p className="mt-4 rounded-lg bg-amber-50 p-3 text-sm text-amber-800">{CLAIM_COMPANY_SETUP}</p>
+                ) : null}
 
-              <fieldset disabled={saving} className="mt-6 grid gap-5 md:grid-cols-2">
-                {claimLinksAvailable ? <Field label="Record claimant as" required>
-                  <select value={claimForm.mode} onChange={(event) => {
-                    const mode = event.currentTarget.value as ClaimForm['mode']
-                    setClaimForm((current) => ({ ...current, mode }))
-                  }} className="form-input">
-                    <option value="new">Add to Leads</option>
-                    <option value="existing">Link to an existing company</option>
-                  </select>
-                </Field> : null}
+                <fieldset disabled={saving} className="mt-6 grid gap-5 md:grid-cols-2">
+                  <ClaimCompanyPicker selection={claimForm.selection} disabled={saving} allowClaimOnly={!claimLinksAvailable}
+                    onChange={(selection) => {
+                      setClaimForm((current) => ({ ...current, selection }))
+                      setClaimError('')
+                    }} />
 
-                {claimLinksAvailable && claimForm.mode === 'existing' ? (
-                  <ClaimCompanyPicker company={claimForm.company} disabled={saving}
-                    onChange={(company) => setClaimForm((current) => ({ ...current, company }))} />
-                ) : (
-                  <Field label="Company">
-                    <input value={claimForm.companyName} onChange={(event) =>
-                      setClaimForm({ ...claimForm, companyName: event.currentTarget.value })
-                    } className="form-input" placeholder="Company name, if applicable" />
-                  </Field>
-                )}
+                  {claimForm.selection && claimForm.selection.kind !== 'existing' ? (
+                    <Field label="Company name">
+                      <input value={claimForm.companyName} onChange={(event) =>
+                        setClaimForm({ ...claimForm, companyName: event.currentTarget.value })
+                      } className="form-input" placeholder="Company name, if applicable" />
+                    </Field>
+                  ) : null}
 
-                <Field label="Claimant name" required>
-                  <input
-                    required
-                    maxLength={160}
-                    value={claimForm.claimantName}
-                    onChange={(event) =>
-                      setClaimForm({
-                        ...claimForm,
-                        claimantName: event.target.value,
-                      })
-                    }
-                    className="form-input"
-                    placeholder="Full name"
-                  />
-                </Field>
-
-                <Field label="Email">
-                  <input
-                    type="email"
-                    value={claimForm.email}
-                    onChange={(event) =>
-                      setClaimForm({ ...claimForm, email: event.target.value })
-                    }
-                    className="form-input"
-                    placeholder="name@company.co.uk"
-                  />
-                </Field>
-
-                <Field label="Telephone">
-                  <input
-                    type="tel"
-                    value={claimForm.telephone}
-                    onChange={(event) =>
-                      setClaimForm({
-                        ...claimForm,
-                        telephone: event.target.value,
-                      })
-                    }
-                    className="form-input"
-                    placeholder="Contact number"
-                  />
-                </Field>
-
-                <Field label="Lead source" required>
-                  <input
-                    required
-                    maxLength={120}
-                    list="claim-source-options"
-                    value={claimForm.leadSource}
-                    onChange={(event) =>
-                      setClaimForm({
-                        ...claimForm,
-                        leadSource: event.target.value,
-                      })
-                    }
-                    className="form-input"
-                    placeholder="e.g. LinkedIn, referral, Facebook"
-                  />
-                  <datalist id="claim-source-options">
-                    {Array.from(
-                      new Set([
-                        ...sources,
-                        ...claims.map((claim) => claim.lead_source),
-                      ]),
-                    ).map((source) => (
-                      <option key={source} value={source} />
-                    ))}
-                  </datalist>
-                </Field>
-
-                <Field label="Claimed on" required>
-                  <input
-                    required
-                    type="date"
-                    value={claimForm.claimedOn}
-                    onChange={(event) =>
-                      setClaimForm({
-                        ...claimForm,
-                        claimedOn: event.target.value,
-                      })
-                    }
-                    className="form-input"
-                  />
-                </Field>
-
-                <div className="md:col-span-2">
-                  <Field label="Notes">
-                    <textarea
-                      rows={3}
-                      value={claimForm.notes}
+                  <Field label="Claimant name" required>
+                    <input
+                      required
+                      maxLength={160}
+                      value={claimForm.claimantName}
                       onChange={(event) =>
-                        setClaimForm({ ...claimForm, notes: event.target.value })
+                        setClaimForm({
+                          ...claimForm,
+                          claimantName: event.target.value,
+                        })
                       }
-                      className="form-input resize-y"
-                      placeholder="Anything useful about this claim..."
+                      className="form-input"
+                      placeholder="Full name"
                     />
                   </Field>
-                </div>
-              </fieldset>
 
-              <div className="mt-6 flex justify-end gap-3">
-                <button
-                  type="button"
-                  disabled={saving}
-                  onClick={() => setClaimingOffer(null)}
-                  className="rounded-xl border border-stone-200 px-5 py-3 text-sm font-bold text-stone-700 hover:bg-stone-50"
-                >
-                  Cancel
-                </button>
-                <button
-                  disabled={saving}
-                  className="rounded-xl bg-red-600 px-5 py-3 text-sm font-black text-white hover:bg-red-700 disabled:opacity-50"
-                >
-                  {saving ? 'Saving...' : 'Record claim'}
-                </button>
-              </div>
-            </form>
+                  <Field label="Email">
+                    <input
+                      type="email"
+                      value={claimForm.email}
+                      onChange={(event) =>
+                        setClaimForm({ ...claimForm, email: event.target.value })
+                      }
+                      className="form-input"
+                      placeholder="name@company.co.uk"
+                    />
+                  </Field>
+
+                  <Field label="Telephone">
+                    <input
+                      type="tel"
+                      value={claimForm.telephone}
+                      onChange={(event) =>
+                        setClaimForm({
+                          ...claimForm,
+                          telephone: event.target.value,
+                        })
+                      }
+                      className="form-input"
+                      placeholder="Contact number"
+                    />
+                  </Field>
+
+                  <Field label="Lead source" required>
+                    <input
+                      required
+                      maxLength={120}
+                      list="claim-source-options"
+                      value={claimForm.leadSource}
+                      onChange={(event) =>
+                        setClaimForm({
+                          ...claimForm,
+                          leadSource: event.target.value,
+                        })
+                      }
+                      className="form-input"
+                      placeholder="e.g. LinkedIn, referral, Facebook"
+                    />
+                    <datalist id="claim-source-options">
+                      {Array.from(
+                        new Set([
+                          ...sources,
+                          ...claims.map((claim) => claim.lead_source),
+                        ]),
+                      ).map((source) => (
+                        <option key={source} value={source} />
+                      ))}
+                    </datalist>
+                  </Field>
+
+                  <Field label="Claimed on" required>
+                    <input
+                      required
+                      type="date"
+                      value={claimForm.claimedOn}
+                      onChange={(event) =>
+                        setClaimForm({
+                          ...claimForm,
+                          claimedOn: event.target.value,
+                        })
+                      }
+                      className="form-input"
+                    />
+                  </Field>
+
+                  <div className="md:col-span-2">
+                    <Field label="Notes">
+                      <textarea
+                        rows={3}
+                        value={claimForm.notes}
+                        onChange={(event) =>
+                          setClaimForm({ ...claimForm, notes: event.target.value })
+                        }
+                        className="form-input resize-y"
+                        placeholder="Anything useful about this claim..."
+                      />
+                    </Field>
+                  </div>
+                </fieldset>
+
+                {claimError ? (
+                  <p role="alert" className="mt-4 rounded-lg bg-red-50 p-3 text-sm font-semibold text-red-700">{claimError}</p>
+                ) : null}
+
+                <div className="mt-6 flex justify-end gap-3">
+                  <button
+                    type="button"
+                    disabled={saving}
+                    onClick={closeClaimForm}
+                    className="rounded-xl border border-stone-200 px-5 py-3 text-sm font-bold text-stone-700 hover:bg-stone-50"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={saving}
+                    className="rounded-xl bg-red-600 px-5 py-3 text-sm font-black text-white hover:bg-red-700 disabled:opacity-50"
+                  >
+                    {saving ? 'Saving...' : 'Record claim'}
+                  </button>
+                </div>
+              </form>
+            </dialog>
           ) : null}
         </div>
       </section>
@@ -961,6 +986,7 @@ function OfferCard({
               </div>
               <button
                 type="button"
+                aria-haspopup="dialog"
                 onClick={onClaim}
                 disabled={soldOut}
                 className="rounded-lg bg-stone-900 px-3 py-2 text-xs font-black text-white hover:bg-red-600 disabled:cursor-not-allowed disabled:bg-stone-300"
@@ -1004,6 +1030,7 @@ function OfferCard({
             {!offer.is_limited || !soldOut ? (
               <button
                 type="button"
+                aria-haspopup="dialog"
                 onClick={onClaim}
                 className="rounded-lg bg-red-600 px-3 py-2 text-xs font-black text-white hover:bg-red-700"
               >

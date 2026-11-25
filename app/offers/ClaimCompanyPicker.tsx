@@ -1,65 +1,87 @@
 import { useEffect, useState } from 'react'
 import { supabase } from '@/lib/supabaseClient'
 
-export type ClaimCompany = { id: string; company_name: string; location: string | null }
+type ClaimCompany = { id: string; company_name: string; location: string | null }
 
-export default function ClaimCompanyPicker({ company, disabled, onChange }: {
-  company: ClaimCompany | null
+export type ClaimCompanySelection =
+  | { kind: 'existing'; company: ClaimCompany }
+  | { kind: 'new' | 'claim-only' }
+  | null
+
+export default function ClaimCompanyPicker({ selection, disabled, allowClaimOnly, onChange }: {
+  selection: ClaimCompanySelection
   disabled: boolean
-  onChange: (company: ClaimCompany | null) => void
+  allowClaimOnly: boolean
+  onChange: (selection: ClaimCompanySelection) => void
 }) {
-  const [query, setQuery] = useState('')
-  const [result, setResult] = useState<{ query: string; companies: ClaimCompany[]; error: string } | null>(null)
-  const search = query.trim()
+  const [companies, setCompanies] = useState<ClaimCompany[]>([])
+  const [filter, setFilter] = useState('')
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState('')
 
   useEffect(() => {
-    if (company || search.length < 2) return
     const controller = new AbortController()
-    const timer = window.setTimeout(async () => {
-      const pattern = search.replace(/[\\%_]/g, '\\$&')
-      const { data, error } = await supabase.from('companies').select('id,company_name,location')
-        .ilike('company_name', `%${pattern}%`).order('company_name').order('id').limit(25)
-        .abortSignal(controller.signal)
-      if (!controller.signal.aborted) setResult({ query: search, companies: data ?? [], error: error?.message ?? '' })
-    }, 250)
-    return () => {
-      window.clearTimeout(timer)
-      controller.abort()
+
+    async function loadCompanies() {
+      const pageSize = 500
+      for (let offset = 0; ; offset += pageSize) {
+        const { data, error } = await supabase.from('companies').select('id,company_name,location')
+          .order('company_name').order('id').range(offset, offset + pageSize - 1)
+          .abortSignal(controller.signal)
+        if (controller.signal.aborted) return
+        if (error) {
+          setError(error.message)
+          break
+        }
+        setCompanies((current) => [...current, ...data])
+        if (data.length < pageSize) break
+      }
+      setLoading(false)
     }
-  }, [company, search])
 
-  if (company) return (
-    <div>
-      <p className="mb-2 text-sm font-black text-stone-700">Linked company</p>
-      <div className="flex items-center justify-between gap-3 rounded-xl border border-stone-200 p-3">
-        <span className="text-sm font-bold text-stone-900">{company.company_name}</span>
-        <button type="button" disabled={disabled} onClick={() => onChange(null)} className="text-xs font-black text-red-600 hover:underline disabled:opacity-50">Change</button>
-      </div>
-    </div>
-  )
+    void loadCompanies()
+    return () => controller.abort()
+  }, [])
 
-  const matches = result?.query === search ? result : null
+  const selectedId = selection?.kind === 'existing' ? selection.company.id : selection?.kind ?? ''
+  const search = filter.trim().toLowerCase()
+  const visible = companies.filter((company) => company.id === selectedId ||
+    `${company.company_name} ${company.location ?? ''}`.toLowerCase().includes(search))
+
+  function selectCompany(value: string) {
+    if (value === 'new' || value === 'claim-only') {
+      onChange({ kind: value })
+    } else {
+      const company = companies.find((option) => option.id === value)
+      onChange(company ? { kind: 'existing', company } : null)
+    }
+  }
+
   return (
-    <div>
-      <label className="block">
-        <span className="mb-2 block text-sm font-black text-stone-700">Find company</span>
-        <input type="search" value={query} disabled={disabled} onChange={(event) => setQuery(event.currentTarget.value)} className="form-input" placeholder="Search by company name" />
-      </label>
-      {search.length >= 2 ? (
-        <div className="mt-2">
-          {matches?.error ? <p role="alert" className="text-xs text-red-700">{matches.error}</p> : matches?.companies.length ? (
-            <ul aria-label="Matching companies" className="max-h-52 divide-y divide-stone-100 overflow-y-auto rounded-xl border border-stone-200">
-              {matches.companies.map((option) => (
-                <li key={option.id}>
-                  <button type="button" disabled={disabled} onClick={() => onChange(option)} className="w-full px-3 py-2 text-left text-sm font-bold text-stone-800 hover:bg-stone-100 disabled:opacity-50">
-                    {option.company_name}{option.location ? <span className="ml-2 font-normal text-stone-500">{option.location}</span> : null}
-                  </button>
-                </li>
-              ))}
-            </ul>
-          ) : <p role="status" className="text-xs text-stone-600">{matches ? 'No matching companies.' : 'Searching for companies…'}</p>}
-        </div>
+    <div className="md:col-span-2">
+      <label htmlFor="claim-company" className="mb-2 block text-sm font-black text-stone-700">Company</label>
+      {companies.length > 25 ? (
+        <input type="search" aria-label="Filter companies" value={filter} disabled={disabled}
+          onChange={(event) => setFilter(event.currentTarget.value)} className="form-input mb-2" placeholder="Filter by company name or location" />
       ) : null}
+      <select id="claim-company" required value={selectedId} disabled={disabled}
+        onChange={(event) => selectCompany(event.currentTarget.value)} className="form-input">
+        <option value="" disabled>Choose a company or create new</option>
+        {visible.length ? (
+          <optgroup label="Existing companies">
+            {visible.map((company) => (
+              <option key={company.id} value={company.id}>
+                {company.company_name}{company.location ? ` · ${company.location}` : ''}
+              </option>
+            ))}
+          </optgroup>
+        ) : null}
+        <option value="new">Create new claimant in Leads</option>
+        {allowClaimOnly ? <option value="claim-only">Record claim only</option> : null}
+      </select>
+      {loading ? <p role="status" className="mt-2 text-xs text-stone-600">Loading companies…</p> : null}
+      {error ? <p role="alert" className="mt-2 text-xs text-red-700">Companies could not be loaded. {error}</p> : null}
+      {!loading && !error && search && !visible.length ? <p role="status" className="mt-2 text-xs text-stone-600">No matching companies.</p> : null}
     </div>
   )
 }
