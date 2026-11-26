@@ -412,39 +412,44 @@ export default function TodayWorkspace() {
                 <SectionTitle icon={<ListChecks size={18} />} eyebrow="Priority queue" title="Next actions" />
                 <span className="rounded-full bg-stone-100 px-3 py-1.5 text-xs font-black text-stone-600">{nextActions.length} open</span>
               </div>
-              <div className="divide-y divide-stone-100 px-5 sm:px-6">
-                {nextActions.length ? (showAllActions ? nextActions : nextActions.slice(0, 10)).map((action) => (
-                  <div key={action.id} className="group flex items-start gap-3 py-4">
-                    {action.task ? (
-                      <button onClick={() => void completeTask(action.task!)} title="Mark complete" aria-label={`Mark ${action.title} complete`} className="mt-0.5 grid h-6 w-6 shrink-0 place-items-center rounded-full border-2 border-stone-300 text-transparent transition hover:border-emerald-500 hover:bg-emerald-50 hover:text-emerald-600">
-                        <Check size={13} strokeWidth={3} />
-                      </button>
-                    ) : (
-                      <span className="mt-0.5 grid h-6 w-6 shrink-0 place-items-center rounded-full bg-stone-100 text-stone-500">
-                        <ChevronRight size={14} strokeWidth={2.8} />
-                      </span>
-                    )}
-                    <div className="min-w-0 flex-1">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <Link href={action.href} className="text-sm font-black text-stone-900 transition group-hover:text-red-600">{action.title}</Link>
-                        {action.task ? <Priority value={action.task.priority} /> : <ActionType value={action.kind} />}
-                      </div>
-                      <p className="mt-1.5 flex flex-wrap items-center gap-x-2 text-xs text-stone-500">
-                        <span>{action.detail}</span>
-                        <span className="text-stone-300">•</span>
-                        <span className={dueDateTextTone(action.dueDate)}>{formatShortDate(action.dueDate)}</span>
-                        {action.daysSinceLastAction !== undefined ? (
-                          <span className="rounded-full bg-stone-100 px-2 py-0.5 font-semibold text-stone-600">
-                            {action.daysSinceLastAction} {action.daysSinceLastAction === 1 ? 'day' : 'days'} since last action
+              <div className="px-5 sm:px-6">
+                {nextActions.length ? (
+                  <ol role="list" aria-label="Priority queue" className="divide-y divide-stone-100">
+                    {(showAllActions ? nextActions : nextActions.slice(0, 10)).map((action, index) => (
+                      <li key={action.id} className="group flex items-start gap-3 py-4">
+                        <span aria-hidden="true" className="mt-1.5 min-w-5 shrink-0 text-right text-xs font-black tabular-nums text-stone-500">{index + 1}.</span>
+                        {action.task ? (
+                          <button onClick={() => void completeTask(action.task!)} title="Mark complete" aria-label={`Mark ${action.title} complete`} className="mt-0.5 grid h-6 w-6 shrink-0 place-items-center rounded-full border-2 border-stone-300 text-transparent transition hover:border-emerald-500 hover:bg-emerald-50 hover:text-emerald-600">
+                            <Check size={13} strokeWidth={3} />
+                          </button>
+                        ) : (
+                          <span className="mt-0.5 grid h-6 w-6 shrink-0 place-items-center rounded-full bg-stone-100 text-stone-500">
+                            <ChevronRight size={14} strokeWidth={2.8} />
                           </span>
-                        ) : null}
-                      </p>
-                    </div>
-                    <Link href={action.href} aria-label={`Open ${action.title}`} className="grid h-8 w-8 shrink-0 place-items-center rounded-lg text-stone-300 transition group-hover:bg-red-50 group-hover:text-red-600">
-                      <ArrowRight size={15} />
-                    </Link>
-                  </div>
-                )) : <div className="py-6"><Empty text="Nothing is due. Add a next action to keep momentum visible." /></div>}
+                        )}
+                        <div className="min-w-0 flex-1">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <Link href={action.href} className="text-sm font-black text-stone-900 transition group-hover:text-red-600">{action.title}</Link>
+                            {action.task ? <Priority value={action.task.priority} /> : <ActionType value={action.kind} />}
+                          </div>
+                          <p className="mt-1.5 flex flex-wrap items-center gap-x-2 text-xs text-stone-500">
+                            <span>{action.detail}</span>
+                            <span className="text-stone-300">•</span>
+                            <span className={dueDateTextTone(action.dueDate)}>{formatShortDate(action.dueDate)}</span>
+                            {action.daysSinceLastAction !== undefined ? (
+                              <span className="rounded-full bg-stone-100 px-2 py-0.5 font-semibold text-stone-600">
+                                {action.daysSinceLastAction} {action.daysSinceLastAction === 1 ? 'day' : 'days'} since last action
+                              </span>
+                            ) : null}
+                          </p>
+                        </div>
+                        <Link href={action.href} aria-label={`Open ${action.title}`} className="grid h-8 w-8 shrink-0 place-items-center rounded-lg text-stone-300 transition group-hover:bg-red-50 group-hover:text-red-600">
+                          <ArrowRight size={15} />
+                        </Link>
+                      </li>
+                    ))}
+                  </ol>
+                ) : <div className="py-6"><Empty text="Nothing is due. Add a next action to keep momentum visible." /></div>}
               </div>
               {nextActions.length > 10 ? (
                 <button type="button" onClick={() => setShowAllActions((open) => !open)} aria-expanded={showAllActions} className="mx-5 mb-5 text-sm font-bold text-red-600 hover:underline sm:mx-6">

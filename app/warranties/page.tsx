@@ -28,6 +28,7 @@ import {
   type WarrantyWindow,
 } from '@/lib/warrantyImportHelpers'
 import ImportPanel from './ImportPanel'
+import RenewWarrantyDialog from './RenewWarrantyDialog'
 import { AddWarrantyForm } from './WarrantyForm'
 
 type Warranty = {
@@ -80,7 +81,8 @@ function WarrantiesWorkspace({ initialWindow }: { initialWindow: WarrantyWindow 
   const [loadError, setLoadError] = useState('')
   const [setupRequired, setSetupRequired] = useState(false)
   const [panel, setPanel] = useState<'add' | 'import' | null>(null)
-  const [warrantyAdded, setWarrantyAdded] = useState(false)
+  const [warrantyMessage, setWarrantyMessage] = useState('')
+  const [renewingWarranty, setRenewingWarranty] = useState<Warranty | null>(null)
   const [fileName, setFileName] = useState('')
   const [columns, setColumns] = useState<string[]>([])
   const [sourceRows, setSourceRows] = useState<WarrantySourceRow[]>([])
@@ -293,6 +295,12 @@ function WarrantiesWorkspace({ initialWindow }: { initialWindow: WarrantyWindow 
   }
 
   async function updateStatus(warranty: Warranty, actionStatus: WarrantyStatus) {
+    if (actionStatus === 'renewed') {
+      setWarrantyMessage('')
+      setRenewingWarranty(warranty)
+      return
+    }
+
     setSavingStatusId(warranty.id)
     setLoadError('')
     const updatedAt = new Date().toISOString()
@@ -313,6 +321,16 @@ function WarrantiesWorkspace({ initialWindow }: { initialWindow: WarrantyWindow 
       )
     }
     setSavingStatusId('')
+  }
+
+  function completeRenewal(warranty: Warranty, expiryDate: string) {
+    setWarranties((current) => current
+      .map((item): Warranty => item.id === warranty.id
+        ? { ...item, expiry_date: expiryDate, action_status: 'not_started' }
+        : item)
+      .sort((a, b) => a.expiry_date.localeCompare(b.expiry_date) || a.id.localeCompare(b.id)))
+    setRenewingWarranty(null)
+    setWarrantyMessage(`Warranty renewed. New expiry ${formatShortDate(expiryDate)}.`)
   }
 
   return (
@@ -336,7 +354,7 @@ function WarrantiesWorkspace({ initialWindow }: { initialWindow: WarrantyWindow 
               type="button"
               aria-expanded={panel === 'add'}
               onClick={() => {
-                setWarrantyAdded(false)
+                setWarrantyMessage('')
                 setPanel('add')
               }}
               disabled={importing || panel === 'add'}
@@ -364,15 +382,20 @@ function WarrantiesWorkspace({ initialWindow }: { initialWindow: WarrantyWindow 
           <AddWarrantyForm
             onCancel={() => setPanel(null)}
             onSaved={() => {
-              setWarrantyAdded(true)
+              setWarrantyMessage('Warranty added.')
               setPanel(null)
               void loadWarranties()
             }}
           />
         ) : null}
-        {warrantyAdded ? (
+        {renewingWarranty ? (
+          <RenewWarrantyDialog key={renewingWarranty.id} warranty={renewingWarranty}
+            onCancel={() => setRenewingWarranty(null)}
+            onSaved={(expiryDate) => completeRenewal(renewingWarranty, expiryDate)} />
+        ) : null}
+        {warrantyMessage ? (
           <p role="status" className="mb-6 rounded-xl bg-emerald-50 p-4 text-sm font-semibold text-emerald-700">
-            Warranty added.
+            {warrantyMessage}
           </p>
         ) : null}
 
@@ -591,6 +614,10 @@ function WarrantyTableRow({
             </option>
           ))}
         </select>
+        {warranty.action_status === 'renewed' ? (
+          <button type="button" onClick={() => onStatusChange('renewed')} disabled={saving}
+            className="mt-2 block text-xs font-bold text-red-600 hover:underline disabled:opacity-50">Set new expiry</button>
+        ) : null}
       </td>
     </tr>
   )
